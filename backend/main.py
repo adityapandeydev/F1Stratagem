@@ -1,8 +1,4 @@
-import fastf1
-from fastf1 import plotting
-import pandas as pd
+from pace_report import generate_report
+from pace_plot import plot_race_pace
 
-fastf1.Cache.enable_cache('cache')
-
-def get_team_race_pace(year: int, team: str):
-    race_weekends = fastf1.get_event_schedule(year)
+plot_race_pace("Red Bull Racing", 2021)
