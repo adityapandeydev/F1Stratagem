@@ -1,3 +1,56 @@
-.venv 
-__pycache__
-cache
+﻿# F1Stratagem
+
+# Dependencies
+node_modules/
+.venv/
+vendor/
+
+# Build outputs
+/api/bin/
+/frontend/dist/
+/frontend/.vite/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+go.work
+go.work.sum
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+
+# Data and Cache
+/data/
+/backend/cache/
+*.parquet
+*.sqlite
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Misc
+*.bak
+*.tmp
