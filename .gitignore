@@ -1,4 +1,4 @@
-﻿# F1Stratagem
+# F1Stratagem
 
 # Dependencies
 node_modules/
@@ -30,8 +30,13 @@ __pycache__/
 # Data and Cache
 /data/
 /backend/cache/
+worker/data/
 *.parquet
 *.sqlite
+
+# Local scripts
+start-backend.ps1
+startbackend.ps1
 
 # Environment
 .env

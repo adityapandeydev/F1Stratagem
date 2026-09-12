@@ -141,7 +141,7 @@ func (r *Repository) GetEventsBySeasonYear(ctx context.Context, year int) ([]mod
 
 func (r *Repository) GetSessionsByEventID(ctx context.Context, eventID int) ([]model.Session, error) {
 	query := `
-		SELECT id, event_id, session_name, session_type, session_date, total_laps, data_status, data_error
+		SELECT id, event_id, session_name, session_type, session_date::text, total_laps, data_status, data_error
 		FROM sessions
 		WHERE event_id = $1
 		ORDER BY id ASC

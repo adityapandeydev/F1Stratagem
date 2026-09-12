@@ -1,4 +1,4 @@
-﻿-- 001_core_schema.up.sql
+-- 001_core_schema.up.sql
 -- Core F1Stratagem database schema
 
 -- Enable UUID extension
@@ -28,6 +28,8 @@ CREATE TABLE circuits (
     track_length_m  INTEGER,
     num_corners     INTEGER,
     num_drs_zones   INTEGER,
+    num_aero_zones  INTEGER DEFAULT 0,
+    era_specs       JSONB DEFAULT '{}'::jsonb,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
