@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { Play, Pause, RotateCcw, Eye, Compass } from "lucide-react";
+import { Play, Pause, RotateCcw, Compass } from "lucide-react";
 import { TelemetryPoint } from "../../types";
 
 interface DriverInfo {
@@ -32,7 +32,10 @@ export default function InteractiveTrack3D({
   const [activeDistance, setActiveDistance] = useState(0);
   const [viewMode, setViewMode] = useState<"3D" | "Top">("3D");
 
-  // Keep ref to latest state for animation loop
+  // Keep refs for animation loop to avoid re-binding
+  const currentDistanceRef = useRef(currentDistance);
+  currentDistanceRef.current = currentDistance;
+
   const stateRef = useRef({
     isPlaying: false,
     activeDistance: 0,
@@ -50,12 +53,11 @@ export default function InteractiveTrack3D({
     renderer: THREE.WebGLRenderer;
     marker1: THREE.Mesh;
     marker2: THREE.Mesh;
-    trackLine: THREE.Line;
-    trackRibbon: THREE.Mesh;
     controlsState: { isDragging: boolean; prevX: number; prevY: number; theta: number; phi: number; radius: number; target: THREE.Vector3 };
     pointsMap: { d: number; pos: THREE.Vector3; faster: "d1" | "d2" | "equal"; spd1: number; spd2: number }[];
   } | null>(null);
 
+  // Initialize Scene — only when telemetry or driver identifiers change
   useEffect(() => {
     if (!containerRef.current) return;
     const width = containerRef.current.clientWidth || 800;
@@ -70,7 +72,7 @@ export default function InteractiveTrack3D({
     camera.position.set(0, 1500, 2500);
 
     // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     containerRef.current.innerHTML = "";
@@ -78,16 +80,15 @@ export default function InteractiveTrack3D({
 
     // Subtle Grid & Lighting
     const grid = new THREE.GridHelper(5000, 50, 0x1f1f23, 0x141416);
-    grid.position.y = -20;
+    grid.position.y = -25;
     scene.add(grid);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
     scene.add(ambientLight);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
     dirLight.position.set(1000, 2000, 1000);
     scene.add(dirLight);
 
-    // Process coordinates from telemetry
     const tel = telemetry1.length > 0 ? telemetry1 : telemetry2;
     if (tel.length === 0) return;
 
@@ -105,13 +106,13 @@ export default function InteractiveTrack3D({
     const midX = (minX + maxX) / 2;
     const midY = (minY + maxY) / 2;
     const midZ = (minZ + maxZ) / 2;
-    const scale = 0.25;
+    const span = Math.max(maxX - minX, maxY - minY, 1);
+    const scale = 1400 / span; // Normalize track to fit view nicely
 
     const pointsMap: { d: number; pos: THREE.Vector3; faster: "d1" | "d2" | "equal"; spd1: number; spd2: number }[] = [];
     const maxDist = tel[tel.length - 1]?.d || 5000;
     stateRef.current.maxDistance = maxDist;
 
-    // Track path vertices and colors
     const colors: number[] = [];
     const color1 = new THREE.Color(driver1.color || "#3b82f6");
     const color2 = new THREE.Color(driver2.color || "#ef4444");
@@ -123,9 +124,8 @@ export default function InteractiveTrack3D({
       const p1 = telemetry1[i] || tel[i];
       const p2 = telemetry2[i] || tel[i];
 
-      // Elevation comes from Z (or Y depending on coordinate system)
       const x = (p1.x - midX) * scale;
-      const y = (p1.z - midZ) * scale * 1.5; // elevate for 3D visibility
+      const y = (p1.z - midZ) * scale * 1.8; // real elevation scale
       const z = -(p1.y - midY) * scale;
 
       const pos = new THREE.Vector3(x, y, z);
@@ -155,11 +155,11 @@ export default function InteractiveTrack3D({
       });
     }
 
-    // Create 3D track ribbon using CatmullRomCurve3
-    const curve = new THREE.CatmullRomCurve3(curvePoints, false);
-    const tubeGeo = new THREE.TubeGeometry(curve, Math.min(curvePoints.length, 600), 12, 8, false);
+    // Closed circuit loop
+    const curve = new THREE.CatmullRomCurve3(curvePoints, true);
+    const tubeGeo = new THREE.TubeGeometry(curve, Math.min(curvePoints.length, 500), 12, 8, true);
 
-    // Apply vertex colors to tube
+    // Apply colors to tube vertices
     const tubeColors: number[] = [];
     const posAttr = tubeGeo.attributes.position;
     for (let i = 0; i < posAttr.count; i++) {
@@ -170,40 +170,39 @@ export default function InteractiveTrack3D({
 
     const tubeMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.3,
-      metalness: 0.2,
+      roughness: 0.25,
+      metalness: 0.3,
     });
     const trackRibbon = new THREE.Mesh(tubeGeo, tubeMat);
     scene.add(trackRibbon);
 
-    // Track centerline outline
+    // Centerline glow
     const lineGeo = new THREE.BufferGeometry().setFromPoints(curvePoints);
     lineGeo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
     const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 });
     const trackLine = new THREE.Line(lineGeo, lineMat);
     scene.add(trackLine);
 
-    // Driver 1 Glowing Orb Marker
+    // Driver 1 Orb
     const marker1Geo = new THREE.SphereGeometry(22, 16, 16);
     const marker1Mat = new THREE.MeshStandardMaterial({
       color: color1,
       emissive: color1,
-      emissiveIntensity: 0.8,
+      emissiveIntensity: 0.9,
     });
     const marker1 = new THREE.Mesh(marker1Geo, marker1Mat);
     scene.add(marker1);
 
-    // Driver 2 Glowing Orb Marker
+    // Driver 2 Orb
     const marker2Geo = new THREE.SphereGeometry(22, 16, 16);
     const marker2Mat = new THREE.MeshStandardMaterial({
       color: color2,
       emissive: color2,
-      emissiveIntensity: 0.8,
+      emissiveIntensity: 0.9,
     });
     const marker2 = new THREE.Mesh(marker2Geo, marker2Mat);
     scene.add(marker2);
 
-    // Position markers initially
     if (pointsMap.length > 0) {
       marker1.position.copy(pointsMap[0].pos);
       marker2.position.copy(pointsMap[0].pos);
@@ -216,7 +215,7 @@ export default function InteractiveTrack3D({
       prevY: 0,
       theta: Math.PI / 4,
       phi: Math.PI / 3.5,
-      radius: 2600,
+      radius: 2400,
       target: new THREE.Vector3(0, 0, 0),
     };
 
@@ -228,7 +227,6 @@ export default function InteractiveTrack3D({
     };
     updateCameraPos();
 
-    // Mouse handlers
     const dom = renderer.domElement;
     const onMouseDown = (e: MouseEvent) => {
       controlsState.isDragging = true;
@@ -266,8 +264,6 @@ export default function InteractiveTrack3D({
       renderer,
       marker1,
       marker2,
-      trackLine,
-      trackRibbon,
       controlsState,
       pointsMap,
     };
@@ -282,7 +278,7 @@ export default function InteractiveTrack3D({
       lastTime = time;
 
       if (stateRef.current.isPlaying) {
-        const speedKmh = 250 * stateRef.current.playbackSpeed; // simulation speed
+        const speedKmh = 250 * stateRef.current.playbackSpeed;
         const distDelta = (speedKmh * 1000 / 3600) * dt;
         let newDist = stateRef.current.activeDistance + distDelta;
         if (newDist > stateRef.current.maxDistance) {
@@ -292,10 +288,12 @@ export default function InteractiveTrack3D({
         if (onDistanceChange) onDistanceChange(newDist);
       }
 
-      // Update marker positions
-      const currentDist = currentDistance !== undefined ? currentDistance : stateRef.current.activeDistance;
+      // Read current distance dynamically via ref
+      const currentDist = currentDistanceRef.current !== undefined
+        ? currentDistanceRef.current
+        : stateRef.current.activeDistance;
+
       if (pointsMap.length > 0) {
-        // Find closest index
         let closestIdx = 0;
         let minDiff = Infinity;
         for (let i = 0; i < pointsMap.length; i++) {
@@ -307,9 +305,8 @@ export default function InteractiveTrack3D({
         }
         const pt = pointsMap[closestIdx];
         if (pt) {
-          marker1.position.lerp(pt.pos, 0.3);
-          marker2.position.lerp(pt.pos, 0.3);
-          // offset slightly so both visible
+          marker1.position.lerp(pt.pos, 0.35);
+          marker2.position.lerp(pt.pos, 0.35);
           marker1.position.y += 6;
           marker2.position.y += 6;
           marker1.position.x -= 8;
@@ -330,13 +327,14 @@ export default function InteractiveTrack3D({
       renderer.dispose();
       tubeGeo.dispose();
       tubeMat.dispose();
+      lineGeo.dispose();
+      lineMat.dispose();
     };
-  }, [telemetry1, telemetry2, driver1, driver2]);
+  }, [telemetry1, telemetry2, driver1.abbreviation, driver1.color, driver2.abbreviation, driver2.color]);
 
-  // View mode switcher
   const handleViewToggle = () => {
     if (!sceneRef.current) return;
-    const { controlsState } = sceneRef.current;
+    const { controlsState, camera } = sceneRef.current;
     if (viewMode === "3D") {
       setViewMode("Top");
       controlsState.phi = 0.05;
@@ -346,6 +344,10 @@ export default function InteractiveTrack3D({
       controlsState.phi = Math.PI / 3.5;
       controlsState.theta = Math.PI / 4;
     }
+    camera.position.x = controlsState.target.x + controlsState.radius * Math.sin(controlsState.phi) * Math.sin(controlsState.theta);
+    camera.position.y = controlsState.target.y + controlsState.radius * Math.cos(controlsState.phi);
+    camera.position.z = controlsState.target.z + controlsState.radius * Math.sin(controlsState.phi) * Math.cos(controlsState.theta);
+    camera.lookAt(controlsState.target);
   };
 
   const currentDist = currentDistance !== undefined ? currentDistance : activeDistance;
@@ -353,7 +355,6 @@ export default function InteractiveTrack3D({
 
   return (
     <div className="relative rounded-2xl border border-white/[0.08] bg-[#0a0a0b]/80 backdrop-blur-xl overflow-hidden shadow-2xl">
-      {/* Header Overlay */}
       <div className="absolute top-4 left-4 right-4 z-10 flex items-center justify-between pointer-events-none">
         <div className="flex items-center gap-3 pointer-events-auto bg-[#141416]/80 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/[0.08]">
           <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-text-secondary">
@@ -373,7 +374,6 @@ export default function InteractiveTrack3D({
           </div>
         </div>
 
-        {/* View Toggle */}
         <button
           onClick={handleViewToggle}
           className="pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#141416]/80 hover:bg-[#1f1f23] text-text-secondary hover:text-text-primary border border-white/[0.08] transition-all"
@@ -383,12 +383,9 @@ export default function InteractiveTrack3D({
         </button>
       </div>
 
-      {/* 3D WebGL Canvas */}
       <div ref={containerRef} className="w-full h-[460px] cursor-grab active:cursor-grabbing" />
 
-      {/* Playback & Scrubber Controls Bar */}
       <div className="p-4 bg-[#0d0d0f]/90 border-t border-white/[0.06] flex flex-col md:flex-row items-center gap-4">
-        {/* Play/Pause & Reset */}
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsPlaying(!isPlaying)}
@@ -422,7 +419,6 @@ export default function InteractiveTrack3D({
           </div>
         </div>
 
-        {/* Scrubber */}
         <div className="flex-1 w-full flex items-center gap-3">
           <span className="text-xs font-mono text-text-tertiary w-14 text-right">
             {Math.round(currentDist)}m
