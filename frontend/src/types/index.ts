@@ -95,26 +95,46 @@ export interface Lap {
 }
 
 export interface TelemetryPoint {
-  d: number;    // distance
-  spd: number;  // speed
-  thr: number;  // throttle
-  brk: number;  // brake
+  d: number;    // distance in meters
+  spd: number;  // speed in km/h
+  thr: number;  // throttle 0-100%
+  brk: number;  // brake 0/1
   rpm: number;  // RPM
-  gear: number; // gear
-  drs: number;  // DRS
-  x: number;    // X position
-  y: number;    // Y position
+  gear: number; // gear 1-8
+  drs: number;  // DRS status
+  x: number;    // X coordinate on track
+  y: number;    // Y coordinate on track
   z: number;    // Z elevation
 }
 
-export interface TelemetryComparison {
-  driver1: Driver;
-  driver2: Driver;
-  lap1: number;
-  lap2: number;
-  telemetry1: TelemetryPoint[];
-  telemetry2: TelemetryPoint[];
+export interface TelemetryDriverMeta {
+  abbreviation: string;
+  full_name: string;
+  team_name: string;
+  color: string;
+  lap_number: number;
+  lap_time_ms: number;
+}
+
+export interface MultiTelemetryComparison {
+  drivers: TelemetryDriverMeta[];
+  telemetry: TelemetryPoint[][];
   time_delta: number[];
+}
+
+export interface TelemetryComparison {
+  // Legacy
+  driver1?: Driver | TelemetryDriverMeta;
+  driver2?: Driver | TelemetryDriverMeta;
+  lap1?: number;
+  lap2?: number;
+  telemetry1?: TelemetryPoint[];
+  telemetry2?: TelemetryPoint[];
+
+  // Multi-driver (up to 4)
+  drivers?: TelemetryDriverMeta[];
+  telemetry?: TelemetryPoint[][];
+  time_delta?: number[];
 }
 
 export interface WeatherData {

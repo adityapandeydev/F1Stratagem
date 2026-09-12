@@ -1,4 +1,4 @@
-﻿package service
+package service
 
 import (
 	"context"
@@ -353,7 +353,7 @@ func (s *IngestionService) processSessionIngestion(jobID string, session *model.
 	log.Printf("[ingestion] Successfully ingested session %d", session.ID)
 }
 
-func (s *IngestionService) CompareTelemetry(ctx context.Context, sessionID int, d1 string, lap1 int, d2 string, lap2 int) (map[string]interface{}, error) {
+func (s *IngestionService) CompareMultiTelemetry(ctx context.Context, sessionID int, drivers []worker.DriverLapRequest) (map[string]interface{}, error) {
 	session, err := s.repo.GetSessionByID(ctx, sessionID)
 	if err != nil || session == nil {
 		return nil, fmt.Errorf("session not found: %d", sessionID)
@@ -381,5 +381,12 @@ func (s *IngestionService) CompareTelemetry(ctx context.Context, sessionID int, 
 		}
 	}
 
-	return s.workerClient.CompareTelemetry(ctx, year, roundNum, sIdent, d1, lap1, d2, lap2)
+	return s.workerClient.CompareMultiTelemetry(ctx, year, roundNum, sIdent, drivers)
+}
+
+func (s *IngestionService) CompareTelemetry(ctx context.Context, sessionID int, d1 string, lap1 int, d2 string, lap2 int) (map[string]interface{}, error) {
+	return s.CompareMultiTelemetry(ctx, sessionID, []worker.DriverLapRequest{
+		{Driver: d1, Lap: lap1},
+		{Driver: d2, Lap: lap2},
+	})
 }

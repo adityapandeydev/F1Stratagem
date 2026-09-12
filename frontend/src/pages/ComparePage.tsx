@@ -1,296 +1,428 @@
-﻿import React, { useState, useMemo, useEffect } from "react";
-import { Zap, Activity, Gauge, Flame, Sparkles, RefreshCw, Radio } from "lucide-react";
+﻿import React, { useState, useEffect, useMemo } from "react";
+import {
+  Zap,
+  Activity,
+  Gauge,
+  Flame,
+  Sparkles,
+  RefreshCw,
+  Plus,
+  Trash2,
+  Calendar,
+  Layers,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  Compass,
+} from "lucide-react";
 import InteractiveTrack3D from "../components/charts/InteractiveTrack3D";
 import TelemetryComparisonChart from "../components/charts/TelemetryComparisonChart";
 import { api } from "../services/api";
-import { TelemetryPoint } from "../types";
+import { Event, Session, TelemetryPoint, TelemetryDriverMeta } from "../types";
 
-const DRIVER_COLORS: Record<string, { color: string; team: string; name: string }> = {
-  VER: { color: "#3671C6", team: "Red Bull Racing", name: "Max Verstappen" },
-  LEC: { color: "#E8002D", team: "Ferrari", name: "Charles Leclerc" },
-  HAM: { color: "#27F4D2", team: "Mercedes", name: "Lewis Hamilton" },
-  NOR: { color: "#FF8000", team: "McLaren", name: "Lando Norris" },
-  PIA: { color: "#FF8000", team: "McLaren", name: "Oscar Piastri" },
-  RUS: { color: "#27F4D2", team: "Mercedes", name: "George Russell" },
-  SAI: { color: "#E8002D", team: "Ferrari", name: "Carlos Sainz" },
-  ALO: { color: "#229971", team: "Aston Martin", name: "Fernando Alonso" },
-};
-
-function generateSampleTelemetry(driver1Color: string, driver2Color: string) {
-  const points1: TelemetryPoint[] = [];
-  const points2: TelemetryPoint[] = [];
-  const delta: number[] = [];
-
-  const totalPoints = 350;
-  const trackLength = 5412;
-
-  for (let i = 0; i < totalPoints; i++) {
-    const d = (i / totalPoints) * trackLength;
-    const t = (i / totalPoints) * Math.PI * 2;
-
-    const x = Math.sin(t) * 1200 + Math.sin(t * 3) * 350;
-    const y = Math.cos(t) * 1000 + Math.cos(t * 2) * 450;
-    const z = Math.sin(t * 2.5) * 45 + Math.cos(t * 5) * 20;
-
-    const isCorner = Math.sin(t * 4) < -0.3 || Math.cos(t * 3) > 0.6;
-    let baseSpd = isCorner ? 85 + Math.random() * 30 : 285 + Math.random() * 45;
-    
-    const spd1 = Math.round(baseSpd + (isCorner ? 4.5 : -2.0) + Math.sin(i * 0.1) * 3);
-    const spd2 = Math.round(baseSpd + (isCorner ? -3.0 : 5.2) + Math.cos(i * 0.1) * 3);
-
-    const thr1 = isCorner ? 25 : 100;
-    const thr2 = isCorner ? 15 : 100;
-    const brk1 = isCorner ? 1 : 0;
-    const brk2 = isCorner ? 1 : 0;
-
-    const gear1 = Math.min(8, Math.max(2, Math.floor(spd1 / 42)));
-    const gear2 = Math.min(8, Math.max(2, Math.floor(spd2 / 42)));
-
-    const rpm1 = Math.round(10500 + (spd1 % 40) * 80);
-    const rpm2 = Math.round(10600 + (spd2 % 40) * 80);
-
-    const drs1 = !isCorner && d > 1200 && d < 2200 ? 12 : 0;
-    const drs2 = !isCorner && d > 1200 && d < 2200 ? 12 : 0;
-
-    points1.push({ d: Math.round(d), spd: spd1, thr: thr1, brk: brk1, gear: gear1, rpm: rpm1, drs: drs1, x, y, z });
-    points2.push({ d: Math.round(d), spd: spd2, thr: thr2, brk: brk2, gear: gear2, rpm: rpm2, drs: drs2, x, y, z });
-
-    const deltaDiff = ((spd2 - spd1) / 3600) * 0.08;
-    const prevDelta = delta.length > 0 ? delta[delta.length - 1] : 0;
-    delta.push(Number((prevDelta + deltaDiff).toFixed(3)));
-  }
-
-  return { points1, points2, delta };
-}
+// Master F1 Driver Roster
+const ALL_DRIVERS = [
+  { abbr: "VER", name: "Max Verstappen", team: "Red Bull Racing", color: "#3671c6" },
+  { abbr: "PER", name: "Sergio Perez", team: "Red Bull Racing", color: "#3671c6" },
+  { abbr: "LEC", name: "Charles Leclerc", team: "Ferrari", color: "#e8002d" },
+  { abbr: "SAI", name: "Carlos Sainz", team: "Ferrari", color: "#e8002d" },
+  { abbr: "NOR", name: "Lando Norris", team: "McLaren", color: "#ff8000" },
+  { abbr: "PIA", name: "Oscar Piastri", team: "McLaren", color: "#ff8000" },
+  { abbr: "RUS", name: "George Russell", team: "Mercedes", color: "#27f4d2" },
+  { abbr: "HAM", name: "Lewis Hamilton", team: "Mercedes", color: "#27f4d2" },
+  { abbr: "ALO", name: "Fernando Alonso", team: "Aston Martin", color: "#229971" },
+  { abbr: "STR", name: "Lance Stroll", team: "Aston Martin", color: "#229971" },
+  { abbr: "TSU", name: "Yuki Tsunoda", team: "RB", color: "#6692ff" },
+  { abbr: "RIC", name: "Daniel Ricciardo", team: "RB", color: "#6692ff" },
+  { abbr: "HUL", name: "Nico Hulkenberg", team: "Haas", color: "#b6babd" },
+  { abbr: "MAG", name: "Kevin Magnussen", team: "Haas", color: "#b6babd" },
+  { abbr: "ALB", name: "Alexander Albon", team: "Williams", color: "#64c4ff" },
+  { abbr: "SAR", name: "Logan Sargeant", team: "Williams", color: "#64c4ff" },
+  { abbr: "BOT", name: "Valtteri Bottas", team: "Kick Sauber", color: "#52e252" },
+  { abbr: "ZHO", name: "Guanyu Zhou", team: "Kick Sauber", color: "#52e252" },
+  { abbr: "GAS", name: "Pierre Gasly", team: "Alpine", color: "#ff87bc" },
+  { abbr: "OCO", name: "Esteban Ocon", team: "Alpine", color: "#ff87bc" },
+];
 
 export default function ComparePage() {
-  const [driver1, setDriver1] = useState("VER");
-  const [driver2, setDriver2] = useState("LEC");
-  const [selectedLap1, setSelectedLap1] = useState(0);
-  const [selectedLap2, setSelectedLap2] = useState(0);
-  const [scrubDistance, setScrubDistance] = useState(0);
+  // Step 1: Events (Tracks)
+  const [events, setEvents] = useState<Event[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState<number>(1);
 
-  // Live Backend state
-  const [liveData, setLiveData] = useState<{ telemetry1: TelemetryPoint[]; telemetry2: TelemetryPoint[]; time_delta: number[] } | null>(null);
-  const [isLoadingBackend, setIsLoadingBackend] = useState(false);
-  const [isBackendConnected, setIsBackendConnected] = useState(false);
+  // Step 2: Sessions
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<number>(4);
 
-  const d1Meta = useMemo(() => ({
-    abbreviation: driver1,
-    name: DRIVER_COLORS[driver1]?.name || driver1,
-    color: DRIVER_COLORS[driver1]?.color || "#3b82f6",
-    lapNumber: selectedLap1 || 18,
-    lapTimeMs: 90240,
-  }), [driver1, selectedLap1]);
+  // Step 3: Drivers (up to 4 slots)
+  const [selectedDrivers, setSelectedDrivers] = useState<string[]>(["VER", "LEC"]);
 
-  const d2Meta = useMemo(() => ({
-    abbreviation: driver2,
-    name: DRIVER_COLORS[driver2]?.name || driver2,
-    color: DRIVER_COLORS[driver2]?.color || "#ef4444",
-    lapNumber: selectedLap2 || 19,
-    lapTimeMs: 90468,
-  }), [driver2, selectedLap2]);
+  // Telemetry state
+  const [telemetryData, setTelemetryData] = useState<{
+    drivers: TelemetryDriverMeta[];
+    telemetry: TelemetryPoint[][];
+    time_delta: number[];
+  } | null>(null);
 
-  const sample = useMemo(
-    () => generateSampleTelemetry(d1Meta.color, d2Meta.color),
-    [d1Meta.color, d2Meta.color]
-  );
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [scrubDistance, setScrubDistance] = useState<number>(0);
 
-  // Attempt live connection to Go API + Python Worker
+  // Load 2024 Events on mount
   useEffect(() => {
-    let cancelled = false;
-    setIsLoadingBackend(true);
+    api.getEventsBySeason(2024)
+      .then((evts) => {
+        if (evts && evts.length > 0) {
+          setEvents(evts);
+          // Default to Round 1 (Bahrain)
+          const bhr = evts.find((e) => e.round_number === 1) || evts[0];
+          setSelectedEventId(bhr.id);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load events:", err);
+      });
+  }, []);
 
-    api.getTelemetryComparison(1, driver1, driver2, selectedLap1, selectedLap2)
+  // Load Sessions when Event changes
+  useEffect(() => {
+    if (!selectedEventId) return;
+    api.getSessionsByEvent(selectedEventId)
+      .then((sessList) => {
+        setSessions(sessList);
+        // Default to Qualifying session if available, else first
+        const qual = sessList.find(
+          (s) => s.session_type === "qualifying" || s.session_name.toLowerCase().includes("qual")
+        );
+        if (qual) {
+          setSelectedSessionId(qual.id);
+        } else if (sessList.length > 0) {
+          setSelectedSessionId(sessList[0].id);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load sessions:", err);
+      });
+  }, [selectedEventId]);
+
+  // Fetch Multi-Driver Telemetry when Session or Drivers change
+  useEffect(() => {
+    if (!selectedSessionId || selectedDrivers.length < 2) return;
+
+    let cancelled = false;
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    const driverReqs = selectedDrivers.map((abbr) => ({ driver: abbr, lap: 0 }));
+
+    api.getMultiTelemetryComparison(selectedSessionId, driverReqs)
       .then((res: any) => {
         if (cancelled) return;
-        if (res && res.data && res.data.telemetry1 && res.data.telemetry1.length > 0) {
-          setLiveData(res.data);
-          setIsBackendConnected(true);
+        const data = res?.data || res;
+        if (data && data.telemetry && data.telemetry.length >= 2) {
+          setTelemetryData(data);
+          setIsLoading(false);
+        } else {
+          setErrorMessage("No telemetry data returned for this session combination.");
+          setIsLoading(false);
         }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
-          setIsBackendConnected(false);
+          console.error("Telemetry fetch error:", err);
+          setErrorMessage(
+            err.response?.data?.error || "Failed to load telemetry from backend. Ensure worker is running."
+          );
+          setIsLoading(false);
         }
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoadingBackend(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [driver1, driver2, selectedLap1, selectedLap2]);
+  }, [selectedSessionId, selectedDrivers]);
 
-  const activeTelemetry1 = isBackendConnected && liveData ? liveData.telemetry1 : sample.points1;
-  const activeTelemetry2 = isBackendConnected && liveData ? liveData.telemetry2 : sample.points2;
-  const activeDelta = isBackendConnected && liveData ? liveData.time_delta : sample.delta;
+  // Handle Driver Slot Selection
+  const handleDriverChange = (slotIndex: number, newAbbr: string) => {
+    const next = [...selectedDrivers];
+    next[slotIndex] = newAbbr;
+    setSelectedDrivers(next);
+  };
+
+  // Add Driver Slot (up to 4)
+  const handleAddDriver = () => {
+    if (selectedDrivers.length >= 4) return;
+    // Pick first driver not currently selected
+    const available = ALL_DRIVERS.find((d) => !selectedDrivers.includes(d.abbr));
+    if (available) {
+      setSelectedDrivers([...selectedDrivers, available.abbr]);
+    }
+  };
+
+  // Remove Driver Slot (min 2)
+  const handleRemoveDriver = (slotIndex: number) => {
+    if (selectedDrivers.length <= 2) return;
+    const next = selectedDrivers.filter((_, idx) => idx !== slotIndex);
+    setSelectedDrivers(next);
+  };
+
+  // Selected Event Object
+  const currentEvent = useMemo(
+    () => events.find((e) => e.id === selectedEventId),
+    [events, selectedEventId]
+  );
+
+  // Selected Session Object
+  const currentSession = useMemo(
+    () => sessions.find((s) => s.id === selectedSessionId),
+    [sessions, selectedSessionId]
+  );
+
+  // Format milliseconds into mm:ss.sss
+  const formatTime = (ms?: number) => {
+    if (!ms) return "--:--.---";
+    const mins = Math.floor(ms / 60000);
+    const secs = ((ms % 60000) / 1000).toFixed(3);
+    return `${mins}:${secs.padStart(6, "0")}`;
+  };
 
   return (
-    <div className="space-y-8 pb-12">
-      {/* Header with Title and Driver Switcher */}
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.06] pb-6">
+    <div className="space-y-7 animate-fade-in pb-12">
+      {/* Header Banner */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.06] pb-6">
         <div>
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-white/[0.08] text-white tracking-wider uppercase">
-              Pro Telemetry Studio
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-md shadow-red-500/50" />
+            <span className="text-[11px] font-mono font-bold tracking-widest text-neutral-400 uppercase">
+              Phase 1 Telemetry Engine &bull; FastF1 Studio
             </span>
-            {isBackendConnected ? (
-              <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                Live FastF1 Worker Connected
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5 text-xs text-amber-400 font-mono">
-                <Radio className="w-3 h-3 animate-pulse" />
-                Telemetry Preview Mode
-              </span>
-            )}
           </div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-text-primary">
-            Telemetry & 3D Track Analysis
+          <h1 className="text-2xl md:text-3xl font-black tracking-tight text-white flex items-center gap-3">
+            Multi-Driver Telemetry & 3D Circuit Studio
           </h1>
-          <p className="text-sm text-text-secondary mt-1">
-            Compare throttle, braking thresholds, apex velocities, and track elevation deltas in real-time.
+          <p className="text-xs md:text-sm text-neutral-400 mt-1 max-w-2xl">
+            Compare authentic GPS racing lines, throttle response, braking points, and speed dominance across up to 4 drivers simultaneously.
           </p>
         </div>
 
-        {/* Driver Selection Controls */}
-        <div className="flex items-center gap-3 bg-[#111113] p-1.5 rounded-2xl border border-white/[0.08] shadow-lg">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.04]">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d1Meta.color }} />
-            <select
-              value={driver1}
-              onChange={(e) => setDriver1(e.target.value)}
-              className="bg-transparent text-xs font-mono font-bold text-white focus:outline-none cursor-pointer"
-            >
-              {Object.keys(DRIVER_COLORS).map((abbr) => (
-                <option key={abbr} value={abbr} className="bg-[#18181b] text-white">
-                  {abbr} — {DRIVER_COLORS[abbr].name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <span className="text-text-tertiary font-mono font-bold text-xs">VS</span>
-
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.04]">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d2Meta.color }} />
-            <select
-              value={driver2}
-              onChange={(e) => setDriver2(e.target.value)}
-              className="bg-transparent text-xs font-mono font-bold text-white focus:outline-none cursor-pointer"
-            >
-              {Object.keys(DRIVER_COLORS).map((abbr) => (
-                <option key={abbr} value={abbr} className="bg-[#18181b] text-white">
-                  {abbr} — {DRIVER_COLORS[abbr].name}
-                </option>
-              ))}
-            </select>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>FastF1 GPS Sync Active</span>
           </div>
         </div>
-      </header>
+      </div>
 
-      {/* 3D Fluid Track Speed Visualizer */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-emerald-400" />
-            <h2 className="text-lg font-bold text-text-primary">
-              Interactive 3D Track Elevation & Velocity Dominance
-            </h2>
-          </div>
-          <span className="text-xs text-text-tertiary font-mono">
-            Drag to rotate • Scroll to zoom • Scrubber Synchronized
-          </span>
+      {/* 3-Step Cascade Selector */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 p-5 rounded-2xl border border-white/[0.08] bg-[#0d0d11]/90 backdrop-blur-xl shadow-2xl">
+        {/* Step 1: Track / Event */}
+        <div className="lg:col-span-4 space-y-1.5">
+          <label className="text-[11px] font-mono font-bold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+            <span className="w-4 h-4 rounded-full bg-white/10 text-white flex items-center justify-center text-[10px]">
+              1
+            </span>
+            Select Grand Prix Track
+          </label>
+          <select
+            value={selectedEventId}
+            onChange={(e) => setSelectedEventId(Number(e.target.value))}
+            className="w-full bg-[#16161a] border border-white/[0.1] hover:border-white/[0.2] focus:border-red-500 rounded-xl px-3.5 py-2.5 text-xs md:text-sm font-medium text-white transition-all outline-none cursor-pointer"
+          >
+            {events.map((ev) => (
+              <option key={ev.id} value={ev.id}>
+                R{ev.round_number} &bull; {ev.event_name} ({ev.country || "GP"})
+              </option>
+            ))}
+          </select>
+          {currentEvent && (
+            <p className="text-[10px] font-mono text-neutral-500 px-1">
+              Location: {currentEvent.location || "Sakhir"}, {currentEvent.country}
+            </p>
+          )}
         </div>
 
-        <InteractiveTrack3D
-          telemetry1={activeTelemetry1}
-          telemetry2={activeTelemetry2}
-          driver1={d1Meta}
-          driver2={d2Meta}
-          currentDistance={scrubDistance}
-          onDistanceChange={(d) => setScrubDistance(d)}
-        />
-      </section>
-
-      {/* Synchronized Multi-Metric Telemetry Charts */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-blue-400" />
-            <h2 className="text-lg font-bold text-text-primary">
-              Synchronized Telemetry Traces
-            </h2>
-          </div>
-          <span className="text-xs font-mono text-text-tertiary">
-            Hover over curves to sync with 3D track car position
-          </span>
+        {/* Step 2: Session */}
+        <div className="lg:col-span-3 space-y-1.5">
+          <label className="text-[11px] font-mono font-bold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+            <span className="w-4 h-4 rounded-full bg-white/10 text-white flex items-center justify-center text-[10px]">
+              2
+            </span>
+            Select Session
+          </label>
+          <select
+            value={selectedSessionId}
+            onChange={(e) => setSelectedSessionId(Number(e.target.value))}
+            className="w-full bg-[#16161a] border border-white/[0.1] hover:border-white/[0.2] focus:border-red-500 rounded-xl px-3.5 py-2.5 text-xs md:text-sm font-medium text-white transition-all outline-none cursor-pointer"
+          >
+            {sessions.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.session_name}
+              </option>
+            ))}
+          </select>
+          {currentSession && (
+            <p className="text-[10px] font-mono text-neutral-500 px-1">
+              Format: {currentSession.session_type?.toUpperCase()}
+            </p>
+          )}
         </div>
 
-        <TelemetryComparisonChart
-          telemetry1={activeTelemetry1}
-          telemetry2={activeTelemetry2}
-          driver1={d1Meta}
-          driver2={d2Meta}
-          timeDelta={activeDelta}
-          currentDistance={scrubDistance}
-          onDistanceHover={(d) => setScrubDistance(d)}
-        />
-      </section>
-
-      {/* Deep Dive Performance Metric Cards */}
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-5 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-2">
-            <Gauge className="w-4 h-4 text-purple-400" /> Top Speed Trap
+        {/* Step 3: Driver Selection Slots */}
+        <div className="lg:col-span-5 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-[11px] font-mono font-bold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded-full bg-white/10 text-white flex items-center justify-center text-[10px]">
+                3
+              </span>
+              Drivers to Compare ({selectedDrivers.length}/4)
+            </label>
+            {selectedDrivers.length < 4 && (
+              <button
+                onClick={handleAddDriver}
+                className="flex items-center gap-1 text-[11px] font-medium text-red-400 hover:text-red-300 transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Add Driver
+              </button>
+            )}
           </div>
-          <div className="flex items-baseline justify-between">
-            <div>
-              <div className="text-2xl font-mono font-bold text-text-primary">328.4 <span className="text-xs font-normal text-text-tertiary">km/h</span></div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: d1Meta.color }}>{d1Meta.abbreviation}</div>
-            </div>
-            <div className="text-right">
-              <div className="text-2xl font-mono font-bold text-text-primary">331.2 <span className="text-xs font-normal text-text-tertiary">km/h</span></div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: d2Meta.color }}>{d2Meta.abbreviation} (+2.8)</div>
-            </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {selectedDrivers.map((currAbbr, slotIdx) => {
+              const driverObj = ALL_DRIVERS.find((d) => d.abbr === currAbbr);
+
+              // Filter out drivers already chosen in other slots (Mutual Exclusion)
+              const availableDrivers = ALL_DRIVERS.filter(
+                (d) => d.abbr === currAbbr || !selectedDrivers.includes(d.abbr)
+              );
+
+              return (
+                <div
+                  key={slotIdx}
+                  className="flex items-center gap-2 p-1.5 bg-[#16161a] rounded-xl border border-white/[0.08]"
+                >
+                  <span
+                    className="w-3 h-3 rounded-full shrink-0 ml-1.5"
+                    style={{ backgroundColor: driverObj?.color || "#ffffff" }}
+                  />
+                  <select
+                    value={currAbbr}
+                    onChange={(e) => handleDriverChange(slotIdx, e.target.value)}
+                    className="flex-1 bg-transparent text-xs font-mono font-bold text-white outline-none cursor-pointer"
+                  >
+                    {availableDrivers.map((d) => (
+                      <option key={d.abbr} value={d.abbr} className="bg-[#16161a] text-white">
+                        {d.abbr} &bull; {d.name} ({d.team})
+                      </option>
+                    ))}
+                  </select>
+
+                  {selectedDrivers.length > 2 && (
+                    <button
+                      onClick={() => handleRemoveDriver(slotIdx)}
+                      className="p-1 text-neutral-500 hover:text-red-400 rounded-lg transition-colors shrink-0"
+                      title="Remove Driver"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
+      </div>
 
-        <div className="p-5 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-2">
-            <Flame className="w-4 h-4 text-amber-400" /> Minimum Corner Speed
+      {/* Driver Metric Overview Cards */}
+      {telemetryData && telemetryData.drivers && telemetryData.drivers.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-3">
+          {telemetryData.drivers.map((drv, idx) => {
+            const isReference = idx === 0;
+            const refLapMs = telemetryData.drivers[0]?.lap_time_ms || 0;
+            const deltaMs = drv.lap_time_ms - refLapMs;
+
+            return (
+              <div
+                key={drv.abbreviation}
+                className="p-4 rounded-2xl border bg-[#0d0d11]/80 backdrop-blur-md shadow-lg transition-all"
+                style={{ borderColor: `${drv.color}40` }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: drv.color }} />
+                    <span className="text-base font-extrabold tracking-tight text-white font-mono">
+                      {drv.abbreviation}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-white/[0.05] text-neutral-400">
+                    Lap {drv.lap_number}
+                  </span>
+                </div>
+
+                <div className="text-xl font-mono font-black text-white">
+                  {formatTime(drv.lap_time_ms)}
+                </div>
+
+                <div className="flex items-center justify-between text-xs mt-2 pt-2 border-t border-white/[0.06]">
+                  <span className="text-neutral-400 text-[11px] truncate max-w-[100px]">
+                    {drv.team_name}
+                  </span>
+                  <span className="font-mono font-semibold" style={{ color: drv.color }}>
+                    {isReference ? "Reference" : `+${(deltaMs / 1000).toFixed(3)}s`}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Loading Skeleton */}
+      {isLoading && (
+        <div className="p-16 rounded-2xl border border-white/[0.08] bg-[#0a0a0c]/80 backdrop-blur-xl flex flex-col items-center justify-center gap-4 text-center">
+          <div className="relative w-12 h-12">
+            <div className="absolute inset-0 rounded-full border-2 border-red-500/20 animate-ping" />
+            <div className="w-12 h-12 rounded-full border-2 border-red-500 border-t-transparent animate-spin" />
           </div>
-          <div className="flex items-baseline justify-between">
-            <div>
-              <div className="text-2xl font-mono font-bold text-text-primary">78.6 <span className="text-xs font-normal text-text-tertiary">km/h</span></div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: d1Meta.color }}>{d1Meta.abbreviation} (+3.2)</div>
-            </div>
-            <div className="text-right">
-              <div className="text-2xl font-mono font-bold text-text-primary">75.4 <span className="text-xs font-normal text-text-tertiary">km/h</span></div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: d2Meta.color }}>{d2Meta.abbreviation}</div>
-            </div>
+          <div>
+            <h3 className="text-base font-semibold text-white">
+              Extracting FastF1 Telemetry & GPS Coordinates...
+            </h3>
+            <p className="text-xs text-neutral-400 mt-1 font-mono">
+              Loading authentic {selectedDrivers.join(", ")} telemetry streams from Bahrain GP
+            </p>
           </div>
         </div>
+      )}
 
-        <div className="p-5 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-2">
-            <Zap className="w-4 h-4 text-emerald-400" /> Full Throttle %
-          </div>
-          <div className="flex items-baseline justify-between">
-            <div>
-              <div className="text-2xl font-mono font-bold text-text-primary">68.4%</div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: d1Meta.color }}>{d1Meta.abbreviation}</div>
-            </div>
-            <div className="text-right">
-              <div className="text-2xl font-mono font-bold text-text-primary">69.1%</div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: d2Meta.color }}>{d2Meta.abbreviation} (+0.7%)</div>
-            </div>
-          </div>
+      {/* Error Message */}
+      {errorMessage && (
+        <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 flex items-center gap-3 text-xs">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMessage}</span>
         </div>
-      </section>
+      )}
+
+      {/* 3D Track & Telemetry Visualizations */}
+      {!isLoading && telemetryData && telemetryData.drivers && telemetryData.drivers.length >= 2 && (
+        <>
+          {/* 3D Interactive Track HUD */}
+          <InteractiveTrack3D
+            drivers={telemetryData.drivers}
+            telemetryStreams={telemetryData.telemetry}
+            currentDistance={scrubDistance}
+            onDistanceChange={setScrubDistance}
+          />
+
+          {/* Synchronized ECharts Telemetry Traces */}
+          <TelemetryComparisonChart
+            drivers={telemetryData.drivers}
+            telemetryStreams={telemetryData.telemetry}
+            timeDelta={telemetryData.time_delta}
+            currentDistance={scrubDistance}
+            onDistanceHover={setScrubDistance}
+          />
+        </>
+      )}
     </div>
   );
 }

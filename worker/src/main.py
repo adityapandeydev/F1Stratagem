@@ -1,8 +1,8 @@
-﻿"""F1Stratagem Worker — FastF1 data ingestion and telemetry service."""
+﻿"""F1Stratagem Worker - FastF1 data ingestion and telemetry service."""
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from src.ingestion.extractor import (
     get_season_schedule,
     extract_session_full,
-    compare_telemetry,
+    compare_multi_telemetry,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -33,17 +33,23 @@ app.add_middleware(
 class ExtractSessionRequest(BaseModel):
     year: int
     round_number: int
-    session: str  # "FP1", "FP2", "FP3", "Q", "S", "SQ", "R"
+    session: str
+
+
+class DriverLapRequest(BaseModel):
+    driver: str
+    lap: Optional[int] = 0
 
 
 class CompareTelemetryRequest(BaseModel):
     year: int
     round_number: int
     session: str
-    driver1: str
+    driver1: Optional[str] = None
     lap1: Optional[int] = 0
-    driver2: str
+    driver2: Optional[str] = None
     lap2: Optional[int] = 0
+    drivers: Optional[List[DriverLapRequest]] = None
 
 
 @app.get("/health")
@@ -79,15 +85,21 @@ async def extract_session(req: ExtractSessionRequest):
 @app.post("/telemetry/compare")
 async def compare(req: CompareTelemetryRequest):
     try:
-        logger.info(f"Comparing telemetry: {req.driver1} vs {req.driver2}")
-        data = compare_telemetry(
+        driver_reqs: List[Dict[str, Any]] = []
+        if req.drivers and len(req.drivers) > 0:
+            driver_reqs = [{"driver": d.driver, "lap": d.lap or 0} for d in req.drivers]
+        else:
+            if req.driver1:
+                driver_reqs.append({"driver": req.driver1, "lap": req.lap1 or 0})
+            if req.driver2:
+                driver_reqs.append({"driver": req.driver2, "lap": req.lap2 or 0})
+
+        logger.info(f"Comparing telemetry for {len(driver_reqs)} drivers in {req.year} round {req.round_number} {req.session}")
+        data = compare_multi_telemetry(
             req.year,
             req.round_number,
             req.session,
-            req.driver1,
-            req.lap1 or 0,
-            req.driver2,
-            req.lap2 or 0,
+            driver_reqs,
         )
         return {"status": "success", "data": data}
     except Exception as e:

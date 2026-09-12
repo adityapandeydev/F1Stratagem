@@ -1,6 +1,6 @@
-﻿import React, { useMemo, useRef } from "react";
+﻿import React, { useMemo, useRef, useEffect } from "react";
 import ReactECharts from "echarts-for-react";
-import { TelemetryPoint } from "../../types";
+import { TelemetryPoint, TelemetryDriverMeta } from "../../types";
 
 interface DriverMeta {
   abbreviation: string;
@@ -11,47 +11,137 @@ interface DriverMeta {
 }
 
 interface TelemetryComparisonChartProps {
-  telemetry1: TelemetryPoint[];
-  telemetry2: TelemetryPoint[];
-  driver1: DriverMeta;
-  driver2: DriverMeta;
+  drivers?: DriverMeta[];
+  telemetryStreams?: TelemetryPoint[][];
   timeDelta?: number[];
   currentDistance?: number;
   onDistanceHover?: (dist: number) => void;
+  // Legacy props
+  driver1?: DriverMeta;
+  driver2?: DriverMeta;
+  telemetry1?: TelemetryPoint[];
+  telemetry2?: TelemetryPoint[];
 }
 
 export default function TelemetryComparisonChart({
-  telemetry1,
-  telemetry2,
+  drivers: driversProp,
+  telemetryStreams: streamsProp,
   driver1,
   driver2,
+  telemetry1,
+  telemetry2,
   timeDelta = [],
   currentDistance,
   onDistanceHover,
 }: TelemetryComparisonChartProps) {
   const chartRef = useRef<any>(null);
 
-  const formatLapTime = (ms?: number) => {
-    if (!ms) return "--:--.---";
-    const mins = Math.floor(ms / 60000);
-    const secs = ((ms % 60000) / 1000).toFixed(3);
-    return `${mins}:${secs.padStart(6, "0")}`;
-  };
+  // Normalize drivers and streams
+  const drivers: DriverMeta[] = useMemo(() => {
+    if (driversProp && driversProp.length > 0) return driversProp;
+    const res: DriverMeta[] = [];
+    if (driver1) res.push(driver1);
+    if (driver2) res.push(driver2);
+    return res;
+  }, [driversProp, driver1, driver2]);
+
+  const telemetryStreams: TelemetryPoint[][] = useMemo(() => {
+    if (streamsProp && streamsProp.length > 0) return streamsProp;
+    const res: TelemetryPoint[][] = [];
+    if (telemetry1) res.push(telemetry1);
+    if (telemetry2) res.push(telemetry2);
+    return res;
+  }, [streamsProp, telemetry1, telemetry2]);
+
+  const primaryTel = telemetryStreams[0] || [];
 
   const option = useMemo(() => {
-    const distances = telemetry1.map((p) => p.d);
-    const speed1 = telemetry1.map((p) => p.spd);
-    const speed2 = telemetry2.map((p) => p.spd);
-    const throttle1 = telemetry1.map((p) => p.thr);
-    const throttle2 = telemetry2.map((p) => p.thr);
-    const brake1 = telemetry1.map((p) => p.brk * 100);
-    const brake2 = telemetry2.map((p) => p.brk * 100);
-    const gear1 = telemetry1.map((p) => p.gear);
-    const gear2 = telemetry2.map((p) => p.gear);
-    const rpm1 = telemetry1.map((p) => p.rpm);
-    const rpm2 = telemetry2.map((p) => p.rpm);
-    const drs1 = telemetry1.map((p) => (p.drs >= 10 ? 1 : 0));
-    const drs2 = telemetry2.map((p) => (p.drs >= 10 ? 1 : 0));
+    if (primaryTel.length === 0) return {};
+
+    const distances = primaryTel.map((p) => p.d);
+
+    // Build series dynamically for each driver
+    const speedSeries = drivers.map((drv, idx) => {
+      const tel = telemetryStreams[idx] || [];
+      return {
+        name: `${drv.abbreviation} Speed`,
+        type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        showSymbol: false,
+        lineStyle: { color: drv.color || "#ffffff", width: 2.2 },
+        itemStyle: { color: drv.color || "#ffffff" },
+        data: tel.map((p) => p.spd),
+      };
+    });
+
+    const throttleSeries = drivers.map((drv, idx) => {
+      const tel = telemetryStreams[idx] || [];
+      return {
+        name: `${drv.abbreviation} Thr`,
+        type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        showSymbol: false,
+        lineStyle: { color: drv.color || "#ffffff", width: 1.8 },
+        itemStyle: { color: drv.color || "#ffffff" },
+        data: tel.map((p) => p.thr),
+      };
+    });
+
+    const brakeSeries = drivers.map((drv, idx) => {
+      const tel = telemetryStreams[idx] || [];
+      return {
+        name: `${drv.abbreviation} Brk`,
+        type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        showSymbol: false,
+        lineStyle: { color: drv.color || "#ffffff", width: 1.5, type: "dashed" },
+        itemStyle: { color: drv.color || "#ffffff" },
+        data: tel.map((p) => p.brk * 100),
+      };
+    });
+
+    const gearSeries = drivers.map((drv, idx) => {
+      const tel = telemetryStreams[idx] || [];
+      return {
+        name: `${drv.abbreviation} Gear`,
+        type: "line",
+        step: "end",
+        xAxisIndex: 2,
+        yAxisIndex: 2,
+        showSymbol: false,
+        lineStyle: { color: drv.color || "#ffffff", width: 1.6 },
+        itemStyle: { color: drv.color || "#ffffff" },
+        data: tel.map((p) => p.gear),
+      };
+    });
+
+    const deltaSeries = [
+      {
+        name: `Delta to ${drivers[0]?.abbreviation || "Ref"}`,
+        type: "line",
+        xAxisIndex: 3,
+        yAxisIndex: 3,
+        showSymbol: false,
+        lineStyle: { color: drivers[1]?.color || "#ef4444", width: 2 },
+        areaStyle: {
+          color: {
+            type: "linear",
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: `${drivers[1]?.color || "#ef4444"}33` },
+              { offset: 1, color: "transparent" },
+            ],
+          },
+        },
+        data: timeDelta.length > 0 ? timeDelta : distances.map(() => 0),
+      },
+    ];
 
     return {
       backgroundColor: "transparent",
@@ -62,15 +152,15 @@ export default function TelemetryComparisonChart({
           type: "cross",
           lineStyle: { color: "rgba(255, 255, 255, 0.4)", width: 1, type: "dashed" },
         },
-        backgroundColor: "rgba(18, 18, 20, 0.95)",
-        borderColor: "rgba(255, 255, 255, 0.1)",
-        textStyle: { color: "#ededed", fontFamily: "Inter, sans-serif", fontSize: 12 },
+        backgroundColor: "rgba(16, 16, 20, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.12)",
+        textStyle: { color: "#ededed", fontFamily: "Inter, sans-serif", fontSize: 11 },
         formatter: (params: any[]) => {
           if (!params || params.length === 0) return "";
           const d = params[0].axisValue;
           let html = `<div style="font-weight: 600; margin-bottom: 6px; font-family: monospace; color: #a1a1aa;">Track Dist: ${Math.round(d)}m</div>`;
           params.forEach((item: any) => {
-            html += `<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 3px 0;">
+            html += `<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 2px 0;">
               <span style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
                 <span style="width: 8px; height: 8px; border-radius: 50%; background: ${item.color};"></span>
                 ${item.seriesName}
@@ -85,10 +175,10 @@ export default function TelemetryComparisonChart({
         link: [{ xAxisIndex: "all" }],
       },
       grid: [
-        { left: "55px", right: "20px", top: "20px", height: "180px" }, // Speed
-        { left: "55px", right: "20px", top: "225px", height: "100px" }, // Throttle & Brake
-        { left: "55px", right: "20px", top: "350px", height: "80px" },  // Gear
-        { left: "55px", right: "20px", top: "455px", height: "70px" },  // Delta / DRS
+        { left: "55px", right: "20px", top: "25px", height: "180px" }, // Speed
+        { left: "55px", right: "20px", top: "235px", height: "100px" }, // Throttle & Brake
+        { left: "55px", right: "20px", top: "360px", height: "80px" },  // Gear
+        { left: "55px", right: "20px", top: "465px", height: "70px" },  // Delta
       ],
       xAxis: [
         {
@@ -160,7 +250,7 @@ export default function TelemetryComparisonChart({
           max: 8,
           interval: 1,
         },
-        // Grid 3: Delta Time (s)
+        // Grid 3: Delta
         {
           gridIndex: 3,
           type: "value",
@@ -171,184 +261,75 @@ export default function TelemetryComparisonChart({
         },
       ],
       series: [
-        // Speed Panel
-        {
-          name: `${driver1.abbreviation} Speed`,
-          type: "line",
-          xAxisIndex: 0,
-          yAxisIndex: 0,
-          data: speed1,
-          showSymbol: false,
-          lineStyle: { width: 2, color: driver1.color || "#3b82f6" },
-        },
-        {
-          name: `${driver2.abbreviation} Speed`,
-          type: "line",
-          xAxisIndex: 0,
-          yAxisIndex: 0,
-          data: speed2,
-          showSymbol: false,
-          lineStyle: { width: 2, color: driver2.color || "#ef4444" },
-        },
-        // Pedals Panel: Throttle
-        {
-          name: `${driver1.abbreviation} Throttle`,
-          type: "line",
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: throttle1,
-          showSymbol: false,
-          lineStyle: { width: 1.5, color: driver1.color || "#3b82f6" },
-        },
-        {
-          name: `${driver2.abbreviation} Throttle`,
-          type: "line",
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: throttle2,
-          showSymbol: false,
-          lineStyle: { width: 1.5, color: driver2.color || "#ef4444" },
-        },
-        // Pedals Panel: Brake
-        {
-          name: `${driver1.abbreviation} Brake`,
-          type: "line",
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: brake1,
-          showSymbol: false,
-          step: "end",
-          lineStyle: { width: 1.5, color: "#f87171", type: "dashed" },
-          areaStyle: { color: "rgba(248, 113, 113, 0.1)" },
-        },
-        {
-          name: `${driver2.abbreviation} Brake`,
-          type: "line",
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: brake2,
-          showSymbol: false,
-          step: "end",
-          lineStyle: { width: 1.5, color: "#fb923c", type: "dashed" },
-          areaStyle: { color: "rgba(251, 146, 60, 0.1)" },
-        },
-        // Gear Panel
-        {
-          name: `${driver1.abbreviation} Gear`,
-          type: "line",
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: gear1,
-          showSymbol: false,
-          step: "end",
-          lineStyle: { width: 1.5, color: driver1.color || "#3b82f6" },
-        },
-        {
-          name: `${driver2.abbreviation} Gear`,
-          type: "line",
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: gear2,
-          showSymbol: false,
-          step: "end",
-          lineStyle: { width: 1.5, color: driver2.color || "#ef4444" },
-        },
-        // Delta Panel
-        {
-          name: "Time Delta",
-          type: "line",
-          xAxisIndex: 3,
-          yAxisIndex: 3,
-          data: timeDelta,
-          showSymbol: false,
-          lineStyle: { width: 1.5, color: "#a1a1aa" },
-          areaStyle: {
-            color: {
-              type: "linear",
-              x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: "rgba(59, 130, 246, 0.25)" },
-                { offset: 1, color: "rgba(239, 68, 68, 0.25)" },
-              ],
-            },
-          },
-        },
+        ...speedSeries,
+        ...throttleSeries,
+        ...brakeSeries,
+        ...gearSeries,
+        ...deltaSeries,
       ],
     };
-  }, [telemetry1, telemetry2, driver1, driver2, timeDelta]);
+  }, [drivers, telemetryStreams, timeDelta, primaryTel]);
+
+  // Synchronize cursor when scrubbing from external slider
+  useEffect(() => {
+    if (!chartRef.current || currentDistance === undefined || primaryTel.length === 0) return;
+    const echartInstance = chartRef.current.getEchartsInstance();
+    if (!echartInstance) return;
+
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < primaryTel.length; i++) {
+      const diff = Math.abs(primaryTel[i].d - currentDistance);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+
+    echartInstance.dispatchAction({
+      type: "showTip",
+      seriesIndex: 0,
+      dataIndex: closestIdx,
+    });
+  }, [currentDistance, primaryTel]);
+
+  const onChartHover = (params: any) => {
+    if (onDistanceHover && params && params.dataIndex !== undefined) {
+      const pt = primaryTel[params.dataIndex];
+      if (pt) onDistanceHover(pt.d);
+    }
+  };
 
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[#0a0a0b]/80 backdrop-blur-xl p-6 shadow-2xl">
-      {/* Drivers Header Card */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 mb-2 border-b border-white/[0.06]">
-        {/* Driver 1 */}
+    <div className="rounded-2xl border border-white/[0.08] bg-[#0a0a0b]/80 backdrop-blur-xl p-5 shadow-2xl">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+          <h3 className="text-sm font-semibold text-white tracking-wide">
+            Telemetry Trace Analysis
+          </h3>
+        </div>
         <div className="flex items-center gap-3">
-          <div
-            className="w-3.5 h-10 rounded-full"
-            style={{ backgroundColor: driver1.color || "#3b82f6" }}
-          />
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xl font-bold tracking-tight text-white">
-                {driver1.abbreviation}
-              </span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-white/[0.06] text-text-secondary font-mono">
-                Lap {driver1.lapNumber || "Fastest"}
-              </span>
+          {drivers.map((d) => (
+            <div key={d.abbreviation} className="flex items-center gap-1.5 text-xs font-mono font-medium">
+              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: d.color }} />
+              <span style={{ color: d.color }}>{d.abbreviation}</span>
+              {d.lapTimeMs && (
+                <span className="text-neutral-400 text-[10px]">
+                  {((d.lapTimeMs % 60000) / 1000).toFixed(3)}s
+                </span>
+              )}
             </div>
-            <div className="text-xs text-text-tertiary font-mono mt-0.5">
-              Time: <span className="text-text-primary font-medium">{formatLapTime(driver1.lapTimeMs)}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Delta Summary Pill */}
-        <div className="px-4 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06] text-center">
-          <div className="text-[10px] uppercase font-mono tracking-wider text-text-tertiary">
-            Gap (Lap Time)
-          </div>
-          <div className="text-sm font-mono font-bold text-emerald-400">
-            {driver1.lapTimeMs && driver2.lapTimeMs
-              ? `${((driver1.lapTimeMs - driver2.lapTimeMs) / 1000).toFixed(3)}s`
-              : "Delta Synced"}
-          </div>
-        </div>
-
-        {/* Driver 2 */}
-        <div className="flex items-center gap-3 text-right">
-          <div>
-            <div className="flex items-center justify-end gap-2">
-              <span className="text-xs px-2 py-0.5 rounded-full bg-white/[0.06] text-text-secondary font-mono">
-                Lap {driver2.lapNumber || "Fastest"}
-              </span>
-              <span className="font-mono text-xl font-bold tracking-tight text-white">
-                {driver2.abbreviation}
-              </span>
-            </div>
-            <div className="text-xs text-text-tertiary font-mono mt-0.5">
-              Time: <span className="text-text-primary font-medium">{formatLapTime(driver2.lapTimeMs)}</span>
-            </div>
-          </div>
-          <div
-            className="w-3.5 h-10 rounded-full"
-            style={{ backgroundColor: driver2.color || "#ef4444" }}
-          />
+          ))}
         </div>
       </div>
 
-      {/* Synchronized Multi-Panel ECharts */}
       <ReactECharts
         ref={chartRef}
         option={option}
-        style={{ height: "550px", width: "100%" }}
-        onEvents={{
-          updateAxisPointer: (params: any) => {
-            if (params.dataIndex !== undefined && telemetry1[params.dataIndex]) {
-              const d = telemetry1[params.dataIndex].d;
-              if (onDistanceHover) onDistanceHover(d);
-            }
-          },
-        }}
+        style={{ height: "560px", width: "100%" }}
+        onEvents={{ updateAxisPointer: onChartHover }}
+        opts={{ renderer: "canvas" }}
       />
     </div>
   );

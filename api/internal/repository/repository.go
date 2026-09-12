@@ -1,4 +1,4 @@
-﻿package repository
+package repository
 
 import (
 	"context"
@@ -86,7 +86,7 @@ func (r *Repository) GetCircuits(ctx context.Context) ([]model.Circuit, error) {
 func (r *Repository) GetEventsBySeasonYear(ctx context.Context, year int) ([]model.Event, error) {
 	query := `
 		SELECT e.id, e.season_id, e.circuit_id, e.round_number, e.event_name, e.official_name, 
-		       e.country, e.location, e.event_format, e.event_date,
+		       e.country, e.location, e.event_format, e.event_date::text,
 		       c.id, c.circuit_key, c.name, c.country, c.location, c.latitude, c.longitude, c.track_length_m, c.num_corners, c.num_drs_zones
 		FROM events e
 		JOIN seasons s ON s.id = e.season_id
@@ -165,8 +165,8 @@ func (r *Repository) GetSessionsByEventID(ctx context.Context, eventID int) ([]m
 
 func (r *Repository) GetSessionByID(ctx context.Context, sessionID int) (*model.Session, error) {
 	query := `
-		SELECT s.id, s.event_id, s.session_name, s.session_type, s.session_date, s.total_laps, s.data_status, s.data_error,
-		       e.id, e.season_id, e.circuit_id, e.round_number, e.event_name, e.official_name, e.country, e.location, e.event_format, e.event_date
+		SELECT s.id, s.event_id, s.session_name, s.session_type, s.session_date::text, s.total_laps, s.data_status, s.data_error,
+		       e.id, e.season_id, e.circuit_id, e.round_number, e.event_name, e.official_name, e.country, e.location, e.event_format, e.event_date::text
 		FROM sessions s
 		JOIN events e ON e.id = s.event_id
 		WHERE s.id = $1
@@ -350,15 +350,14 @@ func (r *Repository) GetSessionWeather(ctx context.Context, sessionID int) ([]mo
 // ---------------------------------------------------------------------
 
 func (r *Repository) CreateIngestionJob(ctx context.Context, sessionID int) (*model.IngestionJob, error) {
-	id := fmt.Sprintf("job-%d-%d", sessionID, time.Now().Unix())
 	query := `
-		INSERT INTO ingestion_jobs (id, session_id, status, progress, started_at)
-		VALUES ($1, $2, 'pending', 0, NOW())
-		RETURNING id, session_id, status, progress, started_at
+		INSERT INTO ingestion_jobs (session_id, status, progress, started_at)
+		VALUES ($1, 'pending', 0, NOW())
+		RETURNING id::text, session_id, status, progress, started_at
 	`
 	var job model.IngestionJob
 	var startedAt time.Time
-	err := r.pool.QueryRow(ctx, query, id, sessionID).Scan(&job.ID, &job.SessionID, &job.Status, &job.Progress, &startedAt)
+	err := r.pool.QueryRow(ctx, query, sessionID).Scan(&job.ID, &job.SessionID, &job.Status, &job.Progress, &startedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create ingestion job: %w", err)
 	}
@@ -369,7 +368,7 @@ func (r *Repository) CreateIngestionJob(ctx context.Context, sessionID int) (*mo
 
 func (r *Repository) GetLatestIngestionJobBySession(ctx context.Context, sessionID int) (*model.IngestionJob, error) {
 	query := `
-		SELECT id, session_id, status, progress, error_message, started_at, completed_at
+		SELECT id::text, session_id, status, progress, error_message, started_at, completed_at
 		FROM ingestion_jobs
 		WHERE session_id = $1
 		ORDER BY started_at DESC

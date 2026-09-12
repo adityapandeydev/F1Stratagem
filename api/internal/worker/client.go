@@ -18,7 +18,7 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Minute, // FastF1 session load can take time
+			Timeout: 10 * time.Minute,
 		},
 	}
 }
@@ -29,14 +29,20 @@ type ExtractSessionPayload struct {
 	Session     string `json:"session"`
 }
 
+type DriverLapRequest struct {
+	Driver string `json:"driver"`
+	Lap    int    `json:"lap"`
+}
+
 type CompareTelemetryPayload struct {
-	Year        int    `json:"year"`
-	RoundNumber int    `json:"round_number"`
-	Session     string `json:"session"`
-	Driver1     string `json:"driver1"`
-	Lap1        int    `json:"lap1"`
-	Driver2     string `json:"driver2"`
-	Lap2        int    `json:"lap2"`
+	Year        int                `json:"year"`
+	RoundNumber int                `json:"round_number"`
+	Session     string             `json:"session"`
+	Driver1     string             `json:"driver1,omitempty"`
+	Lap1        int                `json:"lap1,omitempty"`
+	Driver2     string             `json:"driver2,omitempty"`
+	Lap2        int                `json:"lap2,omitempty"`
+	Drivers     []DriverLapRequest `json:"drivers,omitempty"`
 }
 
 type WorkerResponse struct {
@@ -113,14 +119,19 @@ func (c *Client) ExtractSession(ctx context.Context, year int, round int, sessio
 }
 
 func (c *Client) CompareTelemetry(ctx context.Context, year int, round int, sessionType string, d1 string, lap1 int, d2 string, lap2 int) (map[string]interface{}, error) {
+	drivers := []DriverLapRequest{
+		{Driver: d1, Lap: lap1},
+		{Driver: d2, Lap: lap2},
+	}
+	return c.CompareMultiTelemetry(ctx, year, round, sessionType, drivers)
+}
+
+func (c *Client) CompareMultiTelemetry(ctx context.Context, year int, round int, sessionType string, drivers []DriverLapRequest) (map[string]interface{}, error) {
 	payload := CompareTelemetryPayload{
 		Year:        year,
 		RoundNumber: round,
 		Session:     sessionType,
-		Driver1:     d1,
-		Lap1:        lap1,
-		Driver2:     d2,
-		Lap2:        lap2,
+		Drivers:     drivers,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

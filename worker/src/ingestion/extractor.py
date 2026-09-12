@@ -1,4 +1,4 @@
-﻿"""F1Stratagem FastF1 Extractor."""
+﻿"""F1Stratagem FastF1 Extractor — Multi-driver real GPS and telemetry extractor."""
 
 import os
 import logging
@@ -44,7 +44,6 @@ def get_season_schedule(year: int) -> List[Dict[str, Any]]:
             "sessions": [],
         }
 
-        # Determine sessions based on format
         for s_idx in range(1, 6):
             s_name = row.get(f"Session{s_idx}")
             s_date = row.get(f"Session{s_idx}Date")
@@ -65,12 +64,11 @@ def get_season_schedule(year: int) -> List[Dict[str, Any]]:
 
 
 def extract_session_full(year: int, round_num: int, session_identifier: str) -> Dict[str, Any]:
-    """Load session, extract laps, results, weather, and write telemetry to Parquet."""
+    """Load session, extract laps, results, weather, and write real GPS telemetry to Parquet."""
     logger.info(f"Loading FastF1 session: year={year}, round={round_num}, session={session_identifier}")
     session = fastf1.get_session(year, round_num, session_identifier)
     session.load(laps=True, telemetry=True, weather=True)
 
-    # 1. Event & Circuit metadata
     event_info = {
         "event_name": session.event.get("EventName", ""),
         "official_name": session.event.get("OfficialEventName", ""),
@@ -87,7 +85,6 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
         "location": session.event.get("Location", ""),
     }
 
-    # 2. Drivers and Teams
     drivers_list = []
     teams_list = []
     teams_seen = set()
@@ -111,6 +108,7 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
             "country_code": str(drv_info.get("CountryCode", "")),
             "headshot_url": str(drv_info.get("HeadshotUrl", "")),
             "team_name": team_name,
+            "team_color": team_color,
         })
 
         if team_name not in teams_seen:
@@ -121,7 +119,7 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
                 "color": team_color,
             })
 
-    # 3. Session Results
+    # Results
     results_list = []
     if session.results is not None and not session.results.empty:
         for _, r in session.results.iterrows():
@@ -148,7 +146,7 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
                 "points": pts,
             })
 
-    # 4. Laps
+    # Laps & Telemetry
     laps_list = []
     telemetry_frames = []
 
@@ -183,7 +181,7 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
                 "position": int(lap["Position"]) if pd.notna(lap.get("Position")) else None,
             })
 
-            # For fastest lap of each driver or all valid laps, extract telemetry sample
+            # Extract car telemetry with REAL GPS X, Y, Z
             if pd.notna(lap.get("LapTime")) and not lap.get("Deleted", False):
                 try:
                     tel = lap.get_telemetry()
@@ -206,7 +204,7 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
                 except Exception as e:
                     logger.debug(f"Telemetry extract skipped for {drv_abbr} lap {lap_num}: {e}")
 
-    # 5. Weather
+    # Weather
     weather_list = []
     if session.weather_data is not None and not session.weather_data.empty:
         for _, w in session.weather_data.iterrows():
@@ -222,7 +220,6 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
                 "rainfall": bool(w.get("Rainfall", False)),
             })
 
-    # 6. Save Telemetry Parquet
     parquet_path = f"{TELEMETRY_DIR}/{year}_{round_num}_{session_identifier.lower()}.parquet"
     total_tel_points = 0
     if telemetry_frames:
@@ -244,26 +241,53 @@ def extract_session_full(year: int, round_num: int, session_identifier: str) -> 
     }
 
 
-def compare_telemetry(year: int, round_num: int, session_identifier: str, driver1: str, lap1: int, driver2: str, lap2: int) -> Dict[str, Any]:
-    """Compare telemetry between two driver laps with synchronized distance grid."""
+def compare_multi_telemetry(year: int, round_num: int, session_identifier: str, driver_requests: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compare telemetry for up to 4 drivers with real GPS coordinates and distance grid."""
+    logger.info(f"Comparing multi-driver telemetry for {len(driver_requests)} drivers in {year} round {round_num} {session_identifier}")
     session = fastf1.get_session(year, round_num, session_identifier)
     session.load(laps=True, telemetry=True, weather=False)
 
-    laps_d1 = session.laps.pick_driver(driver1)
-    laps_d2 = session.laps.pick_driver(driver2)
+    drivers_output = []
+    telemetry_streams = []
 
-    lap_obj1 = laps_d1[laps_d1["LapNumber"] == lap1].iloc[0] if lap1 > 0 else laps_d1.pick_fastest()
-    lap_obj2 = laps_d2[laps_d2["LapNumber"] == lap2].iloc[0] if lap2 > 0 else laps_d2.pick_fastest()
+    # Pick reference driver for distance grid
+    ref_lap_obj = None
 
-    t1 = lap_obj1.get_telemetry()
-    t2 = lap_obj2.get_telemetry()
+    for d_req in driver_requests[:4]:
+        abbr = d_req.get("driver")
+        req_lap = d_req.get("lap", 0)
 
-    # FastF1 delta time
-    delta_time, ref_tel, comp_tel = fastf1.utils.delta_time(lap_obj1, lap_obj2)
+        drv_laps = session.laps.pick_driver(abbr)
+        if drv_laps.empty:
+            continue
 
-    def serialize_tel(tel_df):
+        lap_obj = drv_laps[drv_laps["LapNumber"] == req_lap].iloc[0] if req_lap > 0 else drv_laps.pick_fastest()
+        if lap_obj is None or pd.isna(lap_obj.get("LapTime")):
+            continue
+
+        if ref_lap_obj is None:
+            ref_lap_obj = lap_obj
+
+        tel = lap_obj.get_telemetry()
+        lap_time_ms = int(lap_obj["LapTime"].total_seconds() * 1000)
+
+        drv_info = session.get_driver(abbr)
+        team_color = str(drv_info.get("TeamColor", "3b82f6"))
+        if not team_color.startswith("#"):
+            team_color = f"#{team_color}"
+
+        driver_meta = {
+            "abbreviation": abbr,
+            "full_name": str(drv_info.get("FullName", abbr)),
+            "team_name": str(drv_info.get("TeamName", "")),
+            "color": team_color,
+            "lap_number": int(lap_obj["LapNumber"]),
+            "lap_time_ms": lap_time_ms,
+        }
+        drivers_output.append(driver_meta)
+
         pts = []
-        for _, row in tel_df.iterrows():
+        for _, row in tel.iterrows():
             pts.append({
                 "d": round(float(row.get("Distance", 0.0)), 2),
                 "spd": round(float(row.get("Speed", 0.0)), 1),
@@ -276,20 +300,20 @@ def compare_telemetry(year: int, round_num: int, session_identifier: str, driver
                 "y": round(float(row.get("Y", 0.0)), 1) if "Y" in row else 0.0,
                 "z": round(float(row.get("Z", 0.0)), 1) if "Z" in row else 0.0,
             })
-        return pts
+        telemetry_streams.append(pts)
+
+    # Compute deltas relative to driver 1
+    deltas = []
+    if len(drivers_output) >= 2 and ref_lap_obj is not None:
+        try:
+            d2_lap_obj = session.laps.pick_driver(drivers_output[1]["abbreviation"]).pick_fastest()
+            delta_time, _, _ = fastf1.utils.delta_time(ref_lap_obj, d2_lap_obj)
+            deltas = [round(float(d), 4) for d in delta_time]
+        except Exception as e:
+            logger.warning(f"Failed to calculate FastF1 delta time: {e}")
 
     return {
-        "driver1": {
-            "abbreviation": driver1,
-            "lap_number": int(lap_obj1["LapNumber"]),
-            "lap_time_ms": int(lap_obj1["LapTime"].total_seconds() * 1000) if pd.notna(lap_obj1.get("LapTime")) else None,
-        },
-        "driver2": {
-            "abbreviation": driver2,
-            "lap_number": int(lap_obj2["LapNumber"]),
-            "lap_time_ms": int(lap_obj2["LapTime"].total_seconds() * 1000) if pd.notna(lap_obj2.get("LapTime")) else None,
-        },
-        "telemetry1": serialize_tel(t1),
-        "telemetry2": serialize_tel(t2),
-        "time_delta": [round(float(d), 4) for d in delta_time],
+        "drivers": drivers_output,
+        "telemetry": telemetry_streams,
+        "time_delta": deltas,
     }

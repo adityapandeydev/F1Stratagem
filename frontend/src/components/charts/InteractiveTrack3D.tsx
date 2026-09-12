@@ -1,28 +1,18 @@
-﻿import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
-import { Play, Pause, RotateCcw, Compass } from "lucide-react";
-import { TelemetryPoint } from "../../types";
-
-interface DriverInfo {
-  abbreviation: string;
-  name?: string;
-  color: string;
-}
+import { Play, Pause, RotateCcw, Compass, Zap, Layers } from "lucide-react";
+import { TelemetryPoint, TelemetryDriverMeta } from "../../types";
 
 interface InteractiveTrack3DProps {
-  telemetry1: TelemetryPoint[];
-  telemetry2: TelemetryPoint[];
-  driver1: DriverInfo;
-  driver2: DriverInfo;
+  drivers: TelemetryDriverMeta[];
+  telemetryStreams: TelemetryPoint[][];
   currentDistance?: number;
   onDistanceChange?: (dist: number) => void;
 }
 
 export default function InteractiveTrack3D({
-  telemetry1,
-  telemetry2,
-  driver1,
-  driver2,
+  drivers,
+  telemetryStreams,
   currentDistance,
   onDistanceChange,
 }: InteractiveTrack3DProps) {
@@ -32,14 +22,14 @@ export default function InteractiveTrack3D({
   const [activeDistance, setActiveDistance] = useState(0);
   const [viewMode, setViewMode] = useState<"3D" | "Top">("3D");
 
-  // Keep refs for animation loop to avoid re-binding
+  // Keep ref for current distance to prevent re-initializing Three.js on every scrubber tick
   const currentDistanceRef = useRef(currentDistance);
   currentDistanceRef.current = currentDistance;
 
   const stateRef = useRef({
     isPlaying: false,
     activeDistance: 0,
-    maxDistance: 1000,
+    maxDistance: 5412,
     playbackSpeed: 1,
   });
 
@@ -51,50 +41,81 @@ export default function InteractiveTrack3D({
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
-    marker1: THREE.Mesh;
-    marker2: THREE.Mesh;
-    controlsState: { isDragging: boolean; prevX: number; prevY: number; theta: number; phi: number; radius: number; target: THREE.Vector3 };
-    pointsMap: { d: number; pos: THREE.Vector3; faster: "d1" | "d2" | "equal"; spd1: number; spd2: number }[];
+    carMarkers: THREE.Group[];
+    controlsState: {
+      isDragging: boolean;
+      prevX: number;
+      prevY: number;
+      theta: number;
+      phi: number;
+      radius: number;
+      target: THREE.Vector3;
+    };
+    pointsMap: {
+      d: number;
+      pos: THREE.Vector3;
+      dominantDriverIdx: number;
+      speeds: number[];
+    }[];
   } | null>(null);
 
-  // Initialize Scene — only when telemetry or driver identifiers change
+  // Memoize driver abbreviations string to detect actual change
+  const driversSignature = useMemo(
+    () => drivers.map((d) => `${d.abbreviation}_${d.color}`).join("|"),
+    [drivers]
+  );
+
+  const primaryTel = telemetryStreams[0] || [];
+
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || primaryTel.length === 0) return;
+
     const width = containerRef.current.clientWidth || 800;
-    const height = 460;
+    const height = 480;
 
-    // Scene
+    // 1. Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a0b);
+    scene.background = new THREE.Color(0x08080a);
+    scene.fog = new THREE.FogExp2(0x08080a, 0.00035);
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 50000);
-    camera.position.set(0, 1500, 2500);
+    // 2. Camera setup
+    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 60000);
+    camera.position.set(0, 1600, 2600);
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+    // 3. WebGL Renderer
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
     containerRef.current.innerHTML = "";
     containerRef.current.appendChild(renderer.domElement);
 
-    // Subtle Grid & Lighting
-    const grid = new THREE.GridHelper(5000, 50, 0x1f1f23, 0x141416);
-    grid.position.y = -25;
-    scene.add(grid);
-
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+    // 4. Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
     scene.add(ambientLight);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-    dirLight.position.set(1000, 2000, 1000);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+    dirLight.position.set(1200, 3000, 1500);
     scene.add(dirLight);
 
-    const tel = telemetry1.length > 0 ? telemetry1 : telemetry2;
-    if (tel.length === 0) return;
+    const fillLight = new THREE.DirectionalLight(0x3b82f6, 0.4);
+    fillLight.position.set(-1500, 1000, -1500);
+    scene.add(fillLight);
 
-    // Center coordinates
+    // 5. Grid Floor
+    const grid = new THREE.GridHelper(7000, 70, 0x1c1c22, 0x101014);
+    grid.position.y = -30;
+    scene.add(grid);
+
+    // 6. Coordinate Normalization
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (const p of tel) {
+    for (const p of primaryTel) {
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y;
@@ -107,126 +128,238 @@ export default function InteractiveTrack3D({
     const midY = (minY + maxY) / 2;
     const midZ = (minZ + maxZ) / 2;
     const span = Math.max(maxX - minX, maxY - minY, 1);
-    const scale = 1400 / span; // Normalize track to fit view nicely
+    const scale = 1700 / span;
 
-    const pointsMap: { d: number; pos: THREE.Vector3; faster: "d1" | "d2" | "equal"; spd1: number; spd2: number }[] = [];
-    const maxDist = tel[tel.length - 1]?.d || 5000;
+    const maxDist = primaryTel[primaryTel.length - 1]?.d || 5412;
     stateRef.current.maxDistance = maxDist;
 
-    const colors: number[] = [];
-    const color1 = new THREE.Color(driver1.color || "#3b82f6");
-    const color2 = new THREE.Color(driver2.color || "#ef4444");
-    const colorEqual = new THREE.Color(0x52525b);
-
+    // Build 3D centerline points
     const curvePoints: THREE.Vector3[] = [];
+    const pointsMap: {
+      d: number;
+      pos: THREE.Vector3;
+      dominantDriverIdx: number;
+      speeds: number[];
+    }[] = [];
 
-    for (let i = 0; i < tel.length; i++) {
-      const p1 = telemetry1[i] || tel[i];
-      const p2 = telemetry2[i] || tel[i];
+    const driverColors = drivers.map((d) => new THREE.Color(d.color || "#ffffff"));
 
-      const x = (p1.x - midX) * scale;
-      const y = (p1.z - midZ) * scale * 1.8; // real elevation scale
-      const z = -(p1.y - midY) * scale;
+    for (let i = 0; i < primaryTel.length; i++) {
+      const p = primaryTel[i];
+      // decimeters to Three.js coordinates
+      const x = (p.x - midX) * scale;
+      const y = (p.z - midZ) * scale * 2.2; // Elevation
+      const z = -(p.y - midY) * scale;
 
       const pos = new THREE.Vector3(x, y, z);
       curvePoints.push(pos);
 
-      let faster: "d1" | "d2" | "equal" = "equal";
-      let segmentColor = colorEqual;
+      // Determine fastest driver at this sample
+      let bestSpd = -Infinity;
+      let dominantIdx = 0;
+      const speeds: number[] = [];
 
-      if (p1 && p2) {
-        if (p1.spd > p2.spd + 2) {
-          faster = "d1";
-          segmentColor = color1;
-        } else if (p2.spd > p1.spd + 2) {
-          faster = "d2";
-          segmentColor = color2;
+      for (let dIdx = 0; dIdx < telemetryStreams.length; dIdx++) {
+        const dPt = telemetryStreams[dIdx]?.[i] || p;
+        const spd = dPt.spd;
+        speeds.push(spd);
+        if (spd > bestSpd) {
+          bestSpd = spd;
+          dominantIdx = dIdx;
         }
       }
 
-      colors.push(segmentColor.r, segmentColor.g, segmentColor.b);
-
       pointsMap.push({
-        d: p1.d,
+        d: p.d,
         pos,
-        faster,
-        spd1: p1.spd,
-        spd2: p2 ? p2.spd : p1.spd,
+        dominantDriverIdx: dominantIdx,
+        speeds,
       });
     }
 
-    // Closed circuit loop
-    const curve = new THREE.CatmullRomCurve3(curvePoints, true);
-    const tubeGeo = new THREE.TubeGeometry(curve, Math.min(curvePoints.length, 500), 12, 8, true);
+    // 7. Closed Curve for Track
+    const curve = new THREE.CatmullRomCurve3(curvePoints, true, "centripetal");
+    const numSubdivisions = 800;
+    const smoothPoints = curve.getPoints(numSubdivisions);
 
-    // Apply colors to tube vertices
-    const tubeColors: number[] = [];
-    const posAttr = tubeGeo.attributes.position;
-    for (let i = 0; i < posAttr.count; i++) {
-      const idx = Math.min(Math.floor((i / posAttr.count) * colors.length / 3) * 3, colors.length - 3);
-      tubeColors.push(colors[idx] || 0.4, colors[idx + 1] || 0.4, colors[idx + 2] || 0.4);
+    // 8. Extruded Asphalt Road Ribbon Geometry
+    const roadWidth = 26;
+    const ribbonPositions: number[] = [];
+    const ribbonColors: number[] = [];
+    const kerbLeftPositions: number[] = [];
+    const kerbRightPositions: number[] = [];
+
+    for (let i = 0; i < smoothPoints.length; i++) {
+      const curr = smoothPoints[i];
+      const next = smoothPoints[(i + 1) % smoothPoints.length];
+      const tangent = new THREE.Vector3().subVectors(next, curr).normalize();
+      const up = new THREE.Vector3(0, 1, 0);
+      const side = new THREE.Vector3().crossVectors(tangent, up).normalize();
+
+      // Find closest sample point for dominance color
+      const sampleIdx = Math.min(
+        Math.floor((i / smoothPoints.length) * pointsMap.length),
+        pointsMap.length - 1
+      );
+      const domColor = driverColors[pointsMap[sampleIdx]?.dominantDriverIdx || 0] || new THREE.Color(0x3b82f6);
+
+      // Left & Right Road Edges
+      const leftEdge = new THREE.Vector3().copy(curr).addScaledVector(side, -roadWidth / 2);
+      const rightEdge = new THREE.Vector3().copy(curr).addScaledVector(side, roadWidth / 2);
+
+      // Add to road ribbon
+      ribbonPositions.push(leftEdge.x, leftEdge.y, leftEdge.z);
+      ribbonPositions.push(rightEdge.x, rightEdge.y, rightEdge.z);
+
+      // Subtle track surface with slight dominant glow
+      const r = domColor.r * 0.4 + 0.08;
+      const g = domColor.g * 0.4 + 0.08;
+      const b = domColor.b * 0.4 + 0.08;
+
+      ribbonColors.push(r, g, b);
+      ribbonColors.push(r, g, b);
+
+      // Outer kerbs
+      const outerLeft = new THREE.Vector3().copy(leftEdge).addScaledVector(side, -3);
+      const outerRight = new THREE.Vector3().copy(rightEdge).addScaledVector(side, 3);
+      kerbLeftPositions.push(outerLeft.x, outerLeft.y + 0.5, outerLeft.z);
+      kerbRightPositions.push(outerRight.x, outerRight.y + 0.5, outerRight.z);
     }
-    tubeGeo.setAttribute("color", new THREE.Float32BufferAttribute(tubeColors, 3));
 
-    const tubeMat = new THREE.MeshStandardMaterial({
+    // Build Triangle Indices for Road Surface
+    const indices: number[] = [];
+    for (let i = 0; i < smoothPoints.length; i++) {
+      const p1 = i * 2;
+      const p2 = i * 2 + 1;
+      const p3 = ((i + 1) % smoothPoints.length) * 2;
+      const p4 = ((i + 1) % smoothPoints.length) * 2 + 1;
+
+      indices.push(p1, p2, p3);
+      indices.push(p2, p4, p3);
+    }
+
+    const roadGeo = new THREE.BufferGeometry();
+    roadGeo.setAttribute("position", new THREE.Float32BufferAttribute(ribbonPositions, 3));
+    roadGeo.setAttribute("color", new THREE.Float32BufferAttribute(ribbonColors, 3));
+    roadGeo.setIndex(indices);
+    roadGeo.computeVertexNormals();
+
+    const roadMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.25,
-      metalness: 0.3,
+      roughness: 0.7,
+      metalness: 0.2,
+      side: THREE.DoubleSide,
     });
-    const trackRibbon = new THREE.Mesh(tubeGeo, tubeMat);
-    scene.add(trackRibbon);
+    const roadMesh = new THREE.Mesh(roadGeo, roadMat);
+    scene.add(roadMesh);
 
-    // Centerline glow
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(curvePoints);
-    lineGeo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 });
-    const trackLine = new THREE.Line(lineGeo, lineMat);
-    scene.add(trackLine);
+    // 9. Glowing Centerline Ribbon (True Dominance Trail)
+    const linePositions: number[] = [];
+    const lineColors: number[] = [];
 
-    // Driver 1 Orb
-    const marker1Geo = new THREE.SphereGeometry(22, 16, 16);
-    const marker1Mat = new THREE.MeshStandardMaterial({
-      color: color1,
-      emissive: color1,
-      emissiveIntensity: 0.9,
-    });
-    const marker1 = new THREE.Mesh(marker1Geo, marker1Mat);
-    scene.add(marker1);
+    for (let i = 0; i < smoothPoints.length; i++) {
+      const curr = smoothPoints[i];
+      const sampleIdx = Math.min(
+        Math.floor((i / smoothPoints.length) * pointsMap.length),
+        pointsMap.length - 1
+      );
+      const domColor = driverColors[pointsMap[sampleIdx]?.dominantDriverIdx || 0] || new THREE.Color(0xffffff);
 
-    // Driver 2 Orb
-    const marker2Geo = new THREE.SphereGeometry(22, 16, 16);
-    const marker2Mat = new THREE.MeshStandardMaterial({
-      color: color2,
-      emissive: color2,
-      emissiveIntensity: 0.9,
-    });
-    const marker2 = new THREE.Mesh(marker2Geo, marker2Mat);
-    scene.add(marker2);
-
-    if (pointsMap.length > 0) {
-      marker1.position.copy(pointsMap[0].pos);
-      marker2.position.copy(pointsMap[0].pos);
+      linePositions.push(curr.x, curr.y + 1.2, curr.z);
+      lineColors.push(domColor.r, domColor.g, domColor.b);
     }
 
-    // Camera orbit controls
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute("position", new THREE.Float32BufferAttribute(linePositions, 3));
+    lineGeo.setAttribute("color", new THREE.Float32BufferAttribute(lineColors, 3));
+    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 3 });
+    const centerline = new THREE.LineLoop(lineGeo, lineMat);
+    scene.add(centerline);
+
+    // 10. Start / Finish Gate Marker
+    const startPt = smoothPoints[0];
+    const startNext = smoothPoints[1];
+    const startTan = new THREE.Vector3().subVectors(startNext, startPt).normalize();
+    const startSide = new THREE.Vector3().crossVectors(startTan, new THREE.Vector3(0, 1, 0)).normalize();
+
+    const finishLineGeo = new THREE.BoxGeometry(roadWidth + 4, 3, 4);
+    const finishLineMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.6,
+    });
+    const finishGate = new THREE.Mesh(finishLineGeo, finishLineMat);
+    finishGate.position.copy(startPt);
+    finishGate.position.y += 1.5;
+    finishGate.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), startSide);
+    scene.add(finishGate);
+
+    // 11. Car Markers for Each Driver (up to 4)
+    const carMarkers: THREE.Group[] = [];
+    const lateralOffsets = [-9, 9, -15, 15]; // stagger cars across track width
+
+    drivers.forEach((drv, idx) => {
+      const group = new THREE.Group();
+      const col = new THREE.Color(drv.color || "#ffffff");
+
+      // Core Car Orb
+      const sphereGeo = new THREE.SphereGeometry(18, 20, 20);
+      const sphereMat = new THREE.MeshStandardMaterial({
+        color: col,
+        emissive: col,
+        emissiveIntensity: 0.85,
+        roughness: 0.1,
+        metalness: 0.8,
+      });
+      const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+      group.add(sphere);
+
+      // Outer Halo Ring
+      const ringGeo = new THREE.RingGeometry(24, 28, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: col,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.7,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = Math.PI / 2;
+      group.add(ring);
+
+      // Drop Pin / Vertical Stalk
+      const stalkGeo = new THREE.CylinderGeometry(1.5, 1.5, 18, 8);
+      const stalkMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 });
+      const stalk = new THREE.Mesh(stalkGeo, stalkMat);
+      stalk.position.y = -9;
+      group.add(stalk);
+
+      group.position.copy(startPt);
+      group.position.y += 18;
+      scene.add(group);
+      carMarkers.push(group);
+    });
+
+    // 12. Orbit Camera Controls State
     const controlsState = {
       isDragging: false,
       prevX: 0,
       prevY: 0,
       theta: Math.PI / 4,
-      phi: Math.PI / 3.5,
-      radius: 2400,
+      phi: Math.PI / 3.4,
+      radius: 2600,
       target: new THREE.Vector3(0, 0, 0),
     };
 
     const updateCameraPos = () => {
-      camera.position.x = controlsState.target.x + controlsState.radius * Math.sin(controlsState.phi) * Math.sin(controlsState.theta);
-      camera.position.y = controlsState.target.y + controlsState.radius * Math.cos(controlsState.phi);
-      camera.position.z = controlsState.target.z + controlsState.radius * Math.sin(controlsState.phi) * Math.cos(controlsState.theta);
-      camera.lookAt(controlsState.target);
+      const { theta, phi, radius, target } = controlsState;
+      camera.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
+      camera.position.y = target.y + radius * Math.cos(phi);
+      camera.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
+      camera.lookAt(target);
     };
     updateCameraPos();
 
+    // DOM Mouse Listeners for Orbit
     const dom = renderer.domElement;
     const onMouseDown = (e: MouseEvent) => {
       controlsState.isDragging = true;
@@ -241,7 +374,7 @@ export default function InteractiveTrack3D({
       controlsState.prevY = e.clientY;
 
       controlsState.theta -= dx * 0.005;
-      controlsState.phi = Math.max(0.1, Math.min(Math.PI / 2.1, controlsState.phi - dy * 0.005));
+      controlsState.phi = Math.max(0.05, Math.min(Math.PI / 2.05, controlsState.phi - dy * 0.005));
       updateCameraPos();
     };
     const onMouseUp = () => {
@@ -249,26 +382,25 @@ export default function InteractiveTrack3D({
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      controlsState.radius = Math.max(500, Math.min(6000, controlsState.radius + e.deltaY * 1.5));
+      controlsState.radius = Math.max(500, Math.min(6500, controlsState.radius + e.deltaY * 1.5));
       updateCameraPos();
     };
 
     dom.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
-    dom.addEventListener("wheel", onWheel);
+    dom.addEventListener("wheel", onWheel, { passive: false });
 
     sceneRef.current = {
       scene,
       camera,
       renderer,
-      marker1,
-      marker2,
+      carMarkers,
       controlsState,
       pointsMap,
     };
 
-    // Animation Loop
+    // 13. Animation Loop
     let animId: number;
     let lastTime = performance.now();
 
@@ -278,8 +410,8 @@ export default function InteractiveTrack3D({
       lastTime = time;
 
       if (stateRef.current.isPlaying) {
-        const speedKmh = 250 * stateRef.current.playbackSpeed;
-        const distDelta = (speedKmh * 1000 / 3600) * dt;
+        const speedKmh = 270 * stateRef.current.playbackSpeed;
+        const distDelta = ((speedKmh * 1000) / 3600) * dt;
         let newDist = stateRef.current.activeDistance + distDelta;
         if (newDist > stateRef.current.maxDistance) {
           newDist = 0;
@@ -288,11 +420,12 @@ export default function InteractiveTrack3D({
         if (onDistanceChange) onDistanceChange(newDist);
       }
 
-      // Read current distance dynamically via ref
-      const currentDist = currentDistanceRef.current !== undefined
-        ? currentDistanceRef.current
-        : stateRef.current.activeDistance;
+      const currentDist =
+        currentDistanceRef.current !== undefined
+          ? currentDistanceRef.current
+          : stateRef.current.activeDistance;
 
+      // Update position of all car markers
       if (pointsMap.length > 0) {
         let closestIdx = 0;
         let minDiff = Infinity;
@@ -303,19 +436,22 @@ export default function InteractiveTrack3D({
             closestIdx = i;
           }
         }
+
         const pt = pointsMap[closestIdx];
         if (pt) {
-          marker1.position.lerp(pt.pos, 0.35);
-          marker2.position.lerp(pt.pos, 0.35);
-          marker1.position.y += 6;
-          marker2.position.y += 6;
-          marker1.position.x -= 8;
-          marker2.position.x += 8;
+          carMarkers.forEach((group, idx) => {
+            const latOff = lateralOffsets[idx] || 0;
+            const targetPos = new THREE.Vector3().copy(pt.pos);
+            targetPos.y += 16;
+            targetPos.x += latOff;
+            group.position.lerp(targetPos, 0.35);
+          });
         }
       }
 
       renderer.render(scene, camera);
     };
+
     animId = requestAnimationFrame(animate);
 
     return () => {
@@ -325,68 +461,119 @@ export default function InteractiveTrack3D({
       window.removeEventListener("mouseup", onMouseUp);
       dom.removeEventListener("wheel", onWheel);
       renderer.dispose();
-      tubeGeo.dispose();
-      tubeMat.dispose();
+      roadGeo.dispose();
+      roadMat.dispose();
       lineGeo.dispose();
       lineMat.dispose();
     };
-  }, [telemetry1, telemetry2, driver1.abbreviation, driver1.color, driver2.abbreviation, driver2.color]);
+  }, [driversSignature, primaryTel.length]);
 
   const handleViewToggle = () => {
     if (!sceneRef.current) return;
     const { controlsState, camera } = sceneRef.current;
     if (viewMode === "3D") {
       setViewMode("Top");
-      controlsState.phi = 0.05;
+      controlsState.phi = 0.02;
       controlsState.theta = 0;
+      controlsState.radius = 3200;
     } else {
       setViewMode("3D");
-      controlsState.phi = Math.PI / 3.5;
+      controlsState.phi = Math.PI / 3.4;
       controlsState.theta = Math.PI / 4;
+      controlsState.radius = 2600;
     }
-    camera.position.x = controlsState.target.x + controlsState.radius * Math.sin(controlsState.phi) * Math.sin(controlsState.theta);
-    camera.position.y = controlsState.target.y + controlsState.radius * Math.cos(controlsState.phi);
-    camera.position.z = controlsState.target.z + controlsState.radius * Math.sin(controlsState.phi) * Math.cos(controlsState.theta);
-    camera.lookAt(controlsState.target);
+    const { theta, phi, radius, target } = controlsState;
+    camera.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
+    camera.position.y = target.y + radius * Math.cos(phi);
+    camera.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
+    camera.lookAt(target);
+  };
+
+  const handleResetCamera = () => {
+    if (!sceneRef.current) return;
+    const { controlsState, camera } = sceneRef.current;
+    controlsState.phi = Math.PI / 3.4;
+    controlsState.theta = Math.PI / 4;
+    controlsState.radius = 2600;
+    controlsState.target.set(0, 0, 0);
+    const { theta, phi, radius, target } = controlsState;
+    camera.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
+    camera.position.y = target.y + radius * Math.cos(phi);
+    camera.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
+    camera.lookAt(target);
+    setViewMode("3D");
   };
 
   const currentDist = currentDistance !== undefined ? currentDistance : activeDistance;
-  const maxD = telemetry1.length > 0 ? telemetry1[telemetry1.length - 1].d : 5000;
+  const maxD = primaryTel.length > 0 ? primaryTel[primaryTel.length - 1].d : 5412;
+
+  // Active speeds at current distance
+  const currentSpeeds = useMemo(() => {
+    if (!sceneRef.current || sceneRef.current.pointsMap.length === 0) return [];
+    const pts = sceneRef.current.pointsMap;
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const diff = Math.abs(pts[i].d - currentDist);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+    return pts[closestIdx]?.speeds || [];
+  }, [currentDist]);
 
   return (
     <div className="relative rounded-2xl border border-white/[0.08] bg-[#0a0a0b]/80 backdrop-blur-xl overflow-hidden shadow-2xl">
-      <div className="absolute top-4 left-4 right-4 z-10 flex items-center justify-between pointer-events-none">
-        <div className="flex items-center gap-3 pointer-events-auto bg-[#141416]/80 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/[0.08]">
-          <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+      {/* Top HUD Overlay */}
+      <div className="absolute top-4 left-4 right-4 z-10 flex flex-wrap items-center justify-between gap-3 pointer-events-none">
+        {/* Track Title & Dominance Legend */}
+        <div className="flex items-center gap-2.5 pointer-events-auto bg-[#141416]/85 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-white/[0.08] shadow-lg">
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-300">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            3D Track Elevation & Speed Fluid
+            FastF1 GPS Circuit (Sakhir)
           </span>
           <span className="text-white/20">|</span>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="flex items-center gap-1 font-mono font-medium" style={{ color: driver1.color }}>
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: driver1.color }} />
-              {driver1.abbreviation} Faster
-            </span>
-            <span className="flex items-center gap-1 font-mono font-medium" style={{ color: driver2.color }}>
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: driver2.color }} />
-              {driver2.abbreviation} Faster
-            </span>
+          <div className="flex items-center gap-3">
+            {drivers.map((d, idx) => (
+              <span key={d.abbreviation} className="flex items-center gap-1.5 text-xs font-mono font-medium">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }} />
+                <span style={{ color: d.color }}>{d.abbreviation}</span>
+                {currentSpeeds[idx] !== undefined && (
+                  <span className="text-[11px] text-neutral-400 font-normal">
+                    {Math.round(currentSpeeds[idx])} km/h
+                  </span>
+                )}
+              </span>
+            ))}
           </div>
         </div>
 
-        <button
-          onClick={handleViewToggle}
-          className="pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#141416]/80 hover:bg-[#1f1f23] text-text-secondary hover:text-text-primary border border-white/[0.08] transition-all"
-        >
-          <Compass className="w-3.5 h-3.5" />
-          {viewMode} View
-        </button>
+        {/* View Controls */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          <button
+            onClick={handleResetCamera}
+            className="p-1.5 rounded-xl text-xs font-medium bg-[#141416]/85 hover:bg-[#1f1f23] text-neutral-400 hover:text-white border border-white/[0.08] transition-all shadow-md"
+            title="Reset Camera View"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleViewToggle}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-[#141416]/85 hover:bg-[#1f1f23] text-neutral-300 hover:text-white border border-white/[0.08] transition-all shadow-md"
+          >
+            <Compass className="w-3.5 h-3.5" />
+            {viewMode} View
+          </button>
+        </div>
       </div>
 
-      <div ref={containerRef} className="w-full h-[460px] cursor-grab active:cursor-grabbing" />
+      {/* 3D WebGL Canvas */}
+      <div ref={containerRef} className="w-full h-[480px] cursor-grab active:cursor-grabbing" />
 
-      <div className="p-4 bg-[#0d0d0f]/90 border-t border-white/[0.06] flex flex-col md:flex-row items-center gap-4">
-        <div className="flex items-center gap-2">
+      {/* Bottom Scrubber & Playback Controls */}
+      <div className="p-4 bg-[#0d0d0f]/95 border-t border-white/[0.06] flex flex-col md:flex-row items-center gap-4">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setIsPlaying(!isPlaying)}
             className="w-9 h-9 rounded-full bg-white text-black hover:bg-neutral-200 flex items-center justify-center transition-transform active:scale-95 shadow-md"
@@ -399,18 +586,20 @@ export default function InteractiveTrack3D({
               setActiveDistance(0);
               if (onDistanceChange) onDistanceChange(0);
             }}
-            className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-text-secondary hover:text-text-primary flex items-center justify-center transition-all"
-            title="Reset to Start"
+            className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-neutral-400 hover:text-white flex items-center justify-center transition-all"
+            title="Reset to Start/Finish"
           >
             <RotateCcw className="w-4 h-4" />
           </button>
-          <div className="flex items-center gap-1 ml-2 bg-white/[0.04] p-1 rounded-lg border border-white/[0.06]">
+          <div className="flex items-center gap-1 ml-1 bg-white/[0.04] p-1 rounded-xl border border-white/[0.06]">
             {[1, 2, 4].map((spd) => (
               <button
                 key={spd}
                 onClick={() => setPlaybackSpeed(spd)}
-                className={`px-2 py-0.5 text-xs rounded font-mono transition-all ${
-                  playbackSpeed === spd ? "bg-white/20 text-white font-bold" : "text-text-tertiary hover:text-white"
+                className={`px-2 py-0.5 text-xs rounded-lg font-mono transition-all ${
+                  playbackSpeed === spd
+                    ? "bg-white/20 text-white font-bold"
+                    : "text-neutral-500 hover:text-neutral-300"
                 }`}
               >
                 {spd}x
@@ -419,14 +608,15 @@ export default function InteractiveTrack3D({
           </div>
         </div>
 
+        {/* Scrub Slider */}
         <div className="flex-1 w-full flex items-center gap-3">
-          <span className="text-xs font-mono text-text-tertiary w-14 text-right">
-            {Math.round(currentDist)}m
+          <span className="text-xs font-mono text-neutral-400 w-16 text-right shrink-0">
+            {Math.round(currentDist).toLocaleString()}m
           </span>
           <input
             type="range"
             min={0}
-            max={maxD || 5000}
+            max={maxD || 5412}
             step={5}
             value={currentDist}
             onChange={(e) => {
@@ -434,10 +624,10 @@ export default function InteractiveTrack3D({
               setActiveDistance(val);
               if (onDistanceChange) onDistanceChange(val);
             }}
-            className="flex-1 accent-white h-1.5 bg-white/10 rounded-lg cursor-pointer"
+            className="flex-1 accent-red-500 h-1.5 bg-white/10 rounded-lg cursor-pointer"
           />
-          <span className="text-xs font-mono text-text-tertiary w-14">
-            {Math.round(maxD)}m
+          <span className="text-xs font-mono text-neutral-500 w-16 shrink-0">
+            {Math.round(maxD).toLocaleString()}m
           </span>
         </div>
       </div>

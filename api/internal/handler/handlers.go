@@ -1,14 +1,16 @@
-﻿package handler
+package handler
 
 import (
 	"encoding/json"
-	"github.com/aditya/f1stratagem/api/internal/model"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/aditya/f1stratagem/api/internal/model"
 	"github.com/aditya/f1stratagem/api/internal/repository"
 	"github.com/aditya/f1stratagem/api/internal/service"
+	"github.com/aditya/f1stratagem/api/internal/worker"
 )
 
 type Handler struct {
@@ -322,13 +324,43 @@ func (h *Handler) GetTelemetryComparison(w http.ResponseWriter, r *http.Request)
 	}
 
 	q := r.URL.Query()
+	driversParam := q.Get("drivers")
 	d1 := q.Get("driver1")
 	d2 := q.Get("driver2")
 	lap1, _ := strconv.Atoi(q.Get("lap1"))
 	lap2, _ := strconv.Atoi(q.Get("lap2"))
 
+	if driversParam != "" {
+		parts := strings.Split(driversParam, ",")
+		var drvReqs []worker.DriverLapRequest
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			sub := strings.Split(p, ":")
+			abbr := strings.ToUpper(sub[0])
+			lap := 0
+			if len(sub) > 1 {
+				lap, _ = strconv.Atoi(sub[1])
+			}
+			drvReqs = append(drvReqs, worker.DriverLapRequest{Driver: abbr, Lap: lap})
+		}
+		if len(drvReqs) < 2 {
+			writeError(w, http.StatusBadRequest, "at least 2 drivers are required for comparison")
+			return
+		}
+		data, err := h.ingestionSvc.CompareMultiTelemetry(r.Context(), sID, drvReqs)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, data)
+		return
+	}
+
 	if d1 == "" || d2 == "" {
-		writeError(w, http.StatusBadRequest, "driver1 and driver2 query params are required")
+		writeError(w, http.StatusBadRequest, "driver1 and driver2 (or drivers) query params are required")
 		return
 	}
 

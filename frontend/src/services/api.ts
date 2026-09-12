@@ -1,7 +1,7 @@
 ﻿import axios from "axios";
 import type {
   Season, Event, Session, SessionResult, Lap,
-  TelemetryComparison, WeatherData, IngestionJob,
+  TelemetryComparison, MultiTelemetryComparison, WeatherData, IngestionJob,
   Driver, Team,
 } from "../types";
 
@@ -40,7 +40,7 @@ export const api = {
   getSessionStints: (sessionId: number) =>
     client.get<any[]>(`/sessions/${sessionId}/stints`).then((r) => r.data),
 
-  // Telemetry
+  // Telemetry (legacy 2-driver)
   getTelemetryComparison: (
     sessionId: number,
     driver1: string,
@@ -53,6 +53,19 @@ export const api = {
         params: { driver1, driver2, lap1, lap2 },
       })
       .then((r) => r.data),
+
+  // Multi-driver telemetry (up to 4 drivers)
+  getMultiTelemetryComparison: (
+    sessionId: number,
+    drivers: { driver: string; lap?: number }[]
+  ) => {
+    const driversStr = drivers.map((d) => `${d.driver}:${d.lap || 0}`).join(",");
+    return client
+      .get<MultiTelemetryComparison>(`/sessions/${sessionId}/telemetry`, {
+        params: { drivers: driversStr },
+      })
+      .then((r) => r.data);
+  },
 
   // Ingestion
   triggerIngestion: (sessionId: number) =>
