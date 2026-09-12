@@ -1,3 +1,0 @@
-fastf1
-pandas
-seaborn
