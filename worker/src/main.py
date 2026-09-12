@@ -1,5 +1,7 @@
-﻿"""F1Stratagem Worker - FastF1 data ingestion and telemetry service."""
+"""F1Stratagem Worker - FastF1 data ingestion and telemetry service."""
 
+import os
+import json
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
