@@ -9,13 +9,21 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.186.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
     "axios": "^1.20.0",
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.6",
-    "react-router-dom": "^7.18.3"
+    "lucide-react": "^1.45.0",
+    "react-router-dom": "^7.18.3",
+    "tailwindcss": "^4.3.3",
+    "three": "^0.186.0"
   }
 }
