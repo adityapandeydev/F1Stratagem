@@ -1,4 +1,4 @@
-﻿import React, { useState } from "react";
+import React, { useState } from "react";
 import { Outlet, NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -33,7 +33,7 @@ const navGroups: NavGroup[] = [
   {
     section: "ANALYSIS",
     items: [
-      { path: "/compare", label: "Telemetry & 3D", icon: GitCompare },
+      { path: "/compare", label: "Telemetry", icon: GitCompare },
       { path: "/circuits", label: "Circuits", icon: MapPin },
     ],
   },
@@ -48,47 +48,40 @@ const navGroups: NavGroup[] = [
 ];
 
 export default function Layout() {
-  const [collapsed, setCollapsed] = useState(false);
-
   return (
-    <div className="flex h-screen overflow-hidden bg-[#0a0a0b] text-[#ededed]">
-      {/* Sidebar */}
+    <div className="flex h-screen overflow-hidden bg-[#09090b] text-[#ededed]">
+      {/* Hover-Expand Floating Sidebar Rail */}
       <aside
-        className={`
-          flex flex-col border-r border-white/[0.06]
-          bg-[#0d0d0f]/90 backdrop-blur-2xl
-          transition-all duration-300 ease-in-out z-20 shrink-0
-          ${collapsed ? "w-16" : "w-64"}
-        `}
+        className="
+          group flex flex-col border-r border-white/[0.07]
+          bg-[#0e0e12]/95 backdrop-blur-2xl
+          w-16 hover:w-64
+          transition-all duration-300 ease-out z-30 shrink-0
+          hover:shadow-2xl hover:shadow-black/70 overflow-x-hidden
+        "
       >
         {/* Brand Header */}
-        <div className="flex items-center justify-between px-5 h-16 border-b border-white/[0.06]">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-red-600 flex items-center justify-center text-white text-xs font-black shadow-lg shadow-red-600/30">
-              <Flame className="w-4 h-4 fill-white" />
-            </div>
-            {!collapsed && (
-              <div className="leading-tight">
-                <span className="text-sm font-extrabold tracking-tight text-white">
-                  F1<span className="text-neutral-400 font-medium">Stratagem</span>
-                </span>
-                <span className="block text-[9px] font-mono text-neutral-500 uppercase tracking-wider">
-                  Telemetry Engine
-                </span>
-              </div>
-            )}
+        <div className="flex items-center gap-3 px-3.5 h-16 border-b border-white/[0.06] shrink-0 overflow-hidden">
+          <div className="w-9 h-9 rounded-xl bg-red-600 flex items-center justify-center text-white text-xs font-black shadow-lg shadow-red-600/30 shrink-0">
+            <Flame className="w-5 h-5 fill-white" />
+          </div>
+          <div className="leading-tight opacity-0 group-hover:opacity-100 transition-opacity duration-200 delay-75 whitespace-nowrap">
+            <span className="text-sm font-black tracking-tight text-white">
+              F1<span className="text-neutral-400 font-medium">Stratagem</span>
+            </span>
+            <span className="block text-[9px] font-mono text-neutral-500 uppercase tracking-widest">
+              Telemetry Studio
+            </span>
           </div>
         </div>
 
         {/* Navigation Groups */}
-        <nav className="flex-1 overflow-y-auto py-5 px-3 space-y-6">
+        <nav className="flex-1 overflow-y-auto py-5 px-2.5 space-y-6 overflow-x-hidden">
           {navGroups.map((group) => (
             <div key={group.section}>
-              {!collapsed && (
-                <p className="px-3 mb-2 text-[10px] font-mono font-bold tracking-wider text-neutral-500 uppercase">
-                  {group.section}
-                </p>
-              )}
+              <p className="px-3 mb-2 text-[10px] font-mono font-bold tracking-wider text-neutral-500 uppercase opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap">
+                {group.section}
+              </p>
               <div className="space-y-1">
                 {group.items.map((item) => {
                   const Icon = item.icon;
@@ -97,18 +90,20 @@ export default function Layout() {
                       key={item.path}
                       to={item.path}
                       className={({ isActive }) => `
-                        flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium
-                        transition-all duration-150
+                        flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium
+                        transition-all duration-150 whitespace-nowrap
                         ${
                           isActive
-                            ? "bg-white/10 text-white shadow-sm border border-white/[0.08]"
+                            ? "bg-white/10 text-white shadow-sm border border-white/[0.09]"
                             : "text-neutral-400 hover:text-white hover:bg-white/[0.04]"
                         }
                       `}
-                      title={collapsed ? item.label : undefined}
+                      title={item.label}
                     >
                       <Icon className="w-4 h-4 shrink-0" />
-                      {!collapsed && <span>{item.label}</span>}
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 delay-75">
+                        {item.label}
+                      </span>
                     </NavLink>
                   );
                 })}
@@ -117,25 +112,18 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Sidebar Footer / Collapse toggle */}
-        <div className="p-3 border-t border-white/[0.06]">
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-neutral-400 hover:text-white hover:bg-white/[0.04] transition-all text-xs"
-          >
-            <ChevronLeft
-              className={`w-4 h-4 transition-transform duration-300 ${
-                collapsed ? "rotate-180" : ""
-              }`}
-            />
-            {!collapsed && <span className="font-mono text-[11px]">Collapse</span>}
-          </button>
+        {/* Bottom Status Dot */}
+        <div className="p-3 border-t border-white/[0.06] flex items-center gap-2.5 overflow-hidden">
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50 shrink-0 ml-1.5" />
+          <span className="text-[10px] font-mono text-neutral-400 opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap">
+            FastF1 Engine Ready
+          </span>
         </div>
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto relative">
-        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-8">
+      <main className="flex-1 overflow-y-auto relative bg-[#09090b]">
+        <div className="max-w-[1500px] mx-auto px-6 lg:px-10 py-6">
           <Outlet />
         </div>
       </main>

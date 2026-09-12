@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Zap, Trophy, Gauge, Activity, Flag, Calendar, Sparkles } from "lucide-react";
 import { api } from "../services/api";
@@ -58,55 +58,20 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* KPI Stats Grid */}
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
-            <Activity className="w-4 h-4 text-blue-400" /> Metrics Tracked
-          </div>
-          <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">168+</div>
-          <div className="text-xs text-text-secondary mt-1">Car dynamics, GPS, temperatures & slip</div>
-        </div>
-
-        <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
-            <Zap className="w-4 h-4 text-emerald-400" /> Synchronization
-          </div>
-          <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">10 Hz</div>
-          <div className="text-xs text-text-secondary mt-1">Millisecond distance-aligned traces</div>
-        </div>
-
-        <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
-            <Gauge className="w-4 h-4 text-purple-400" /> 3D Elevation
-          </div>
-          <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">Real Z</div>
-          <div className="text-xs text-text-secondary mt-1">Fluid velocity dominance contours</div>
-        </div>
-
-        <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
-          <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
-            <Trophy className="w-4 h-4 text-amber-400" /> Season Coverage
-          </div>
-          <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">2018 - 2026</div>
-          <div className="text-xs text-text-secondary mt-1">Hybrid regulation eras & beyond</div>
-        </div>
-      </section>
-
-      {/* Featured Race Weekends */}
+      {/* Featured Race Weekends & Quick Session Launcher (Elevated) */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-text-primary">
-              2024 Season Calendar
+              {activeSeason} Season Calendar
             </h2>
             <p className="text-xs text-text-secondary mt-0.5">
-              Select a Grand Prix weekend to explore session classifications and telemetry
+              Select a Grand Prix weekend to launch authentic telemetry analysis and session telemetry
             </p>
           </div>
 
           <div className="flex items-center gap-1.5 bg-[#141416] p-1 rounded-xl border border-white/[0.08]">
-            {[2024, 2025, 2026].map((yr) => (
+            {[2024, 2023, 2022, 2021].map((yr) => (
               <button
                 key={yr}
                 onClick={() => setActiveSeason(yr)}
@@ -127,9 +92,9 @@ export default function HomePage() {
             circuit="Bahrain International Circuit"
             location="Sakhir, Bahrain"
             date="Mar 2, 2024"
-            status="Data Ready"
+            status="Telemetry Active"
             winner="M. Verstappen (RBR)"
-            link="/session/1"
+            link="/compare"
           />
           <RaceCard
             round={2}
@@ -181,6 +146,46 @@ export default function HomePage() {
             winner="L. Norris (McLaren)"
             link="/session/6"
           />
+        </div>
+      </section>
+
+      {/* Architecture & Performance Metrics Grid (Bottom Analytics) */}
+      <section className="space-y-3 pt-4 border-t border-white/[0.06]">
+        <div className="text-xs font-mono uppercase tracking-widest text-neutral-400 font-bold">
+          High-Frequency Telemetry Pipeline
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
+            <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
+              <Activity className="w-4 h-4 text-blue-400" /> Metrics Streamed
+            </div>
+            <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">168+</div>
+            <div className="text-xs text-text-secondary mt-1">Car dynamics, GPS, temperatures & slip</div>
+          </div>
+
+          <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
+            <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
+              <Zap className="w-4 h-4 text-emerald-400" /> Synchronization
+            </div>
+            <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">10 Hz</div>
+            <div className="text-xs text-text-secondary mt-1">Millisecond distance-aligned traces</div>
+          </div>
+
+          <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
+            <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-purple-400" /> 3D Elevation
+            </div>
+            <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">Real Z</div>
+            <div className="text-xs text-text-secondary mt-1">Fluid velocity dominance contours</div>
+          </div>
+
+          <div className="p-6 rounded-2xl bg-[#0a0a0b]/80 border border-white/[0.08] backdrop-blur-xl">
+            <div className="text-xs font-mono uppercase tracking-wider text-text-tertiary flex items-center gap-2">
+              <Trophy className="w-4 h-4 text-amber-400" /> Season Coverage
+            </div>
+            <div className="text-3xl font-mono font-extrabold text-text-primary mt-2">2018 - 2026</div>
+            <div className="text-xs text-text-secondary mt-1">Hybrid regulation eras & Active Aero</div>
+          </div>
         </div>
       </section>
     </div>

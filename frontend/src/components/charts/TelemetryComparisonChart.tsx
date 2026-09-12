@@ -1,6 +1,7 @@
-﻿import React, { useMemo, useRef, useEffect } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import ReactECharts from "echarts-for-react";
-import { TelemetryPoint, TelemetryDriverMeta } from "../../types";
+import { RotateCcw } from "lucide-react";
+import { TelemetryPoint } from "../../types";
 
 interface DriverMeta {
   abbreviation: string;
@@ -30,11 +31,27 @@ export default function TelemetryComparisonChart({
   driver2,
   telemetry1,
   telemetry2,
-  timeDelta = [],
   currentDistance,
   onDistanceHover,
 }: TelemetryComparisonChartProps) {
   const chartRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isZoomed, setIsZoomed] = useState(false);
+
+  // Trap mouse wheel over chart container to prevent outer page scroll/zoom
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+    };
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", handleWheel);
+    };
+  }, []);
 
   // Normalize drivers and streams
   const drivers: DriverMeta[] = useMemo(() => {
@@ -55,12 +72,41 @@ export default function TelemetryComparisonChart({
 
   const primaryTel = telemetryStreams[0] || [];
 
+  // Active values at currentDistance for the fixed HUD
+  const activeMetrics = useMemo(() => {
+    if (primaryTel.length === 0) return null;
+    const dist = currentDistance !== undefined ? currentDistance : 0;
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < primaryTel.length; i++) {
+      const diff = Math.abs(primaryTel[i].d - dist);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+
+    return {
+      distance: Math.round(primaryTel[closestIdx]?.d || dist),
+      drivers: drivers.map((drv, idx) => {
+        const pt = telemetryStreams[idx]?.[closestIdx] || primaryTel[closestIdx];
+        return {
+          ...drv,
+          speed: Math.round(pt?.spd || 0),
+          throttle: Math.round(pt?.thr || 0),
+          brake: Math.round((pt?.brk || 0) * 100),
+          gear: pt?.gear || 7,
+        };
+      }),
+    };
+  }, [primaryTel, currentDistance, drivers, telemetryStreams]);
+
   const option = useMemo(() => {
     if (primaryTel.length === 0) return {};
 
     const distances = primaryTel.map((p) => p.d);
 
-    // Build series dynamically for each driver
+    // Build series dynamically for each driver (Speed, Throttle, Brake, Gear)
     const speedSeries = drivers.map((drv, idx) => {
       const tel = telemetryStreams[idx] || [];
       return {
@@ -118,67 +164,61 @@ export default function TelemetryComparisonChart({
       };
     });
 
-    const deltaSeries = [
-      {
-        name: `Delta to ${drivers[0]?.abbreviation || "Ref"}`,
-        type: "line",
-        xAxisIndex: 3,
-        yAxisIndex: 3,
-        showSymbol: false,
-        lineStyle: { color: drivers[1]?.color || "#ef4444", width: 2 },
-        areaStyle: {
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: `${drivers[1]?.color || "#ef4444"}33` },
-              { offset: 1, color: "transparent" },
-            ],
-          },
-        },
-        data: timeDelta.length > 0 ? timeDelta : distances.map(() => 0),
-      },
-    ];
-
     return {
       backgroundColor: "transparent",
       animation: false,
       tooltip: {
         trigger: "axis",
+        showContent: false, // Hides floating popup HTML box while preserving canvas vertical tracking line and dots!
         axisPointer: {
           type: "cross",
-          lineStyle: { color: "rgba(255, 255, 255, 0.4)", width: 1, type: "dashed" },
-        },
-        backgroundColor: "rgba(16, 16, 20, 0.95)",
-        borderColor: "rgba(255, 255, 255, 0.12)",
-        textStyle: { color: "#ededed", fontFamily: "Inter, sans-serif", fontSize: 11 },
-        formatter: (params: any[]) => {
-          if (!params || params.length === 0) return "";
-          const d = params[0].axisValue;
-          let html = `<div style="font-weight: 600; margin-bottom: 6px; font-family: monospace; color: #a1a1aa;">Track Dist: ${Math.round(d)}m</div>`;
-          params.forEach((item: any) => {
-            html += `<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 2px 0;">
-              <span style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
-                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${item.color};"></span>
-                ${item.seriesName}
-              </span>
-              <span style="font-family: monospace; font-weight: 600;">${item.value !== undefined ? item.value : "-"}</span>
-            </div>`;
-          });
-          return html;
+          lineStyle: { color: "rgba(255, 255, 255, 0.45)", width: 1.5, type: "dashed" },
+          label: { show: false },
         },
       },
       axisPointer: {
         link: [{ xAxisIndex: "all" }],
       },
       grid: [
-        { left: "55px", right: "20px", top: "25px", height: "180px" }, // Speed
-        { left: "55px", right: "20px", top: "235px", height: "100px" }, // Throttle & Brake
-        { left: "55px", right: "20px", top: "360px", height: "80px" },  // Gear
-        { left: "55px", right: "20px", top: "465px", height: "70px" },  // Delta
+        { left: "55px", right: "25px", top: "20px", height: "195px" }, // 1. Speed (km/h)
+        { left: "55px", right: "25px", top: "250px", height: "125px" }, // 2. Pedals (%)
+        { left: "55px", right: "25px", top: "410px", height: "90px" },  // 3. Gear (1-8)
+      ],
+      dataZoom: [
+        {
+          type: "inside",
+          xAxisIndex: [0, 1, 2],
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true,
+          moveOnMouseWheel: false,
+        },
+        {
+          type: "slider",
+          xAxisIndex: [0, 1, 2],
+          bottom: "6px",
+          height: "18px",
+          borderColor: "rgba(255, 255, 255, 0.08)",
+          backgroundColor: "#0b0b10",
+          fillerColor: "rgba(239, 68, 68, 0.22)",
+          dataBackground: {
+            lineStyle: { color: "#3f3f46" },
+            areaStyle: { color: "rgba(255,255,255,0.04)" },
+          },
+          selectedDataBackground: {
+            lineStyle: { color: "#ef4444" },
+            areaStyle: { color: "rgba(239, 68, 68, 0.2)" },
+          },
+          handleStyle: {
+            color: "#ef4444",
+            borderColor: "#ffffff",
+            borderWidth: 1,
+          },
+          textStyle: {
+            color: "#a1a1aa",
+            fontSize: 9,
+            fontFamily: "monospace",
+          },
+        },
       ],
       xAxis: [
         {
@@ -197,13 +237,6 @@ export default function TelemetryComparisonChart({
         },
         {
           gridIndex: 2,
-          type: "category",
-          data: distances,
-          show: false,
-          axisLine: { lineStyle: { color: "#27272a" } },
-        },
-        {
-          gridIndex: 3,
           type: "category",
           data: distances,
           show: true,
@@ -250,28 +283,18 @@ export default function TelemetryComparisonChart({
           max: 8,
           interval: 1,
         },
-        // Grid 3: Delta
-        {
-          gridIndex: 3,
-          type: "value",
-          name: "Delta (s)",
-          nameTextStyle: { color: "#71717a", fontSize: 10, align: "left" },
-          splitLine: { lineStyle: { color: "rgba(255,255,255,0.04)" } },
-          axisLabel: { color: "#71717a", fontSize: 10 },
-        },
       ],
       series: [
         ...speedSeries,
         ...throttleSeries,
         ...brakeSeries,
         ...gearSeries,
-        ...deltaSeries,
       ],
     };
-  }, [drivers, telemetryStreams, timeDelta, primaryTel]);
+  }, [drivers, telemetryStreams, primaryTel]);
 
-  // Synchronize cursor when scrubbing from external slider
-  useEffect(() => {
+  // Synchronize cursor and tracer dots during scrubbing & playback
+  React.useEffect(() => {
     if (!chartRef.current || currentDistance === undefined || primaryTel.length === 0) return;
     const echartInstance = chartRef.current.getEchartsInstance();
     if (!echartInstance) return;
@@ -300,37 +323,118 @@ export default function TelemetryComparisonChart({
     }
   };
 
+  const handleResetZoom = () => {
+    if (!chartRef.current) return;
+    const inst = chartRef.current.getEchartsInstance();
+    if (!inst) return;
+    inst.dispatchAction({
+      type: "dataZoom",
+      start: 0,
+      end: 100,
+    });
+    setIsZoomed(false);
+  };
+
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[#0a0a0b]/80 backdrop-blur-xl p-5 shadow-2xl">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
-          <h3 className="text-sm font-semibold text-white tracking-wide">
-            Telemetry Trace Analysis
-          </h3>
-        </div>
-        <div className="flex items-center gap-3">
-          {drivers.map((d) => (
-            <div key={d.abbreviation} className="flex items-center gap-1.5 text-xs font-mono font-medium">
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: d.color }} />
-              <span style={{ color: d.color }}>{d.abbreviation}</span>
-              {d.lapTimeMs && (
-                <span className="text-neutral-400 text-[10px]">
-                  {((d.lapTimeMs % 60000) / 1000).toFixed(3)}s
-                </span>
-              )}
+    <div
+      ref={containerRef}
+      className="rounded-2xl border border-white/[0.08] bg-[#070709] backdrop-blur-xl p-5 shadow-2xl space-y-4"
+    >
+      {/* Header Container with Title on Line 1 and Responsive HUD Bar on Line 2 */}
+      <div className="space-y-3 pb-3 border-b border-white/[0.06]">
+        {/* Line 1: Title, Subtitle, and Distance Badge */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold text-white tracking-wide">
+                Telemetry Trace Synchronizer
+              </h3>
+              <p className="text-[11px] text-neutral-400 font-mono">
+                Speed (km/h) · Pedals (%) · Transmission Gear · Mouse Wheel to Zoom
+              </p>
             </div>
-          ))}
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0 self-start sm:self-auto">
+            {isZoomed && (
+              <button
+                onClick={handleResetZoom}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-400 hover:text-white text-xs font-mono font-semibold transition-all shadow-sm cursor-pointer"
+                title="Reset to Full Lap"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset Zoom
+              </button>
+            )}
+
+            {activeMetrics && (
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-wider hidden md:inline">
+                  Track Distance
+                </span>
+                <div className="px-3 py-1.5 rounded-xl bg-[#101014] border border-white/[0.08] text-xs font-mono font-bold text-neutral-200 tabular-nums shadow-sm">
+                  {activeMetrics.distance.toLocaleString()}m
+                </div>
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* Line 2: Responsive Live Driver HUD Bar (2x2 on laptops/smaller screens, 4x1 on desktop, NO scrollbars) */}
+        {activeMetrics && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 w-full pt-1">
+            {activeMetrics.drivers.map((d) => (
+              <div
+                key={d.abbreviation}
+                className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-[#101014] border border-white/[0.08] text-xs font-mono shadow-sm"
+              >
+                <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                  <span className="font-extrabold" style={{ color: d.color }}>{d.abbreviation}</span>
+                </div>
+                
+                {/* Speed */}
+                <div className="text-white font-bold tabular-nums text-right">
+                  {d.speed} <span className="text-[10px] text-neutral-400 font-normal">km/h</span>
+                </div>
+                
+                <span className="text-white/15">|</span>
+                
+                {/* Throttle % */}
+                <div className={`tabular-nums text-[11px] font-semibold text-right ${d.throttle > 0 ? "text-emerald-400" : "text-neutral-500"}`}>
+                  {d.throttle}% <span className="text-[9px] text-neutral-400 font-normal">Thr</span>
+                </div>
+                
+                {/* Brake % */}
+                <div className={`tabular-nums text-[11px] font-semibold text-right ${d.brake > 0 ? "text-red-400 font-bold" : "text-neutral-600"}`}>
+                  {d.brake}% <span className="text-[9px] text-neutral-400 font-normal">Brk</span>
+                </div>
+                
+                <span className="text-white/15">|</span>
+                
+                {/* Gear */}
+                <div className="text-amber-300 font-bold tabular-nums text-center">
+                  G{d.gear}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
+      {/* Synchronized 3-Subplot ECharts Canvas */}
       <ReactECharts
         ref={chartRef}
         option={option}
-        style={{ height: "560px", width: "100%" }}
-        onEvents={{ updateAxisPointer: onChartHover }}
+        style={{ height: "590px", width: "100%" }}
+        onEvents={{
+          updateAxisPointer: onChartHover,
+          datazoom: () => setIsZoomed(true),
+        }}
         opts={{ renderer: "canvas" }}
       />
     </div>
   );
 }
+

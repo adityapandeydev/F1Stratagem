@@ -1,4 +1,4 @@
-﻿export interface Season {
+export interface Season {
   id: number;
   year: number;
 }
@@ -107,6 +107,13 @@ export interface TelemetryPoint {
   z: number;    // Z elevation
 }
 
+export interface AvailableLapMeta {
+  lap: number;
+  time_ms?: number;
+  label: string;
+  is_pb?: boolean;
+}
+
 export interface TelemetryDriverMeta {
   abbreviation: string;
   full_name: string;
@@ -114,6 +121,7 @@ export interface TelemetryDriverMeta {
   color: string;
   lap_number: number;
   lap_time_ms: number;
+  available_laps?: AvailableLapMeta[];
 }
 
 export interface MultiTelemetryComparison {
