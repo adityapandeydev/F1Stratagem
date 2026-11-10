@@ -2,7 +2,7 @@
 
 > Exhaustive catalog of every data point, metric, visualization, and feature the platform should support.
 > Organized by data source, feature area, and implementation phase.
-> Last updated: 2026-09-11
+> Last updated: 2026-11-10
 
 ---
 
@@ -24,6 +24,7 @@
 14. [Track Map Visualizations](#14-track-map-visualizations)
 15. [Strategy Intelligence](#15-strategy-intelligence)
 16. [F1Stratagem Original Ideas](#16-f1stratagem-original-ideas)
+17. [Predictions](#17-predictions)
 
 ---
 
@@ -804,6 +805,10 @@ Performance analysis by corner classification:
 
 ## 12. Team / Car Profiling
 
+Car, circuit and corner profiles in sections 12 and 13 are computed once by a shared
+profile pipeline over the archive. The analysis views and the prediction engine read
+the same tables, so what the site shows is what the model uses.
+
 ### 12.1 Car Performance Characteristics
 | Characteristic | How Derived |
 |---------------|-------------|
@@ -830,6 +835,9 @@ Performance analysis by corner classification:
 - Pace relative to leader across season
 - Improvement/regression trend
 - Performance step-changes (correlate with upgrade packages)
+- Upgrade effect: change in time gained/lost per speed regime before vs after an
+  upgrade listed in the FIA car presentation sheets, adjusted for the circuits'
+  regime mix
 
 ### 12.4 Pit Crew Performance
 - Average pit stop time
@@ -850,15 +858,23 @@ Performance analysis by corner classification:
 - Historical lap records
 
 ### 13.2 Corner Classification
+Measured, not hand-labelled. Corner positions come from FastF1 circuit info; entry,
+minimum and exit speeds come from representative fast laps across seasons on the
+same layout. Layout changes create a new layout ID. Manual review only for
+anomalies (e.g. corners taken flat in qualifying but not in the race).
+
 For each corner:
 - Corner number
-- Classification (low/medium/high speed, hairpin, chicane)
+- Classification (slow/medium/fast from measured minimum speed; hairpin, chicane)
+- Entry, minimum and exit speed distributions
 - Typical apex speed
 - Typical braking zone length
 - DRS zone presence
 - Overtaking opportunity rating
 
 ### 13.3 Circuit Characteristics Radar
+- Regime mix: share of lap time on full-throttle straights and in slow, medium and
+  fast corners (a track is a weighted mix, not a single type)
 - High-speed percentage
 - Low-speed percentage
 - Braking intensity
@@ -1116,6 +1132,84 @@ Features not commonly found on existing platforms.
 - "Verstappen's degradation rate was 40% lower than Leclerc on the Medium compound"
 - Based on rule-based analysis of the displayed data
 
+## 17. Predictions
+
+All numbers on these views come from one joint simulation per event and are
+consistent with each other. Every view shows the forecast's cutoff, model version
+and mode (LIVE, REPLAY, OFFLINE).
+
+### 17.1 Qualifying Forecast
+- Pole probability per driver
+- Position distribution heatmap (driver × position)
+- Central 80% interval per driver ("very likely P3–P7")
+- Sprint grid session equivalent on sprint weekends
+
+### 17.2 Race Forecast
+- Win, podium, top-5, top-10, points and finish probabilities
+- Five-way outcome bar: win / other points / outside points / mechanical
+  retirement / incident or other retirement
+- Expected position and expected championship points
+
+### 17.3 Forecast Timeline
+- How each driver's probabilities moved across cutoffs (testing, FP1–FP3, sprint,
+  qualifying, penalties, pre-race)
+- The inputs that moved them (e.g. long-run pace in FP2, grid penalty)
+
+### 17.4 Why This Forecast
+- Car regime strengths weighted by this track's regime mix
+- Team session offsets applied (e.g. practice → qualifying)
+- Measured upgrade effects in use
+
+### 17.5 Replay
+- Historical race replayed lap by lap with the forecast updating on pit stops,
+  SC/VSC, red flags, weather and retirements
+
+### 17.6 Live
+- Same view during a session, updated per lap and on events
+
+### 17.7 Post-Race Review
+- Forecast vs result per driver
+- Misses attributed to pace, strategy, reliability, incident, weather, penalty,
+  data issue or variance
+
+### 17.8 Forecast Ledger and Track Record
+- Every published forecast, frozen before its session, with its SHA-256 hash,
+  model version and input cutoff
+- Calibration and interval coverage by season, cutoff and position band
+- Comparison with baselines (qualifying order) and betting markets
+- Methodology page; any forecast reproducible from its recorded inputs
+
+### 17.9 Championship Forecast
+- Drivers' and constructors' title and final-position probabilities
+- Updated after every race; chart of each contender's title probability across
+  the season
+- Points scenarios: what each contender needs from the remaining races
+
+### 17.10 Championship on Your Calendar
+- Season simulated over a calendar built in the calendar builder
+- Title probabilities vs the real calendar; who gains and loses from the change
+  and which circuits drive it (via car envelopes and track profiles)
+- Circuits without recent F1 data marked with wider uncertainty
+- Shareable with the calendar post
+
+### 17.11 Against the Forecast
+- Results the model rated unlikely: a race win from a low pre-race probability, a
+  title won against a season of low title probability
+- Shown with the full frozen probability history from the ledger, so the story is
+  verifiable
+- Shareable to the community tab
+
+### 17.12 Car Envelope and Lap Simulation
+- Per car: grip vs speed, traction, braking, top speed and acceleration, and
+  (2026+) energy-limited speed fade
+- Simulated lap-time gap between two cars on any layout, broken down by corner
+  and straight
+
+### 17.13 Practice Programme Reading
+- Each practice run labelled (qualifying simulation, long run, short run,
+  programme work)
+- Pace comparisons restricted to like-for-like run types
+
 ---
 
 ## Data Source Mapping
@@ -1133,8 +1227,14 @@ Features not commonly found on existing platforms.
 | Circuit info (corners, etc.) | FastF1 circuit_info | 2018+ |
 | Historical results, standings | Jolpica/Ergast API | 1950+ |
 | Pit stop data (historical) | Jolpica/Ergast API | 2012+ |
-| External weather (forecasts) | Weather API (Phase 3+) | Current |
-| News / intelligence | RAG system (Phase 5+) | Current |
+| Live timing (provisional) | OpenF1 | 2023+ |
+| Weather forecasts as issued | Open-Meteo historical forecasts | Coverage to confirm |
+| Upgrades, penalties, decisions | FIA documents | Current |
+| News | News service | Current |
+| Forecasts | Prediction engine | 2019+ (backtests), live from go-live |
+
+All FastF1 data is served from the local archive (see Architecture.md), not fetched
+per request.
 
 ---
 
@@ -1143,12 +1243,12 @@ Features not commonly found on existing platforms.
 | Phase | Features from this document |
 |-------|---------------------------|
 | **Phase 1** | §3.1-3.9, §4.1-4.4, §5.1-5.5, §6.1-6.3, §14.1 (basic) |
-| **Phase 2** | Calendar builder (separate doc), user accounts, search history |
+| **Phase 2** | Calendar builder, user accounts, search history |
 | **Phase 3** | §4.5-4.11, §7, §8, §9, §10, §11, §12, §13, §14 (full) |
-| **Phase 4** | §15, §16.8, §16.16, advanced tyre analysis |
-| **Phase 5** | §16.20 (automated insights), RAG integration |
-| **Phase 6** | §16.2 (replay), §16.19 (cross-era sim), §16.1 (what-if lap) |
+| **Phase 4** | §17.1-17.4, §17.8-17.9, §17.11-17.13, §16.15 |
+| **Phase 5** | §17.5-17.7 (replay, live, review), §17.10, §16.20, news feed |
+| **Phase 6** | §15, §16.2, §16.19, §16.1 |
 
 ---
 
-> This document serves as the master reference for every data point and feature F1Stratagem should eventually support. Implementation will follow the phased approach defined in ARCHITECTURE.md.
+> This document serves as the master reference for every data point and feature F1Stratagem should eventually support. Implementation will follow the phased approach defined in Architecture.md.
