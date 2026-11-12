@@ -10,8 +10,11 @@ Metrics, each averaged over scored entrants (excluded entrants are not scored):
     winner_log_loss    -log p(actual winner); pole for qualifying
     rps                ranked probability score of the position distribution
     brier_top3/top10   Brier score of finishing in the top 3 / top 10
-    position_mae       |expected position - actual position|
+    position_mae       |expected position - actual position|, overall and by band
+                       (bands by championship rank at the cutoff: 1-5, 6-12, 13+)
     coverage_80        share of actual positions inside the central 80% interval
+    interval_mass      probability the forecast itself puts inside that interval;
+                       calibration is the gap between coverage and mass
     interval_width     mean width of that interval, in positions
     outcome_log_loss   five-way outcome, entrants with a known outcome only
     retirement_brier   any retirement (cause known or not)
@@ -25,11 +28,11 @@ import pandas as pd
 
 from .archive import Archive
 from .baselines import RANKERS, Example, RankBaseline, _dense_ranks
-from .targets import HOLDOUT_SEASONS, OUTCOMES, session_target
+from .targets import HOLDOUT_SEASONS, OUTCOMES, RETIREMENTS, session_target
 
-EPS = 1e-6
+EPS = 1e-12  # safety only; forecasts carry a prior pseudo-draw, so no probability is zero
 BANDS = ((1, 5, "front"), (6, 12, "midfield"), (13, 99, "back"))
-RETIRED = ("mechanical", "incident_or_other", "retired_unknown")
+ID_COLUMNS = ("event_key", "season", "model", "beta")
 
 
 def score(forecast, example):
@@ -42,7 +45,10 @@ def score(forecast, example):
     observed = (np.arange(1, n + 1)[None, :] >= actual[:, None]).astype(float)
     lower, upper = forecast.interval()
     lower, upper = lower[keep], upper[keep]
+    inside = (np.arange(1, n + 1)[None, :] >= lower[:, None]) & (np.arange(1, n + 1)[None, :] <= upper[:, None])
     expected = forecast.expected_position[keep]
+    band_rank = example.ranks.get("championship")
+    band_rank = band_rank[keep] if band_rank is not None else actual
     row = {
         "winner_log_loss": -np.log(max(forecast.position_probs[winner, 0], EPS)),
         "rps": float(np.mean(np.sum((cdf - observed) ** 2, axis=1) / (n - 1))),
@@ -50,17 +56,18 @@ def score(forecast, example):
         "brier_top10": float(np.mean((forecast.top(10)[keep] - (actual <= 10)) ** 2)),
         "position_mae": float(np.mean(np.abs(expected - actual))),
         "coverage_80": float(np.mean((actual >= lower) & (actual <= upper))),
+        "interval_mass": float(np.mean(np.sum(p * inside, axis=1))),
         "interval_width": float(np.mean(upper - lower + 1)),
     }
     for low, high, band in BANDS:
-        in_band = (actual >= low) & (actual <= high)
+        in_band = (band_rank >= low) & (band_rank < high + 1)
         row[f"position_mae_{band}"] = float(np.mean(np.abs(expected - actual)[in_band])) if in_band.any() else np.nan
     if forecast.outcome_probs is not None:
         outcomes = [o for o, x in zip(example.outcomes, example.excluded) if not x]
         probs = forecast.outcome_probs[keep]
         known = [(i, OUTCOMES.index(o)) for i, o in enumerate(outcomes) if o in OUTCOMES]
         row["outcome_log_loss"] = float(np.mean([-np.log(max(probs[i, k], EPS)) for i, k in known])) if known else np.nan
-        retired = np.array([o in RETIRED for o in outcomes], dtype=float)
+        retired = np.array([o in RETIREMENTS for o in outcomes], dtype=float)
         p_retired = probs[:, OUTCOMES.index("mechanical")] + probs[:, OUTCOMES.index("incident_or_other")]
         row["retirement_brier"] = float(np.mean((p_retired - retired) ** 2))
     return row
@@ -110,11 +117,43 @@ def walk_forward(examples, models, train_examples=()):
     return pd.DataFrame(rows)
 
 
+def common_events(scores):
+    """Only events every model forecast, so means compare like with like."""
+    models = scores.model.nunique()
+    counts = scores.groupby("event_key").model.nunique()
+    return scores[scores.event_key.isin(counts[counts == models].index)]
+
+
 def summarise(scores):
-    metrics = [c for c in scores.columns if c not in ("event_key", "season", "model", "beta")]
-    overall = scores.groupby("model")[metrics].mean()
-    by_season = scores.groupby(["model", "season"])[metrics].mean()
+    common = common_events(scores)
+    metrics = [c for c in scores.columns if c not in ID_COLUMNS]
+    overall = common.groupby("model")[metrics].mean()
+    overall.insert(0, "events", common.groupby("model").event_key.nunique())
+    by_season = common.groupby(["model", "season"])[metrics].mean()
     return overall, by_season
+
+
+def compare(scores, reference, metric="rps", lower_is_better=True, resamples=2000, seed=0):
+    """Paired per-event difference of each model against `reference` on common events,
+    with a bootstrap 90% interval. A component is better beyond noise when the
+    whole interval is on the improving side of zero."""
+    common = common_events(scores)
+    table = common.pivot_table(index="event_key", columns="model", values=metric)
+    base = f"baseline:{reference}" if f"baseline:{reference}" in table else reference
+    rng = np.random.default_rng(seed)
+    rows = []
+    for model in table.columns:
+        if model == base:
+            continue
+        diff = (table[model] - table[base]).dropna().to_numpy()
+        if not lower_is_better:
+            diff = -diff
+        samples = rng.choice(diff, size=(resamples, diff.size)).mean(axis=1)
+        low, high = np.quantile(samples, [0.05, 0.95])
+        rows.append({"model": model, "reference": base, "metric": metric, "events": diff.size,
+                     "mean_difference": diff.mean(), "interval_90_low": low, "interval_90_high": high,
+                     "better_beyond_noise": bool(high < 0), "share_of_events_better": float(np.mean(diff < 0))})
+    return pd.DataFrame(rows)
 
 
 def git_revision():
@@ -124,7 +163,8 @@ def git_revision():
         return None
 
 
-def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdout=False, archive=None, out=None):
+def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdout=False, archive=None, out=None,
+        reference="uniform"):
     archive = archive or Archive()
     if set(seasons) & HOLDOUT_SEASONS and not allow_holdout:
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
@@ -132,6 +172,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     examples = prepare(archive, session_type, cutoff_label, seasons, allow_holdout=allow_holdout)
     scores = walk_forward(examples, models, train)
     overall, by_season = summarise(scores)
+    comparison = compare(scores, reference)
     manifest = {
         "session_type": session_type, "cutoff": cutoff_label, "seasons": list(seasons), "warmup": list(warmup),
         "models": list(models), "events": len(examples), "git_revision": git_revision(),
@@ -143,5 +184,6 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         scores.to_csv(out / "scores.csv", index=False)
         overall.to_csv(out / "overall.csv")
         by_season.to_csv(out / "by_season.csv")
+        comparison.to_csv(out / "comparison.csv", index=False)
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
-    return scores, overall, by_season, manifest
+    return scores, overall, by_season, comparison, manifest

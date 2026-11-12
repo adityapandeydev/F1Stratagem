@@ -4,16 +4,21 @@ Because every quantity comes from the same draws, the forecast is consistent by
 construction: each entrant's position distribution sums to 1, each position is
 filled exactly once per draw, outcome probabilities sum to 1 and win <= podium
 <= top 10. `check()` asserts these properties.
+
+Finite simulations can give an outcome zero probability. One prior pseudo-draw of
+a uniformly random, fully classified order is added to every forecast, so no
+outcome is impossible and every consistency property still holds.
 """
 
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from .rules import points_table
+from .rules import points_positions, points_table
 from .targets import OUTCOMES
 
 INTERVAL = (0.1, 0.9)  # central 80% interval
+PRIOR_DRAWS = 1.0
 
 
 @dataclass
@@ -37,12 +42,18 @@ class Forecast:
         """`positions`: draws x entrants array of finishing positions (1-based).
         `outcomes`: draws x entrants array of indices into OUTCOMES, or None."""
         draws, entrants = positions.shape
-        position_probs = np.zeros((entrants, entrants))
-        for column in range(entrants):
-            position_probs[column] = np.bincount(positions[:, column] - 1, minlength=entrants) / draws
+        total = draws + PRIOR_DRAWS
+        counts = np.stack([np.bincount(positions[:, column] - 1, minlength=entrants) for column in range(entrants)])
+        position_probs = (counts + PRIOR_DRAWS / entrants) / total
         outcome_probs = expected_points = None
         if outcomes is not None:
-            outcome_probs = np.stack([(outcomes == k).mean(axis=0) for k in range(len(OUTCOMES))], axis=1)
+            paying = min(points_positions(season, session_type), entrants)
+            prior = np.zeros(len(OUTCOMES))
+            prior[OUTCOMES.index("win")] = 1 / entrants
+            prior[OUTCOMES.index("other_points")] = (paying - 1) / entrants
+            prior[OUTCOMES.index("outside_points")] = (entrants - paying) / entrants
+            outcome_counts = np.stack([(outcomes == k).sum(axis=0) for k in range(len(OUTCOMES))], axis=1)
+            outcome_probs = (outcome_counts + PRIOR_DRAWS * prior) / total
             table = np.zeros(entrants + 1)
             scoring = points_table(season, session_type)
             table[1:len(scoring) + 1] = scoring[:entrants]

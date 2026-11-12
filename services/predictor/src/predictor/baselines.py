@@ -22,7 +22,7 @@ import pandas as pd
 from .forecast import Forecast
 from .rules import points_positions
 from .simulate import log_likelihood, sample_orders
-from .targets import OUTCOMES
+from .targets import OUTCOMES, RETIREMENTS
 
 BETA_GRID = np.round(np.concatenate([np.arange(0.0, 0.5, 0.02), np.arange(0.5, 2.01, 0.1)]), 3)
 DRAWS = 4000
@@ -109,9 +109,9 @@ class RankBaseline:
             self.beta = float(BETA_GRID[int(np.argmax(scores))])
         outcomes = [o for e in examples for o, x in zip(e.outcomes, e.excluded) if o is not None and not x]
         if outcomes:
-            retired = [o for o in outcomes if o in ("mechanical", "incident_or_other", "retired_unknown")]
+            retired = [o for o in outcomes if o in RETIREMENTS]
             self.retire_rate = len(retired) / len(outcomes)
-            resolved = [o for o in retired if o != "retired_unknown"]
+            resolved = [o for o in retired if o in ("mechanical", "incident_or_other")]
             if resolved:
                 self.mechanical_share = resolved.count("mechanical") / len(resolved)
         return self

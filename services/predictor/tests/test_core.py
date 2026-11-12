@@ -39,7 +39,9 @@ def test_forecast_from_draws_is_consistent():
     win, other = OUTCOMES.index("win"), OUTCOMES.index("other_points")
     outcomes = np.where(positions == 1, win, other)
     forecast = Forecast.from_draws(positions=positions, outcomes=outcomes, season=2023, session_type="R", **fields())
-    assert forecast.position_probs[0].tolist() == [0.5, 0.25, 0.25]
+    # 4 draws plus one uniform prior pseudo-draw
+    assert forecast.position_probs[0] == pytest.approx(np.array([2 + 1 / 3, 1 + 1 / 3, 1 + 1 / 3]) / 5)
+    assert np.all(forecast.outcome_probs[:, OUTCOMES.index("win")] <= forecast.top(1) + 1e-12)
     assert forecast.top(1).sum() == pytest.approx(1)
     assert forecast.expected_points[0] == pytest.approx((25 + 18 + 25 + 15) / 4)
     lower, upper = forecast.interval()
@@ -72,6 +74,21 @@ def test_race_outcomes():
 def test_sprint_points_positions_follow_the_season():
     frame = classify(results([("1", 1, "1", "Finished"), ("2", 4, "4", "Finished")]), 2021, "S")
     assert dict(zip(frame.driver_number, frame.outcome)) == {"1": "win", "2": "outside_points"}
+
+
+def test_repeated_positions_are_re_ranked_by_lap_time():
+    frame = pd.DataFrame({"DriverNumber": ["77", "11", "22"], "Position": [15.0, 15.0, 16.0],
+                          "ClassifiedPosition": ["", "", ""], "Status": ["", "", ""],
+                          "Q1": pd.to_timedelta(["89.798s", "89.968s", "90.025s"])})
+    classified = classify(frame, 2023, "Q")
+    assert classified.set_index("driver_number").position.to_dict() == {"77": 15, "11": 16, "22": 17}
+    assert classified.position_repaired.any()
+
+
+def test_unmapped_statuses_count_as_retirements():
+    from predictor.targets import RETIREMENTS
+    frame = classify(results([("1", 1, "1", "Finished"), ("2", 2, "R", "Something new")]), 2023, "R")
+    assert frame.outcome.iloc[1] == "unmapped" and "unmapped" in RETIREMENTS
 
 
 def test_qualifying_has_positions_but_no_outcomes():

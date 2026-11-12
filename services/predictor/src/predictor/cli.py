@@ -25,16 +25,21 @@ def main(argv=None):
     evaluate.add_argument("--cutoff", required=True, help="e.g. pre_weekend, after_FP2, after_Q")
     evaluate.add_argument("--models", nargs="+", choices=sorted(RANKERS), default=sorted(RANKERS))
     evaluate.add_argument("--seasons", type=int, nargs="+", default=list(DEVELOPMENT_SEASONS))
+    evaluate.add_argument("--reference", default="uniform", help="model the others are compared against")
     evaluate.add_argument("--allow-holdout", action="store_true",
                           help="evaluate held-out seasons (2025-2026); only at model selection")
     args = parser.parse_args(argv)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = SERVICE_ROOT / "data" / "runs" / f"{stamp}-{args.session}-{args.cutoff}"
-    _, overall, _, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
-                                             allow_holdout=args.allow_holdout, out=out)
+    _, overall, _, comparison, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
+                                                         allow_holdout=args.allow_holdout, out=out,
+                                                         reference=args.reference)
     with pd.option_context("display.width", 200, "display.max_columns", 30, "display.precision", 3):
         print(f"{manifest['events']} events, session {args.session}, cutoff {args.cutoff}")
         print(overall.T)
+        print()
+        print(f"Paired RPS difference vs {args.reference} (negative = better), 90% bootstrap interval:")
+        print(comparison.drop(columns=["reference", "metric"]).to_string(index=False))
     print(f"Run: {out}")
     return 0
 

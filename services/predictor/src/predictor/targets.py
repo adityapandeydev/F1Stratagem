@@ -7,6 +7,7 @@ outcome:
     win, other_points, outside_points        classified finishers
     mechanical, incident_or_other            retirements with a stated cause
     retired_unknown                          retirements recorded only as "Retired"
+    unmapped                                 retirements with a status not yet mapped
     excluded                                 did not start, withdrawn, disqualified
 
 From 2023 the sources record almost every retirement as "Retired", so the
@@ -27,7 +28,7 @@ MECHANICAL = frozenset({
     "ERS", "Engine", "Exhaust", "Fuel leak", "Fuel pressure", "Fuel pump", "Fuel system", "Gearbox", "Halfshaft",
     "Hydraulics", "Mechanical", "MGU-H", "MGU-K", "Oil leak", "Oil pressure", "Overheating", "Power loss",
     "Power Unit", "Radiator", "Rear wing", "Steering", "Suspension", "Technical", "Throttle", "Transmission",
-    "Turbo", "Undertray", "Vibrations", "Water leak", "Water pressure", "Wheel bearing",
+    "Turbo", "Undertray", "Vibrations", "Water leak", "Water pressure", "Water pump", "Wheel bearing",
 })
 # Statuses describing a collision, driver error, damage or an operational problem.
 INCIDENT_OR_OTHER = frozenset({
@@ -35,6 +36,8 @@ INCIDENT_OR_OTHER = frozenset({
     "Puncture", "Spun off", "Tyre", "Wheel", "Wheel nut",
 })
 GENERIC_RETIREMENT = frozenset({"Retired"})
+# Non-classified, non-excluded entrants: every one of these is a retirement.
+RETIREMENTS = ("mechanical", "incident_or_other", "retired_unknown", "unmapped")
 EXCLUDED_CODES = frozenset({"D", "E", "F", "W"})  # disqualified, excluded, failed to qualify, withdrawn
 
 
@@ -61,6 +64,18 @@ def classify(results, season, session_type):
         "classified_position": results.ClassifiedPosition.astype("string"),
     })
     frame = frame.dropna(subset=["position"]).copy()
+    frame["position_repaired"] = False
+    if frame.position.duplicated().any():
+        # The source occasionally repeats a position (e.g. two drivers 15th). Re-rank by the
+        # published position, then by the session's own best times; the raw data is unchanged.
+        best = [results.get(column) for column in ("Q3", "Q2", "Q1") if column in results]
+        tiebreak = pd.concat(best, axis=1).loc[frame.index] if best else pd.DataFrame(index=frame.index)
+        keys = pd.concat([frame.position, tiebreak], axis=1)
+        order = keys.sort_values(list(keys.columns), na_position="last").index
+        first = int(frame.position.min())
+        repaired = pd.Series(range(first, first + len(frame)), index=order)
+        frame["position_repaired"] = repaired != frame.position
+        frame["position"] = repaired
     frame["position"] = frame.position.astype(int)
     if session_type not in ("R", "S"):
         frame["outcome"] = pd.NA

@@ -6,7 +6,7 @@ import pytest
 
 from predictor.archive import Archive, CutoffViolation
 from predictor.baselines import Example, RankBaseline
-from predictor.evaluation import score, walk_forward
+from predictor.evaluation import compare, score, walk_forward
 from predictor.forecast import Forecast
 from predictor.targets import HoldoutError, session_target
 
@@ -85,11 +85,12 @@ def example(positions, ranks, available, cutoff):
 
 def test_perfect_forecast_scores_zero_error():
     ex = example([1, 2, 3], [1, 2, 3], "2023-01-01", "2023-01-01")
-    forecast = Forecast.from_draws(positions=np.array([[1, 2, 3]]), season=2023, session_type="Q",
+    forecast = Forecast.from_draws(positions=np.tile([1, 2, 3], (100000, 1)), season=2023, session_type="Q",
                                    event_key="e", cutoff_label="c", cutoff_time="t", driver_numbers=["0", "1", "2"],
                                    driver_ids=["a", "b", "c"], model="perfect", seed=0)
     row = score(forecast, ex)
-    assert row["rps"] == 0 and row["position_mae"] == 0 and row["coverage_80"] == 1 and row["winner_log_loss"] == 0
+    assert row["rps"] < 1e-4 and row["position_mae"] < 1e-4 and row["coverage_80"] == 1
+    assert row["winner_log_loss"] < 1e-4 and row["interval_mass"] > 0.99
 
 
 def test_beta_is_fitted_only_on_earlier_events_and_reflects_informative_ranks():
@@ -99,3 +100,15 @@ def test_beta_is_fitted_only_on_earlier_events_and_reflects_informative_ranks():
     first = history[0]
     scores = walk_forward([first], ["qualifying"])
     assert scores.beta.iloc[0] == 0.0          # nothing finished before the first cutoff
+
+
+def test_paired_comparison_uses_common_events_and_flags_clear_improvements():
+    scores = pd.DataFrame({
+        "event_key": ["a", "b", "c", "d", "a", "b", "c", "d", "a"],
+        "season": 2023, "beta": 0.0,
+        "model": ["baseline:uniform"] * 4 + ["baseline:qualifying"] * 4 + ["baseline:practice"],
+        "rps": [0.2, 0.2, 0.2, 0.2, 0.1, 0.11, 0.09, 0.1, 0.05],
+    })
+    result = compare(scores, "uniform").set_index("model")
+    assert result.loc["baseline:qualifying", "better_beyond_noise"]
+    assert "baseline:practice" not in result.index or result.loc["baseline:practice", "events"] == 1
