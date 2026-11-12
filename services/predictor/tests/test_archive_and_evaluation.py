@@ -112,3 +112,14 @@ def test_paired_comparison_uses_common_events_and_flags_clear_improvements():
     result = compare(scores, "uniform").set_index("model")
     assert result.loc["baseline:qualifying", "better_beyond_noise"]
     assert "baseline:practice" not in result.index or result.loc["baseline:practice", "events"] == 1
+
+
+def test_reviewed_causes_replace_generic_retirements(archive, monkeypatch):
+    import predictor.targets as targets
+    folder = archive.root / "sessions" / "2023" / "2023-01-5" / "normalized"
+    pd.DataFrame({"DriverNumber": ["1", "2"], "Position": [1.0, 2.0], "ClassifiedPosition": ["1", "R"],
+                  "Status": ["Finished", "Retired"], "Points": [25.0, 0.0]}).to_parquet(folder / "results.parquet")
+    archive._table.cache_clear()
+    monkeypatch.setattr(targets, "reviewed_causes", lambda: {"2023-01-5/2": "collision_victim"})
+    target = targets.session_target(archive, "2023-01", "R").set_index("driver_number")
+    assert target.loc["2", "outcome"] == "incident_or_other" and target.loc["2", "reviewed_cause"] == "collision_victim"

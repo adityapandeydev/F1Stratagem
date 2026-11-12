@@ -10,12 +10,16 @@ outcome:
     unmapped                                 retirements with a status not yet mapped
     excluded                                 did not start, withdrawn, disqualified
 
-From 2023 the sources record almost every retirement as "Retired", so the
-mechanical / incident split is scored only where a cause is stated. Unknown stays
-unknown; it is never imputed.
+From 2023 the sources record almost every retirement as "Retired". Causes
+reviewed by hand from race reports (`f1data labels`) replace the recorded status
+where they exist; otherwise the split is scored only where a cause is stated.
+Unknown stays unknown; it is never imputed.
 """
 
+import functools
+
 import pandas as pd
+from f1data.labels import load_labels
 
 from .rules import points_positions
 
@@ -39,6 +43,15 @@ GENERIC_RETIREMENT = frozenset({"Retired"})
 # Non-classified, non-excluded entrants: every one of these is a retirement.
 RETIREMENTS = ("mechanical", "incident_or_other", "retired_unknown", "unmapped")
 EXCLUDED_CODES = frozenset({"D", "E", "F", "W"})  # disqualified, excluded, failed to qualify, withdrawn
+
+
+# Reviewed causes (f1data labels) -> outcome. The finer cause is kept for incident models.
+LABEL_OUTCOME = {"mechanical": "mechanical", "unknown": "retired_unknown"}
+
+
+@functools.lru_cache(maxsize=1)
+def reviewed_causes():
+    return {key: label["cause"] for key, label in load_labels()["retirements"].items()}
 
 
 class HoldoutError(PermissionError):
@@ -112,4 +125,10 @@ def session_target(archive, event_key, session_type, allow_holdout=False):
     ids = archive.entrants[archive.entrants.session_id == session_id][["driver_number", "driver_id", "team_id"]]
     target = target.merge(ids, on="driver_number", how="left")
     target.insert(0, "session_id", session_id)
+    if session_type in ("R", "S"):
+        causes = reviewed_causes()
+        target["reviewed_cause"] = [causes.get(f"{session_id}/{number}") for number in target.driver_number]
+        relabel = target.outcome.isin(RETIREMENTS) & target.reviewed_cause.notna()
+        target.loc[relabel, "outcome"] = target.loc[relabel, "reviewed_cause"].map(
+            lambda cause: LABEL_OUTCOME.get(cause, "incident_or_other"))
     return target
