@@ -4,6 +4,7 @@
     f1data jolpica   download | tables | report | verify
     f1data openmeteo download | tables | report | verify
     f1data fia       index | download | extract | report | verify
+    f1data reference build | report | verify
     f1data verify    every source
 
 This is the only process that writes the archive's source data (the prediction
@@ -15,7 +16,7 @@ import json
 from pathlib import Path
 import sys
 
-from . import audit, fia, jolpica, openmeteo, sessions
+from . import audit, fia, jolpica, openmeteo, reference, sessions
 from .paths import default_data_root
 
 
@@ -26,7 +27,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="f1data", description=__doc__.splitlines()[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     commands = parser.add_subparsers(dest="source", required=True, metavar="SOURCE")
-    for module in (sessions, jolpica, openmeteo, fia):
+    for module in (sessions, jolpica, openmeteo, fia, reference):
         module.register(commands, common)
     everything = commands.add_parser("verify", parents=[common], help="verify every source")
     everything.set_defaults(handler=verify_all)

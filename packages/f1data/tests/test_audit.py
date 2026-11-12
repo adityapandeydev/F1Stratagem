@@ -30,6 +30,9 @@ def archive(tmp_path):
     write(fia / "pdf/2020/austria/doc-001.pdf", b"%PDF")
     (fia / "manifest.json").write_text(json.dumps(
         {"files": {"pdf/2020/austria/doc-001.pdf": {"sha256": sha(b"%PDF")}}}))
+    reference = tmp_path / "reference"
+    write(reference / "events.parquet", b"events")
+    (reference / "manifest.json").write_text(json.dumps({"files": {"events": {"rows": 1, "sha256": sha(b"events")}}}))
     return tmp_path
 
 

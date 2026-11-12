@@ -32,6 +32,7 @@ f1data openmeteo download
 f1data fia index
 f1data fia download
 f1data fia extract
+f1data reference build
 f1data verify
 ```
 
@@ -48,6 +49,7 @@ request per 10 s). A full FastF1 download takes one to two days.
 | `f1data jolpica download\|tables\|report\|verify` | API pages, flattened tables, inventory, checksum audit |
 | `f1data openmeteo download\|tables\|report\|verify` | Observed weather and forecasts as issued |
 | `f1data fia index\|download\|extract\|report\|verify` | Document index, PDFs, parsed tables (PU and gearbox usage, car updates, tyre nominations) |
+| `f1data reference build\|report\|verify` | Canonical events, sessions, entrants, drivers, teams and circuits (Ergast IDs) |
 | `f1data verify` | Checksum audit of every source; exits non-zero on any mismatch, missing or unlisted file |
 
 `f1data fastf1 ingest` takes `--years` (whole seasons) or `--weekends FILE` (a

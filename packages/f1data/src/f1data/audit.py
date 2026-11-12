@@ -1,4 +1,5 @@
-"""Integrity audit and inventory for the external sources (Jolpica, Open-Meteo, FIA).
+"""Integrity audit and inventory for the external sources (Jolpica, Open-Meteo, FIA)
+and the derived reference tables.
 
 Every downloaded file is recorded in its source's manifest with a SHA-256.
 `verify` re-hashes them all and also reports files on disk that no manifest
@@ -10,7 +11,8 @@ import json
 
 from .storage import checksum
 
-SOURCES = {"jolpica": "jolpica", "openmeteo": "open-meteo", "fia": "fia"}
+SOURCES = {"jolpica": "external/jolpica", "openmeteo": "external/open-meteo", "fia": "external/fia",
+           "reference": "reference"}
 
 
 def _load(path):
@@ -41,11 +43,14 @@ def recorded_files(source, root):
     if source == "fia":
         files = _load(root / "manifest.json").get("files", {})
         return {name: info["sha256"] for name, info in files.items()}, ["pdf/**/*"]
+    if source == "reference":
+        files = _load(root / "manifest.json").get("files", {})
+        return {f"{name}.parquet": info["sha256"] for name, info in files.items()}, ["*.parquet"]
     raise ValueError(f"unknown source {source}")
 
 
 def verify_source(source, data_root):
-    root = data_root / "external" / SOURCES[source]
+    root = data_root / SOURCES[source]
     expected, patterns = recorded_files(source, root)
     checked, mismatched, missing = 0, [], []
     for name, sha256 in sorted(expected.items()):
@@ -67,10 +72,10 @@ def verify_source(source, data_root):
 
 
 def report_source(source, data_root):
-    root = data_root / "external" / SOURCES[source]
+    root = data_root / SOURCES[source]
     expected, _ = recorded_files(source, root)
     tables = {}
-    manifest = root / "tables" / "manifest.json"
+    manifest = root / ("manifest.json" if source == "reference" else "tables/manifest.json")
     if manifest.is_file():
         tables = {name: info.get("rows") for name, info in _load(manifest).get("files", {}).items()}
     return {
