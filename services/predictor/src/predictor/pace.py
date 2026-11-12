@@ -54,7 +54,7 @@ are fitted on qualifying alone, then frozen; only practice noise and offsets are
 fitted on the full evidence.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import zlib
 
 import numpy as np
@@ -119,6 +119,37 @@ class Hyper:
         fields = {name: getattr(base, name) for name in cls.SCALARS}
         fields.update(zip(scalars, values[len(noise_types):]))
         return cls(noise=noise, **fields)
+
+
+NESTED_AFFINITY = {"affinity_prior": 1e-3, "affinity_drift": 1e-8, "affinity_winter": 1e-8}
+LOG_BOUNDS = (-20.0, 4.0)   # settings are fitted as logs: about 2e-9 to 55
+FIT_TOLERANCE = 0.01        # stop once a full round improves the log-likelihood by less than this
+FIT_ROUNDS = 10
+
+
+def _optimise(negative, x0):
+    """Minimise `negative` thoroughly; fit quality matters more than run time.
+
+    Each round runs Powell, then L-BFGS-B (finite differences) and adaptive
+    Nelder-Mead from the best point so far; rounds repeat until one improves the
+    objective by less than FIT_TOLERANCE. Methods differ in where they stall, so
+    alternating them escapes points that a single method takes for an optimum.
+    Returns (best point, best value, converged)."""
+    bounds = [LOG_BOUNDS] * len(x0)
+    x = np.clip(np.asarray(x0, dtype=float), *LOG_BOUNDS)
+    value = negative(x)
+    for _ in range(FIT_ROUNDS):
+        round_start = value
+        for method, options in (("Powell", {"xtol": 1e-4, "ftol": 1e-8, "maxfev": 20000}),
+                                ("L-BFGS-B", {"eps": 1e-5, "ftol": 1e-12, "gtol": 1e-5, "maxfun": 20000}),
+                                ("Nelder-Mead", {"xatol": 1e-4, "fatol": 1e-4, "maxfev": 20000,
+                                                 "adaptive": True})):
+            result = minimize(negative, x, method=method, bounds=bounds, options=options)
+            if np.isfinite(result.fun) and result.fun < value:
+                x, value = np.clip(result.x, *LOG_BOUNDS), float(result.fun)
+        if round_start - value < FIT_TOLERANCE:
+            return x, value, True
+    return x, value, False
 
 
 def _lap_groups(session_type, results, laps):
@@ -365,19 +396,48 @@ class PaceModel:
         seasons = sorted(set(sessions.scheduled_start_utc.dt.year))
         winter = self.winter and len(seasons) > 1
         regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
-        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, self.affinity)
+        # affinity needs repeat visits: with a single season of data every circuit was seen once
+        affinity = self.affinity and len(seasons) > 1
+        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
+        default = self._default_start()
+        start = replace(start, **({"affinity_prior": 0.0} if self.affinity and not affinity else {}),
+                        **{s: getattr(default, s) for s in scalars if getattr(start, s) <= 0})
+
+        evaluations = [0]
 
         def negative(values):
+            evaluations[0] += 1
             return -self.run(view, Hyper.from_vector(values, noise_types, scalars, start), sessions).objective
 
-        dimensions = len(noise_types) + len(scalars)
-        result = minimize(negative, start.vector(noise_types, scalars), method="Nelder-Mead",
-                          options={"maxiter": 80 * dimensions, "xatol": 1e-3, "fatol": 1e-2})
-        self.last_fit = {"converged": bool(result.success), "iterations": int(result.nit),
-                         "objective": -float(result.fun), "fitted": noise_types + scalars}
-        return Hyper.from_vector(result.x, noise_types, scalars, start)
+        starts = {"given": start}
+        if start != default:
+            starts["default"] = replace(default, **({"affinity_prior": 0.0} if self.affinity and not affinity else {}))
+        if self.affinity and any(s.startswith("affinity") for s in scalars):
+            # nested start: this model without its affinity (fitted first), the affinity barely on.
+            # The full fit begins there, so it can never end below the model it extends.
+            extra = [s for s in scalars if s.startswith("affinity")]
+            base = [s for s in scalars if s not in extra]
+            assert scalars == base + extra
+            off = np.log([NESTED_AFFINITY[s] for s in extra])
+            x, _, _ = _optimise(lambda v: negative(np.concatenate([v, off])), start.vector(noise_types, base))
+            starts["nested"] = Hyper.from_vector(np.concatenate([x, off]), noise_types, scalars, start)
+        best, results = None, {}
+        for label, initial in starts.items():
+            x, value, converged = _optimise(negative, initial.vector(noise_types, scalars))
+            results[label] = -float(value)
+            if best is None or value < best[1]:
+                best = (x, value, converged, label)
+        self.last_fit = {"converged": bool(best[2]), "evaluations": evaluations[0], "objective": -float(best[1]),
+                         "best_start": best[3], "starts": results, "fitted": noise_types + scalars}
+        return Hyper.from_vector(best[0], noise_types, scalars, start)
+
+    def _default_start(self):
+        return Hyper(**({"car_winter": 0.5, "driver_winter": 0.05, "regulation_multiplier": 3.0}
+                        if self.winter else {}), **({"weekend_prior": 0.3} if self.weekend else {}),
+                     **({"affinity_prior": 0.2, "affinity_drift": 0.001, "affinity_winter": 0.02}
+                        if self.affinity else {}))
 
     def fit(self, history, view_for):
         return self
@@ -387,10 +447,7 @@ class PaceModel:
             return
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
-        start = self.hyper or Hyper(**({"car_winter": 0.5, "driver_winter": 0.05, "regulation_multiplier": 3.0}
-                                       if self.winter else {}), **({"weekend_prior": 0.3} if self.weekend else {}),
-                                    **({"affinity_prior": 0.2, "affinity_drift": 0.001, "affinity_winter": 0.02}
-                                       if self.affinity else {}))
+        start = self.hyper or self._default_start()
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
         if (sessions.session_type == "Q").sum() < 5:
             self.hyper = start

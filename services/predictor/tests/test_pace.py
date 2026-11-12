@@ -202,3 +202,15 @@ def test_regulation_change_inflates_parked_affinity_but_keeps_its_value():
     index = state.index[("affinity", ("fast", "marina_bay"))]
     assert state.mean[index] == pytest.approx(0.7)                       # value kept
     assert state.cov[index, index] == pytest.approx(0.04 + 0.01 * 3.0)   # 2022 winter x regulation multiplier
+
+
+def test_optimiser_reaches_the_minimum_of_a_curved_valley():
+    from predictor.pace import _optimise
+
+    def rosenbrock(x):
+        return float(sum(100 * (x[1:] - x[:-1] ** 2) ** 2 + (1 - x[:-1]) ** 2))
+
+    x, value, converged = _optimise(rosenbrock, np.full(8, -1.5))
+    assert converged
+    assert value < 1e-3
+    assert np.allclose(x, 1.0, atol=0.05)
