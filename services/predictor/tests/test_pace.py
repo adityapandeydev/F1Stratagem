@@ -96,3 +96,16 @@ def test_team_session_offset_absorbs_practice_flattering():
     assert offsets["fast"] - np.mean([offsets["mid"], offsets["slow"]]) == pytest.approx(-0.6, abs=0.1)
     estimate = state.design(cars, drivers, "Q") @ state.mean
     assert np.allclose(estimate - estimate.mean(), truth - truth.mean(), atol=0.08)
+
+
+def test_winter_inflation_is_larger_at_regulation_changes():
+    def car_variance_after(year_from, year_to):
+        state = Filter(Hyper(car_drift=0.0, driver_drift=0.0, car_prior=1.0, driver_prior=1.0,
+                             car_winter=0.5, driver_winter=0.05, regulation_multiplier=3.0))
+        state.column("fast", "car")
+        state.advance(pd.Timestamp(f"{year_from}-11-01", tz=UTC))
+        state.advance(pd.Timestamp(f"{year_to}-03-01", tz=UTC))
+        return state.cov[0, 0]
+    assert car_variance_after(2020, 2021) == pytest.approx(1.0 + 0.5)       # ordinary winter
+    assert car_variance_after(2021, 2022) == pytest.approx(1.0 + 1.5)       # new regulations
+    assert car_variance_after(2021, 2021) == pytest.approx(1.0)             # no season boundary

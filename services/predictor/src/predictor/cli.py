@@ -31,7 +31,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = SERVICE_ROOT / "data" / "runs" / f"{stamp}-{args.session}-{args.cutoff}"
-    _, overall, _, comparison, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
+    scores, overall, _, comparison, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
                                                          allow_holdout=args.allow_holdout, out=out,
                                                          reference=args.reference)
     with pd.option_context("display.width", 200, "display.max_columns", 30, "display.precision", 3):
@@ -40,6 +40,14 @@ def main(argv=None):
         print()
         print(f"Paired RPS difference vs {args.reference} (negative = better), 90% bootstrap interval:")
         print(comparison.drop(columns=["reference", "metric"]).to_string(index=False))
+        early = scores[scores.event_key.str[-2:].astype(int) <= 3]
+        if early.event_key.nunique() >= 5:
+            print()
+            print(f"First three rounds of each season only ({early.event_key.nunique()} events):")
+            print(evaluation.compare(early, args.reference).drop(columns=["reference", "metric"]).to_string(index=False))
+        print()
+        print("RPS by season:")
+        print(evaluation.common_events(scores).pivot_table(index="season", columns="model", values="rps").round(4))
     print(f"Run: {out}")
     return 0
 

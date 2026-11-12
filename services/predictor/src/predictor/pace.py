@@ -10,7 +10,11 @@ qualifying, FP1-FP3, testing) has its own noise level and, per car lineage, a
 latent offset with a zero-mean prior that drifts slowly. The offsets learn
 systematic patterns such as a team that is flattered by practice (engine modes,
 low fuel) only as far as the data supports them. Between sessions every state
-drifts as a random walk whose variance grows with the days elapsed.
+drifts as a random walk whose variance grows with the days elapsed. With winter
+inflation enabled (stage 3), the start of each season adds further variance to
+every car and driver, multiplied for cars in seasons that begin under new
+technical regulations (2022, 2026): early-season sessions then move estimates a
+lot, mid-season ones little.
 
 Observations are relative within a group of laps run under shared conditions:
 each qualifying segment (Q1-Q3, SQ1-SQ3), or each practice / testing session
@@ -32,6 +36,7 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .forecast import Forecast
+from .rules import REGULATION_CHANGES
 
 SEGMENTS = ("Q1", "Q2", "Q3")
 SEGMENTED = frozenset({"Q", "SQ"})
@@ -52,26 +57,34 @@ class Hyper:
     car_prior: float = 1.0      # prior spreads of new states
     driver_prior: float = 0.3
     offset_prior: float = 0.3
+    car_winter: float = 0.0     # variances added at each season start (stage 3)
+    driver_winter: float = 0.0
+    regulation_multiplier: float = 1.0   # car winter variance multiplier at new regulations
 
-    SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior")
+    SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
+               "car_winter", "driver_winter", "regulation_multiplier")
 
     @staticmethod
-    def fitted(types):
-        """Scalars that affect the likelihood: offsets only exist for non-qualifying sessions."""
+    def fitted(types, winter=False, regulation=False):
+        """Scalars that affect the likelihood. Offsets exist only for non-qualifying
+        sessions; winter terms only if the data crosses a season start; the regulation
+        multiplier only if it crosses a season that began under new regulations."""
         offsets = any(t != "Q" for t in types)
         return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()), "car_prior", "driver_prior",
-                *(("offset_prior",) if offsets else ()))
+                *(("offset_prior",) if offsets else ()), *(("car_winter", "driver_winter") if winter else ()),
+                *(("regulation_multiplier",) if winter and regulation else ()))
 
-    def vector(self, types):
-        return np.log([self.noise[t] for t in types] + [getattr(self, name) for name in self.fitted(types)])
+    def vector(self, types, winter=False, regulation=False):
+        return np.log([self.noise[t] for t in types]
+                      + [getattr(self, name) for name in self.fitted(types, winter, regulation)])
 
     @classmethod
-    def from_vector(cls, values, types, base=None):
+    def from_vector(cls, values, types, base=None, winter=False, regulation=False):
         values = np.exp(values)
         base = base or cls()
         noise = {**base.noise, **dict(zip(types, values[:len(types)]))}
         scalars = {name: getattr(base, name) for name in cls.SCALARS}
-        scalars.update(zip(cls.fitted(types), values[len(types):]))
+        scalars.update(zip(cls.fitted(types, winter, regulation), values[len(types):]))
         return cls(noise=noise, **scalars)
 
 
@@ -138,7 +151,12 @@ class Filter:
     def advance(self, time):
         if self.time is not None and time > self.time:
             steps = (time - self.time).total_seconds() / 86400 / DAY_SCALE
-            self.cov = self.cov + np.diag([self.drifts[k] * steps for k in self.kind])
+            added = np.array([self.drifts[k] * steps for k in self.kind])
+            for season in range(self.time.year + 1, time.year + 1):
+                car = self.hyper.car_winter * (self.hyper.regulation_multiplier if season in REGULATION_CHANGES else 1)
+                added = added + np.array([car if k == "car" else self.hyper.driver_winter if k == "driver" else 0.0
+                                          for k in self.kind])
+            self.cov = self.cov + np.diag(added)
         self.time = time if self.time is None else max(self.time, time)
 
     def design(self, cars, drivers, session_type="Q"):
@@ -176,9 +194,10 @@ class PaceModel:
 
     `session_types` selects the evidence: ("Q",) is stage 1, ALL_SESSIONS stage 2."""
 
-    def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1"):
+    def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False):
         self.session_types = tuple(session_types)
         self.name = name
+        self.winter = winter
         self.hyper = None
         self.fitted_season = None
         self._observations = {}
@@ -209,14 +228,18 @@ class PaceModel:
         types = [t for t in self.session_types if t in set(sessions.session_type)]
         for session in sessions.itertuples():
             self.observations(view, session)
+        seasons = sorted(set(sessions.scheduled_start_utc.dt.year))
+        winter = self.winter and len(seasons) > 1
+        regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
+        flags = {"winter": winter, "regulation": regulation}
 
         def negative(values):
-            return -self.run(view, Hyper.from_vector(values, types, start), sessions).log_likelihood
+            return -self.run(view, Hyper.from_vector(values, types, start, **flags), sessions).log_likelihood
 
-        dimensions = len(types) + len(Hyper.fitted(types))
-        result = minimize(negative, start.vector(types), method="Nelder-Mead",
+        dimensions = len(types) + len(Hyper.fitted(types, **flags))
+        result = minimize(negative, start.vector(types, **flags), method="Nelder-Mead",
                           options={"maxiter": 80 * dimensions, "xatol": 1e-3, "fatol": 1e-2})
-        return Hyper.from_vector(result.x, types, start)
+        return Hyper.from_vector(result.x, types, start, **flags)
 
     def fit(self, history, view_for):
         return self
@@ -226,7 +249,8 @@ class PaceModel:
             return
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
-        start = self.hyper or Hyper()
+        start = self.hyper or (Hyper(car_winter=0.5, driver_winter=0.05, regulation_multiplier=3.0)
+                               if self.winter else Hyper())
         self.hyper = self.fit_hyper(earlier, sessions, start) if (sessions.session_type == "Q").sum() >= 5 else start
         self.fitted_season = season
 
