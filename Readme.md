@@ -93,8 +93,8 @@ Public profiles, calendar sharing, voting and discussions.
 ## Architecture
 
 A monorepo of independently deployable services. A Go API is the single public
-entry point; Python services handle analysis and prediction; one package owns
-the data archive, which every service reads.
+entry point; Python services handle analysis and prediction; the data archive is
+shared by every service, and each dataset in it has exactly one writer.
 
 | Component | Path | Technology |
 |---|---|---|
@@ -202,6 +202,13 @@ Details per phase: [Architecture.md](Architecture.md#roadmap).
 ## License
 
 No licence has been chosen yet.
+
+## Disclaimer
+
+F1Stratagem is an unofficial project and is not associated in any way with the
+Formula 1 companies. F1, FORMULA ONE, FORMULA 1, FIA FORMULA ONE WORLD
+CHAMPIONSHIP, GRAND PRIX and related marks are trade marks of Formula One
+Licensing B.V.
 
 ---
 
