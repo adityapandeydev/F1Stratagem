@@ -97,7 +97,7 @@ def ingestion_batch(items, root, telemetry, attempts, max_sessions=None, ingest_
     fallback when it returns None. max_rate_limit_waits caps consecutive waits on
     one session, so a limit that never clears still ends the run. after_session()
     runs after every attempt (used to persist limiter state). Sessions an earlier
-    attempt left unresolved (see pilot.unresolved_attempt) are listed and skipped
+    attempt left unresolved (see sessions.unresolved_attempt) are listed and skipped
     unless retry_failed is set."""
     from .sessions import ingest
     if max_sessions is not None and (not isinstance(max_sessions, int) or isinstance(max_sessions, bool) or max_sessions < 1):

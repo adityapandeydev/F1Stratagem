@@ -52,7 +52,7 @@ def test_pre_2018_or_invalid_year_is_rejected():
             select_schedule_sessions(schedule(), year, now="2024-01-01T00:00Z")
 
 
-def test_explicit_pilot_selection_still_validates_event_identity():
+def test_explicit_weekend_selection_still_validates_event_identity():
     with pytest.raises(ValueError, match="identity"):
         select_schedule_sessions(schedule(), 2023, weekends=[{"round": 1, "event_name": "Wrong GP", "purpose": "test"}], now="2024-01-01T00:00Z")
 
