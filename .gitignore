@@ -35,10 +35,6 @@ services/*/data/
 *.sqlite
 *.ff1pkl
 
-# Local scripts
-start-backend.ps1
-startbackend.ps1
-
 # Environment
 .env
 .env.local
