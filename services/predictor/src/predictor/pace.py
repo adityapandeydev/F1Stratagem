@@ -55,6 +55,7 @@ fitted on the full evidence.
 """
 
 from dataclasses import dataclass, field, replace
+import os
 import zlib
 
 import numpy as np
@@ -62,6 +63,7 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .forecast import Forecast
+from .program import record, settings as program_settings
 from .rules import REGULATION_CHANGES
 
 SEGMENTS = ("Q1", "Q2", "Q3")
@@ -388,6 +390,29 @@ class PaceModel:
         state.horizons = horizons
         return state
 
+    def objective_function(self, view, sessions, like):
+        """hyper -> objective over `sessions`, for settings with the same weekend and
+        affinity switches as `like`. Uses the native filter when it is installed and
+        the model has the default objective (same quantity; rounding differs only),
+        else `run`. PREDICTOR_NATIVE=0 forces the Python filter."""
+        if self.objective == "all" and os.environ.get("PREDICTOR_NATIVE", "1") != "0":
+            try:
+                import predictor_native
+            except ImportError:
+                predictor_native = None
+            if predictor_native is not None:
+                weekend, affinity = like.weekend_prior > 0, like.affinity_prior > 0
+                p = record(self, view, sessions, weekend, affinity)
+                arrays = (p.ops.ravel(), p.floats, p.ints, p.group_rows.ravel(), p.row_starts, p.entries,
+                          p.values, p.slots)
+
+                def native(hyper):
+                    if (hyper.weekend_prior > 0, hyper.affinity_prior > 0) != (weekend, affinity):
+                        raise ValueError("settings switch a term the recorded program does not have")
+                    return predictor_native.log_likelihood(*arrays, *program_settings(hyper, p.noise_types))
+                return native
+        return lambda hyper: self.run(view, hyper, sessions).objective
+
     def fit_hyper(self, view, sessions, start, frozen=()):
         """Fit the settings that affect the objective, except those named in `frozen`."""
         types = [t for t in self.session_types if t in set(sessions.session_type)]
@@ -406,10 +431,11 @@ class PaceModel:
                         **{s: getattr(default, s) for s in scalars if getattr(start, s) <= 0})
 
         evaluations = [0]
+        objective = self.objective_function(view, sessions, start)
 
         def negative(values):
             evaluations[0] += 1
-            return -self.run(view, Hyper.from_vector(values, noise_types, scalars, start), sessions).objective
+            return -objective(Hyper.from_vector(values, noise_types, scalars, start))
 
         starts = {"given": start}
         if start != default:

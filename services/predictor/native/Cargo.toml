@@ -1,0 +1,19 @@
+[package]
+name = "predictor-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Native Kalman filter for the F1Stratagem pace model"
+
+[lib]
+name = "predictor_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+numpy = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -214,3 +214,64 @@ def test_optimiser_reaches_the_minimum_of_a_curved_valley():
     assert converged
     assert value < 1e-3
     assert np.allclose(x, 1.0, atol=0.05)
+
+
+def write_circuit_archive(root):
+    """Three weekends (circuits A, B, A) across a regulation change, with practice."""
+    reference = root / "reference"
+    reference.mkdir(parents=True, exist_ok=True)
+    events = [("2021-01", "A", "2021-07-02"), ("2021-02", "B", "2021-07-16"), ("2022-01", "A", "2022-03-18")]
+    sessions, entrants = [], []
+    for event, _, day in events:
+        for number, (kind, hour) in enumerate((("FP1", 10), ("Q", 15)), start=1):
+            session_id = f"{event}-{number}"
+            start = pd.Timestamp(f"{day} {hour}:00", tz=UTC)
+            sessions.append({"session_id": session_id, "event_key": event, "season": int(event[:4]),
+                             "session_type": kind, "scheduled_start_utc": start,
+                             "last_lap_end_utc": start + pd.Timedelta(hours=1)})
+            entrants += [{"session_id": session_id, "driver_number": str(i), "driver_id": d, "team_id": c,
+                          "lineage_id": c} for i, (d, c) in enumerate(LINEUP)]
+            folder = root / "sessions" / event[:4] / session_id / "normalized"
+            folder.mkdir(parents=True, exist_ok=True)
+            rng = np.random.default_rng(len(sessions))
+            times = [90 * (1 + (CARS[c] + DRIVERS[d] + rng.normal(0, 0.3)) / 100) for d, c in LINEUP]
+            if kind == "Q":
+                pd.DataFrame({"DriverNumber": [str(i) for i in range(6)], "Position": range(1, 7),
+                              "Q1": pd.to_timedelta(times, unit="s"),
+                              "Q2": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]"),
+                              "Q3": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]")}).to_parquet(folder / "results.parquet")
+            else:
+                pd.DataFrame({"DriverNumber": [str(i) for i in range(6)], "Position": range(1, 7)}).to_parquet(
+                    folder / "results.parquet")
+                pd.DataFrame({"DriverNumber": [str(i) for i in range(6)], "LapTime": pd.to_timedelta(times, unit="s"),
+                              "PitInTime": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]"),
+                              "PitOutTime": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]"),
+                              "Deleted": [False] * 6}).to_parquet(folder / "laps.parquet")
+    pd.DataFrame(sessions).to_parquet(reference / "sessions.parquet")
+    pd.DataFrame({"event_key": [e for e, _, _ in events], "season": [int(e[:4]) for e, _, _ in events],
+                  "is_testing": False, "round": [1, 2, 1], "circuit_id": [c for _, c, _ in events]}).to_parquet(
+        reference / "events.parquet")
+    pd.DataFrame(entrants).to_parquet(reference / "entrants.parquet")
+    (reference / "manifest.json").write_text(json.dumps({"built_at_utc": "now"}))
+
+
+def test_native_filter_matches_the_python_filter(tmp_path, monkeypatch):
+    native = pytest.importorskip("predictor_native")
+    from predictor.pace import ALL_SESSIONS
+    from predictor import program
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True)
+    sessions = model.sessions(view)
+    hyper = Hyper(car_winter=0.3, driver_winter=0.04, regulation_multiplier=2.5, weekend_prior=0.3,
+                  affinity_prior=0.25, affinity_drift=0.002, affinity_winter=0.05, car_drift=0.01)
+    p = program.record(model, view, sessions, True, True)
+    assert {program.PARK, program.RESET, program.ADVANCE} <= set(p.ops[:, 0])
+    assert (p.ops[:, 0] == program.ADD)[(p.ops[:, 2] >= 0)].any()          # a parked affinity resumed
+    expected = model.run(view, hyper, sessions).objective
+    got = native.log_likelihood(p.ops.ravel(), p.floats, p.ints, p.group_rows.ravel(), p.row_starts, p.entries,
+                                p.values, p.slots, *program.settings(hyper, p.noise_types))
+    assert got == pytest.approx(expected, rel=1e-12, abs=1e-9)
+    assert model.objective_function(view, sessions, hyper)(hyper) == pytest.approx(expected, rel=1e-12, abs=1e-9)
+    monkeypatch.setenv("PREDICTOR_NATIVE", "0")
+    assert model.objective_function(view, sessions, hyper)(hyper) == expected

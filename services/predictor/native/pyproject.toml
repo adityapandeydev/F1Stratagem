@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "predictor-native"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Native Kalman filter for the F1Stratagem pace model"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

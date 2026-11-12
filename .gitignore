@@ -56,3 +56,6 @@ desktop.ini
 # Misc
 *.bak
 *.tmp
+
+# Rust build output
+services/predictor/native/target/
