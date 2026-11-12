@@ -109,3 +109,47 @@ def test_winter_inflation_is_larger_at_regulation_changes():
     assert car_variance_after(2020, 2021) == pytest.approx(1.0 + 0.5)       # ordinary winter
     assert car_variance_after(2021, 2022) == pytest.approx(1.0 + 1.5)       # new regulations
     assert car_variance_after(2021, 2021) == pytest.approx(1.0)             # no season boundary
+
+
+def test_qualifying_objective_counts_only_qualifying_likelihood(tmp_path):
+    from predictor.pace import ALL_SESSIONS
+    write_archive(tmp_path, later_time_q1=90.0)
+    archive = Archive(tmp_path)
+    view = archive.view(pd.Timestamp("2023-04-01", tz=UTC))
+    sessions = view.sessions[view.sessions.session_type == "Q"].sort_values("scheduled_start_utc")
+    everything = PaceModel(ALL_SESSIONS, "all").run(view, Hyper(), sessions)
+    qualifying = PaceModel(ALL_SESSIONS, "q", objective="qualifying").run(view, Hyper(), sessions)
+    assert everything.objective == pytest.approx(everything.log_likelihood)
+    # Two horizons for qualifying: before the weekend and after its practice (here identical).
+    assert qualifying.objective == pytest.approx(2 * everything.log_likelihood)
+    assert np.allclose(qualifying.mean, everything.mean)
+
+
+def test_weekend_effect_informs_that_weekend_only():
+    """Each event the cars swing around constant long-run pace. Practice reveals the
+    swing to that weekend's qualifying, but long-run pace stays put and the next event
+    starts from it."""
+    rng = np.random.default_rng(3)
+    hyper = Hyper(noise={"Q": 0.05, "FP2": 0.05}, car_drift=1e-4, driver_drift=1e-5, offset_drift=1e-6,
+                  car_prior=2.0, driver_prior=0.5, offset_prior=0.01, weekend_prior=0.5)
+    state = Filter(hyper)
+    cars, drivers = [c for _, c in LINEUP], [d for d, _ in LINEUP]
+    truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
+    start = pd.Timestamp("2023-01-01", tz=UTC)
+    for event in range(30):
+        swing = {c: rng.normal(0, 0.5) for c in CARS}
+        weekend = np.array([swing[c] for _, c in LINEUP])
+        state.advance(start + pd.Timedelta(weeks=2 * event))
+        state.start_event(event)
+        state.update(cars, drivers, truth + weekend + rng.normal(0, 0.05, 6), "FP2")
+        if event == 29:
+            after_practice = state.design(cars, drivers, "Q") @ state.mean
+            assert np.allclose(after_practice - after_practice.mean(),
+                               (truth + weekend) - (truth + weekend).mean(), atol=0.15)
+        state.update(cars, drivers, truth + weekend + rng.normal(0, 0.05, 6), "Q")
+    state.start_event(30)
+    long_run = state.design(cars, drivers, "Q") @ state.mean
+    assert np.allclose(long_run - long_run.mean(), truth - truth.mean(), atol=0.25)
+    weekend_columns = [i for i, kind in enumerate(state.kind) if kind == "weekend"]
+    assert np.allclose(state.mean[weekend_columns], 0) and np.allclose(
+        np.diag(state.cov)[weekend_columns], hyper.weekend_prior ** 2)

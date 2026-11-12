@@ -72,17 +72,21 @@ def score(forecast, example):
     return row
 
 
-def _pace_model(stage):
+def _pace_model(stage, objective="all", weekend=False, shared=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
-    return PaceModel(ALL_SESSIONS, f"pace:v{stage}", winter=stage >= 3)
+    suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "")
+    return PaceModel(ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
+                     weekend=weekend, shared_from_qualifying=shared)
 
 
 def model_registry():
     return {**{name: (lambda name=name: RankBaseline(name)) for name in RANKERS},
             "pace": lambda: _pace_model(1), "pace2": lambda: _pace_model(2),
-            "pace3": lambda: _pace_model(3)}
+            "pace3": lambda: _pace_model(3), "pace2q": lambda: _pace_model(2, "qualifying"),
+            "pace3q": lambda: _pace_model(3, "qualifying"), "pace2w": lambda: _pace_model(2, weekend=True),
+            "pace3w": lambda: _pace_model(3, weekend=True), "pace2s": lambda: _pace_model(2, shared=True)}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):
@@ -131,7 +135,7 @@ def walk_forward(examples, models, archive, train_examples=()):
     def view_for(example):
         return archive.view(example.cutoff_time)
 
-    rows = []
+    rows, settings = [], {}
     for example in examples:
         history = [e for e in pool if e.target_available_at < example.cutoff_time]
         view = view_for(example)
@@ -140,9 +144,14 @@ def walk_forward(examples, models, archive, train_examples=()):
             forecast = model.predict(view, example)
             if forecast is None:
                 continue
+            fitted = forecast.metadata.get("hyper") or {k: v for k, v in forecast.metadata.items()
+                                                         if k in ("beta", "retire_rate", "mechanical_share")}
+            settings.setdefault(forecast.model, {}).setdefault(str(example.season), fitted)
             rows.append({"event_key": example.event_key, "season": example.season, "model": forecast.model,
                          **score(forecast, example)})
-    return pd.DataFrame(rows)
+    scores = pd.DataFrame(rows)
+    scores.attrs["settings"] = settings
+    return scores
 
 
 def common_events(scores):
@@ -164,7 +173,8 @@ def summarise(scores):
 def compare(scores, reference, metric="rps", lower_is_better=True, resamples=2000, seed=0):
     """Paired per-event difference of each model against `reference` on common events,
     with a bootstrap 90% interval. A component is better beyond noise when the
-    whole interval is on the improving side of zero."""
+    whole interval is on the improving side of zero, and fails the "no worse" gate when
+    the whole interval is on the worsening side."""
     common = common_events(scores)
     table = common.pivot_table(index="event_key", columns="model", values=metric)
     base = f"baseline:{reference}" if f"baseline:{reference}" in table else reference
@@ -180,7 +190,8 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
         low, high = np.quantile(samples, [0.05, 0.95])
         rows.append({"model": model, "reference": base, "metric": metric, "events": diff.size,
                      "mean_difference": diff.mean(), "interval_90_low": low, "interval_90_high": high,
-                     "better_beyond_noise": bool(high < 0), "share_of_events_better": float(np.mean(diff < 0))})
+                     "better_beyond_noise": bool(high < 0), "worse_beyond_noise": bool(low > 0),
+                     "share_of_events_better": float(np.mean(diff < 0))})
     return pd.DataFrame(rows)
 
 
@@ -217,5 +228,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         overall.to_csv(out / "overall.csv")
         by_season.to_csv(out / "by_season.csv")
         comparison.to_csv(out / "comparison.csv", index=False)
+        (out / "settings.json").write_text(json.dumps(scores.attrs.get("settings", {}), indent=2, default=float),
+                                           encoding="utf-8")
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     return scores, overall, by_season, comparison, manifest

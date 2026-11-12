@@ -23,9 +23,26 @@ compared with a reference driver of the same group, and laps slower than 107%
 of the group's best are discarded. A Kalman filter updates the joint state;
 teammates share the car state, which separates car from driver.
 
-Hyperparameters are fitted by maximising the one-step predictive likelihood on
-sessions available before the evaluated season starts. The forecast draws all
+Hyperparameters are fitted on sessions available before the evaluated season
+starts. With the default objective they maximise the one-step predictive
+likelihood of every observation. With the qualifying objective (v2q, v3q) every
+session still updates the state, but the settings maximise only the predictive
+likelihood of qualifying, at the two horizons the model forecasts: from the
+state before the weekend's first session, and from the state after the
+weekend's practice. Practice then informs qualifying without its own noise
+patterns deciding how fast car pace may drift. The forecast draws all
 states jointly from the posterior, adds qualifying noise and ranks the draws.
+
+Weekend term (v2w, v3w): each car also has a weekend effect shared by every
+session of one event (practice, sprint qualifying and qualifying alike) and reset
+to its prior at the next event. Track-specific swings, setup and conditions go
+there instead of moving the car's long-run pace. Before the weekend the effect is
+unknown (prior spread, shared by teammates); after practice it carries what that
+weekend's practice showed into the same weekend's qualifying.
+
+Frozen shared settings (v2s): car and driver drift, priors and qualifying noise
+are fitted on qualifying alone, then frozen; only practice noise and offsets are
+fitted on the full evidence.
 """
 
 from dataclasses import dataclass, field
@@ -60,32 +77,34 @@ class Hyper:
     car_winter: float = 0.0     # variances added at each season start (stage 3)
     driver_winter: float = 0.0
     regulation_multiplier: float = 1.0   # car winter variance multiplier at new regulations
+    weekend_prior: float = 0.0  # spread of a car's weekend effect; 0 disables it
 
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
-               "car_winter", "driver_winter", "regulation_multiplier")
+               "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior")
+    SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
-    def fitted(types, winter=False, regulation=False):
+    def fitted(types, winter=False, regulation=False, weekend=False):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations."""
         offsets = any(t != "Q" for t in types)
         return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()), "car_prior", "driver_prior",
                 *(("offset_prior",) if offsets else ()), *(("car_winter", "driver_winter") if winter else ()),
-                *(("regulation_multiplier",) if winter and regulation else ()))
+                *(("regulation_multiplier",) if winter and regulation else ()),
+                *(("weekend_prior",) if weekend else ()))
 
-    def vector(self, types, winter=False, regulation=False):
-        return np.log([self.noise[t] for t in types]
-                      + [getattr(self, name) for name in self.fitted(types, winter, regulation)])
+    def vector(self, noise_types, scalars):
+        return np.log([self.noise[t] for t in noise_types] + [getattr(self, name) for name in scalars])
 
     @classmethod
-    def from_vector(cls, values, types, base=None, winter=False, regulation=False):
+    def from_vector(cls, values, noise_types, scalars, base=None):
         values = np.exp(values)
         base = base or cls()
-        noise = {**base.noise, **dict(zip(types, values[:len(types)]))}
-        scalars = {name: getattr(base, name) for name in cls.SCALARS}
-        scalars.update(zip(cls.fitted(types, winter, regulation), values[len(types):]))
-        return cls(noise=noise, **scalars)
+        noise = {**base.noise, **dict(zip(noise_types, values[:len(noise_types)]))}
+        fields = {name: getattr(base, name) for name in cls.SCALARS}
+        fields.update(zip(scalars, values[len(noise_types):]))
+        return cls(noise=noise, **fields)
 
 
 def _lap_groups(session_type, results, laps):
@@ -133,8 +152,12 @@ class Filter:
         self.cov = np.zeros((0, 0))
         self.time = None
         self.log_likelihood = 0.0
-        self.priors = {"car": hyper.car_prior, "driver": hyper.driver_prior, "offset": hyper.offset_prior}
-        self.drifts = {"car": hyper.car_drift, "driver": hyper.driver_drift, "offset": hyper.offset_drift}
+        self.priors = {"car": hyper.car_prior, "driver": hyper.driver_prior, "offset": hyper.offset_prior,
+                       "weekend": hyper.weekend_prior}
+        self.drifts = {"car": hyper.car_drift, "driver": hyper.driver_drift, "offset": hyper.offset_drift,
+                       "weekend": 0.0}
+        self.weekend = hyper.weekend_prior > 0
+        self.event = None
 
     def column(self, key, kind):
         if (kind, key) not in self.index:
@@ -147,6 +170,25 @@ class Filter:
             cov[-1, -1] = self.priors[kind] ** 2
             self.cov = cov
         return self.index[(kind, key)]
+
+    def copy(self):
+        clone = Filter.__new__(Filter)
+        clone.__dict__.update(self.__dict__)
+        clone.index, clone.kind = dict(self.index), list(self.kind)
+        clone.mean, clone.cov = self.mean.copy(), self.cov.copy()
+        return clone
+
+    def start_event(self, event):
+        """A new event: every car's weekend effect returns to its prior, uncorrelated."""
+        self.event = event
+        if not self.weekend:
+            return
+        for index, kind in enumerate(self.kind):
+            if kind == "weekend":
+                self.mean[index] = 0.0
+                self.cov[index, :] = 0.0
+                self.cov[:, index] = 0.0
+                self.cov[index, index] = self.hyper.weekend_prior ** 2
 
     def advance(self, time):
         if self.time is not None and time > self.time:
@@ -165,6 +207,8 @@ class Filter:
             row = [self.column(car, "car"), self.column(driver, "driver")]
             if session_type != "Q":
                 row.append(self.column((car, session_type), "offset"))
+            if self.weekend:
+                row.append(self.column(car, "weekend"))
             columns.append(row)
         design = np.zeros((len(cars), len(self.kind)))
         for row, indices in enumerate(columns):
@@ -194,12 +238,18 @@ class PaceModel:
 
     `session_types` selects the evidence: ("Q",) is stage 1, ALL_SESSIONS stage 2."""
 
-    def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False):
+    def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
+                 weekend=False, shared_from_qualifying=False):
         self.session_types = tuple(session_types)
         self.name = name
         self.winter = winter
+        self.objective = objective
+        self.weekend = weekend
+        self.shared_from_qualifying = shared_from_qualifying
         self.hyper = None
         self.fitted_season = None
+        self.fit_log = {}
+        self._qualifying_hyper = None
         self._observations = {}
 
     def sessions(self, view, before=None):
@@ -217,29 +267,53 @@ class PaceModel:
         return self._observations[session.session_id]
 
     def run(self, view, hyper, sessions):
+        """Filter every session. `state.objective` is the quantity the settings maximise."""
         state = Filter(hyper)
+        objective, before_weekend, event = 0.0, None, None
+        horizons = {"before_weekend": 0.0, "after_practice": 0.0}
         for session in sessions.itertuples():
             state.advance(session.scheduled_start_utc)
-            for cars, drivers, values in self.observations(view, session):
+            if session.event_key != event:
+                event = session.event_key
+                state.start_event(event)
+                before_weekend = state.copy()
+            groups = self.observations(view, session)
+            if self.objective == "qualifying" and session.session_type == "Q":
+                before_weekend.advance(session.scheduled_start_utc)
+                start_pre, start_post = before_weekend.log_likelihood, state.log_likelihood
+                for cars, drivers, values in groups:
+                    before_weekend.update(cars, drivers, values, "Q")
+                    state.update(cars, drivers, values, "Q")
+                horizons["before_weekend"] += before_weekend.log_likelihood - start_pre
+                horizons["after_practice"] += state.log_likelihood - start_post
+                objective += (before_weekend.log_likelihood - start_pre) + (state.log_likelihood - start_post)
+                continue
+            for cars, drivers, values in groups:
                 state.update(cars, drivers, values, session.session_type)
+        state.objective = objective if self.objective == "qualifying" else state.log_likelihood
+        state.horizons = horizons
         return state
 
-    def fit_hyper(self, view, sessions, start):
+    def fit_hyper(self, view, sessions, start, frozen=()):
+        """Fit the settings that affect the objective, except those named in `frozen`."""
         types = [t for t in self.session_types if t in set(sessions.session_type)]
         for session in sessions.itertuples():
             self.observations(view, session)
         seasons = sorted(set(sessions.scheduled_start_utc.dt.year))
         winter = self.winter and len(seasons) > 1
         regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
-        flags = {"winter": winter, "regulation": regulation}
+        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend) if s not in frozen]
+        noise_types = [t for t in types if f"noise:{t}" not in frozen]
 
         def negative(values):
-            return -self.run(view, Hyper.from_vector(values, types, start, **flags), sessions).log_likelihood
+            return -self.run(view, Hyper.from_vector(values, noise_types, scalars, start), sessions).objective
 
-        dimensions = len(types) + len(Hyper.fitted(types, **flags))
-        result = minimize(negative, start.vector(types, **flags), method="Nelder-Mead",
+        dimensions = len(noise_types) + len(scalars)
+        result = minimize(negative, start.vector(noise_types, scalars), method="Nelder-Mead",
                           options={"maxiter": 80 * dimensions, "xatol": 1e-3, "fatol": 1e-2})
-        return Hyper.from_vector(result.x, types, start, **flags)
+        self.last_fit = {"converged": bool(result.success), "iterations": int(result.nit),
+                         "objective": -float(result.fun), "fitted": noise_types + scalars}
+        return Hyper.from_vector(result.x, noise_types, scalars, start)
 
     def fit(self, history, view_for):
         return self
@@ -249,9 +323,22 @@ class PaceModel:
             return
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
-        start = self.hyper or (Hyper(car_winter=0.5, driver_winter=0.05, regulation_multiplier=3.0)
-                               if self.winter else Hyper())
-        self.hyper = self.fit_hyper(earlier, sessions, start) if (sessions.session_type == "Q").sum() >= 5 else start
+        start = self.hyper or Hyper(**({"car_winter": 0.5, "driver_winter": 0.05, "regulation_multiplier": 3.0}
+                                       if self.winter else {}), **({"weekend_prior": 0.3} if self.weekend else {}))
+        self.last_fit = {"converged": None, "note": "too little data; starting values used"}
+        if (sessions.session_type == "Q").sum() < 5:
+            self.hyper = start
+        elif self.shared_from_qualifying:
+            qualifying = PaceModel(QUALIFYING_ONLY)
+            self._qualifying_hyper = qualifying.fit_hyper(earlier, qualifying.sessions(earlier),
+                                                          self._qualifying_hyper or Hyper())
+            for name in Hyper.SHARED:
+                setattr(start, name, getattr(self._qualifying_hyper, name))
+            start.noise["Q"] = self._qualifying_hyper.noise["Q"]
+            self.hyper = self.fit_hyper(earlier, sessions, start, frozen=(*Hyper.SHARED, "noise:Q"))
+        else:
+            self.hyper = self.fit_hyper(earlier, sessions, start)
+        self.fit_log[season] = self.last_fit
         self.fitted_season = season
 
     def predict(self, view, example, draws=DRAWS):
@@ -260,6 +347,8 @@ class PaceModel:
         self._ensure_hyper(view, example.season)
         state = self.run(view, self.hyper, self.sessions(view))
         state.advance(example.cutoff_time)
+        if state.event != example.event_key:
+            state.start_event(example.event_key)   # before the weekend: its effect is still unknown
         drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
         cars = [c if pd.notna(c) else f"unknown:{n}" for c, n in zip(example.lineage_ids, example.driver_numbers)]
         design = state.design(cars, drivers, "Q")
@@ -276,4 +365,5 @@ class PaceModel:
             event_key=example.event_key, cutoff_label=example.cutoff_label, cutoff_time=example.cutoff_time.isoformat(),
             driver_numbers=list(example.driver_numbers), driver_ids=list(example.driver_ids), model=self.name,
             seed=seed, metadata={"hyper": {"noise": self.hyper.noise, **{k: getattr(self.hyper, k)
-                                                                         for k in Hyper.SCALARS}}})
+                                                                         for k in Hyper.SCALARS},
+                                           "fit": self.fit_log.get(example.season)}})
