@@ -1243,10 +1243,10 @@ per request.
 | Phase | Features from this document |
 |-------|---------------------------|
 | **Phase 1** | §3.1-3.9, §4.1-4.4, §5.1-5.5, §6.1-6.3, §14.1 (basic) |
-| **Phase 2** | Calendar builder, user accounts, search history |
+| **Phase 2** | §17.1-17.4, §17.8-17.9, §17.11-17.13, §16.15 |
 | **Phase 3** | §4.5-4.11, §7, §8, §9, §10, §11, §12, §13, §14 (full) |
-| **Phase 4** | §17.1-17.4, §17.8-17.9, §17.11-17.13, §16.15 |
-| **Phase 5** | §17.5-17.7 (replay, live, review), §17.10, §16.20, news feed |
+| **Phase 4** | Calendar builder, user accounts, search history, §17.10 |
+| **Phase 5** | §17.5-17.7 (replay, live, review), §16.20, news feed |
 | **Phase 6** | §15, §16.2, §16.19, §16.1 |
 
 ---
