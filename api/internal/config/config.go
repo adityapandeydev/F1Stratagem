@@ -32,8 +32,16 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	// Attempt to load .env from several likely locations
-	_ = godotenv.Load(".env", "../.env", "../../.env")
+	// The repository's .env, found from the API directory or the repository root.
+	// godotenv.Load stops at the first missing file, so load only one that exists.
+	for _, path := range []string{".env", "../.env", "../../.env"} {
+		if _, err := os.Stat(path); err == nil {
+			if err := godotenv.Load(path); err != nil {
+				return nil, fmt.Errorf("load %s: %w", path, err)
+			}
+			break
+		}
+	}
 
 	cfg := &Config{
 		DatabaseURL:     getEnv("DATABASE_URL", ""),
