@@ -31,7 +31,7 @@ use-case notation, so those views are drawn as flowcharts.
 | Championship on a user calendar | Sequence | [Request flows](#request-flows) |
 | Live race forecast (planned) | Sequence | [Request flows](#request-flows) |
 | Archive data flow, `f1data` packages, session manifest states, FastF1 ingestion | Flowchart, class, state, sequence | [design/data-archive.md](design/data-archive.md) |
-| Prediction pipeline, cutoff timeline, forecast lifecycle, output model, feature evaluation | Flowchart, state, class | [design/prediction-engine.md](design/prediction-engine.md) |
+| Prediction pipeline, pace model, cutoff timeline, forecast lifecycle, output model, feature evaluation | Flowchart, state, class | [design/prediction-engine.md](design/prediction-engine.md) |
 | News pipeline, upgrade-effect measurement | Flowchart, sequence | [design/news-intelligence.md](design/news-intelligence.md) |
 
 ---
@@ -218,7 +218,7 @@ F1Stratagem/
 ├── api/                      Go API (cmd/, internal/, migrations/)
 ├── services/
 │   ├── analysis/             FastAPI analysis service; own cache in data/ (git-ignored)
-│   ├── predictor/            Prediction engine (evaluation foundation and baselines)
+│   ├── predictor/            Prediction engine (qualifying pace model, baselines, evaluation)
 │   └── news/                 News and upgrade service (planned)
 ├── packages/
 │   └── f1data/               Archive collection, verification and readers; CLI `f1data`
@@ -251,6 +251,8 @@ F1Stratagem/
   are served from the archive instead; Postgres keeps reference tables.
 - The frontend and API predate the archive and prediction design and are being
   rebuilt around it.
+- The prediction engine forecasts qualifying from the archive and is evaluated
+  walk-forward; it does not serve forecasts over HTTP yet.
 
 ---
 
@@ -788,8 +790,8 @@ archive, predictions and community features.
 | Phase | Focus |
 |---|---|
 | 1 | Core analysis: session browser, telemetry comparison (in place, to be rebuilt) |
-| 1b | Monorepo and shared archive (done); analysis on archive reads; typed contracts; canonical driver, team and circuit IDs |
-| 2 | Prediction engine, built one feature at a time: pace model, circuit and car profiles, envelope and lap simulator, qualifying and race simulators; forecasts published per cutoff; forecast ledger; championship forecast after every race |
+| 1b | Monorepo and shared archive, canonical driver, team, circuit and lineage IDs (done); analysis on archive reads; typed contracts |
+| 2 | (In progress: qualifying pace model) Prediction engine, built one feature at a time: pace model, circuit and car profiles, envelope and lap simulator, qualifying and race simulators; forecasts published per cutoff; forecast ledger; championship forecast after every race |
 | 3 | Deep analytics: driver, car and circuit profiles, sharing the prediction engine's profile pipeline (corner classes, track mixes, car profiles) |
 | 4 | Calendar builder, accounts, community sharing and news feed; championship simulation on user calendars |
 | 5 | Replay and live forecasting; news service |

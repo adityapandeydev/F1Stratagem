@@ -3,7 +3,7 @@
 The F1Stratagem prediction engine. Design:
 [design/prediction-engine.md](../../design/prediction-engine.md).
 
-Implemented so far: the foundation every model component is evaluated on.
+Implemented: the evaluation foundation and the qualifying pace model.
 
 | Module | Role |
 |---|---|
@@ -12,8 +12,20 @@ Implemented so far: the foundation every model component is evaluated on.
 | `rules.py` | Points tables by season. |
 | `forecast.py` | The forecast object every model produces, built from joint simulation draws and checked for consistency. |
 | `simulate.py` | Plackett-Luce ranking draws and likelihood. |
-| `baselines.py` | Reference models: uniform, championship order, practice pace, qualifying order. |
-| `evaluation.py` | Walk-forward evaluation and metrics. |
+| `baselines.py` | Reference models: uniform, championship order, persistence, practice pace, qualifying order. |
+| `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinity and winter reset. |
+| `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons. |
+
+Models (`predictor evaluate --models ...`):
+
+| Name | Model |
+|---|---|
+| `uniform`, `championship`, `persistence`, `practice`, `qualifying` | Baselines |
+| `pace` | v1: qualifying evidence only |
+| `pace2` | v2: + practice, sprint qualifying, testing, team × session offsets |
+| `pace3w` | v3w: + weekend effect and winter reset (current) |
+| `pace3wa` | v3wa: v3w + car × circuit affinity (in evaluation) |
+| `pace3`, `pace2q`, `pace3q`, `pace2w`, `pace2s` | Development variants kept for comparison |
 
 ## Availability in backtests
 
@@ -27,18 +39,30 @@ after the session; backtests built on them are retrospective (`archive_proxy`).
 ```powershell
 uv pip install -e "services/predictor[dev]"
 f1data reference build                        # canonical IDs, once per archive update
-predictor evaluate --session Q --cutoff after_FP3
-predictor evaluate --session R --cutoff after_Q --models uniform championship qualifying
+predictor evaluate --session Q --cutoff pre_weekend --reference pace:v3w --models pace3w pace3wa
+predictor evaluate --session Q --cutoff last --reference pace:v3w --models pace3w pace3wa
 ```
 
-Seasons default to 2019–2023 (development); 2018 is warm-up data only. Every model
-is refitted before each event on events that finished before its cutoff. Runs are
-written to `services/predictor/data/runs/` with per-event scores, summaries and a
-manifest (code revision, reference build, settings).
+`--cutoff` takes `pre_weekend`, `after_<session>` (e.g. `after_FP2`) or `last`
+(the latest cutoff before the target session). `--reference` names the model the
+others are compared against.
+
+Seasons default to 2019–2023 (development); 2018 is warm-up data only. Baselines
+are refitted before each event on events that finished before its cutoff; the pace
+model refits its settings once per season on data available before the season and
+filters every session up to each forecast's cutoff. Runs are
+written to `services/predictor/data/runs/` with per-event scores, summaries, a
+paired comparison, each model's fitted settings per season (`settings.json`) and a
+manifest (code revision and whether it had uncommitted changes, reference build).
+
+The printed summary includes the paired difference against the reference with a
+bootstrap 90% interval (`better_beyond_noise`, `worse_beyond_noise`), the same
+comparison on each season's first three rounds, and RPS by season. A new component
+must not be `worse_beyond_noise` at any cutoff.
 
 Metrics: winner (or pole) log loss, ranked probability score, Brier scores for
-top 3 and top 10, expected-position error overall and by band (positions 1–5, 6–12,
-13+), 80% interval coverage and width, five-way outcome log loss on entrants with
+top 3 and top 10, expected-position error overall and by band (championship rank
+1–5, 6–12, 13+ at the cutoff), 80% interval coverage and width, five-way outcome log loss on entrants with
 a known outcome, and retirement Brier score.
 
 ## Tests

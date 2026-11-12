@@ -17,7 +17,7 @@ API are being rebuilt around the archive.
 | Data archive: FastF1 2018–2026, Jolpica 1950–2026, Open-Meteo, FIA documents 2019–2026 | Built, verified (37 GB) |
 | Session analysis and multi-driver telemetry comparison | Prototype, being rebuilt on the archive |
 | Go API | Prototype, being reworked as the orchestrator of all services |
-| Prediction engine | Designed; implementation next |
+| Prediction engine | Qualifying pace model implemented and evaluated walk-forward; race model next |
 | Calendar builder, community | Planned |
 | News and contextual intelligence | Planned |
 
@@ -190,8 +190,8 @@ commercial release.
 | Phase | Focus |
 |---|---|
 | 1 | Core analysis: session browser and telemetry comparison |
-| 1b | Monorepo and data archive (done); analysis on the archive; typed service contracts; canonical driver, team and circuit identifiers |
-| 2 | Prediction engine, built and evaluated one component at a time; forecast ledger; championship odds after every race |
+| 1b | Monorepo, data archive and canonical driver, team, circuit and lineage identifiers (done); analysis on the archive; typed service contracts |
+| 2 | Prediction engine, built and evaluated one component at a time (in progress: qualifying); forecast ledger; championship odds after every race |
 | 3 | Driver, car and circuit profiling |
 | 4 | Calendar builder, accounts and community; championship simulation on user calendars |
 | 5 | Live forecasting and replay; news and contextual intelligence |

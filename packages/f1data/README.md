@@ -49,7 +49,9 @@ request per 10 s). A full FastF1 download takes one to two days.
 | `f1data jolpica download\|tables\|report\|verify` | API pages, flattened tables, inventory, checksum audit |
 | `f1data openmeteo download\|tables\|report\|verify` | Observed weather and forecasts as issued |
 | `f1data fia index\|download\|extract\|report\|verify` | Document index, PDFs, parsed tables (PU and gearbox usage, car updates, tyre nominations) |
-| `f1data reference build\|report\|verify` | Canonical events, sessions, entrants, drivers, teams and circuits (Ergast IDs) |
+| `f1data reference build\|report\|verify` | Canonical events, sessions, entrants, drivers, teams, circuits and team lineages (Ergast IDs) |
+| `f1data labels export --seasons ...` | Workbook of race and sprint retirements and suspicious finishes, to label by hand |
+| `f1data labels import --workbook FILE` | Merge the reviewed rows into `config/race-incident-labels.json` |
 | `f1data verify` | Checksum audit of every source; exits non-zero on any mismatch, missing or unlisted file |
 
 `f1data fastf1 ingest` takes `--years` (whole seasons) or `--weekends FILE` (a
@@ -61,6 +63,11 @@ selection like `src/f1data/config/pilot-weekends.json`).
   text layer, applied on top of parsed data. Hand-verified; keep it under version
   control.
 - `src/f1data/config/pilot-weekends.json`: example weekend selection.
+- `src/f1data/config/team-lineage.json`: constructor IDs grouped into team
+  lineages since 1996; every constructor-season must map to exactly one.
+- `src/f1data/config/race-incident-labels.json`: hand-reviewed causes of race and
+  sprint retirements and poor finishes, with sources. Reviewed human work; keep it
+  under version control.
 
 ## Rules
 

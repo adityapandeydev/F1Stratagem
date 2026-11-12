@@ -84,6 +84,7 @@ data/
   rate-limit-state.json                 FastF1 call window, kept across restarts
   logs/                                 download logs
   reference/                            canonical events, sessions, entrants, drivers, teams, circuits
+  labels/                               labelling workbooks (filled by hand; imported into config)
   forecasts/                            forecast ledger, append-only (written by the prediction engine)
   legacy/                               feasibility-pilot outputs, kept for reference
   external/
@@ -121,7 +122,8 @@ classDiagram
     class fia { index_season() download() }
     class fia_extract { extract() load_corrections() }
     class audit { verify_source() report_source() }
-    class reference { build() resolve_entrants() lineage_candidates() }
+    class reference { build() resolve_entrants() lineage_table() }
+    class labels { export() import_workbook() load_labels() }
 
     cli --> sessions
     cli --> jolpica
@@ -130,6 +132,10 @@ classDiagram
     cli --> audit
     cli --> paths
     cli --> reference
+    cli --> labels
+    reference --> paths
+    labels --> storage
+    labels --> paths
     reference --> storage
     sessions --> catalog
     sessions --> snapshots
@@ -233,8 +239,9 @@ Jolpica round numbers agree for every season.
 |---|---|
 | `events` | Championship rounds and pre-season tests: format, location, circuit ID, race date |
 | `sessions` | Every archived session: type, scheduled start, actual first lap start and last lap end (UTC) |
-| `entrants` | Every car in every session with its driver and constructor ID and how the ID was resolved |
-| `drivers`, `teams`, `circuits` | Jolpica records for 2018 onward |
+| `entrants` | Every car in every session with its driver, constructor and lineage ID and how each ID was resolved |
+| `teams` | Constructor ID, name and lineage per season, 1996 onward |
+| `drivers`, `circuits` | Jolpica records |
 
 FastF1 leaves IDs blank for most testing and some practice and sprint qualifying
 sessions. They are filled from the same car in the same event, then from the same
@@ -242,6 +249,23 @@ car number and abbreviation in the season, then from the same full name in
 another season; an ID is filled only when exactly one candidate exists. Drivers
 who only ran in practice and never started a race keep an empty driver ID; their
 team is still resolved. The manifest lists every unresolved entrant.
+
+**Team lineage.** `config/team-lineage.json` groups constructor IDs into lineages,
+one racing team through its renames, keyed by factory base: for example
+`faenza` covers Minardi, Toro Rosso, AlphaTauri and RB, and `enstone` covers
+Benetton, Renault, Lotus and Alpine. Every constructor-season since 1996 maps to
+exactly one lineage; the build fails otherwise, so a new team or rename needs the
+config updated first.
+
+**Hand-reviewed labels.** From 2023 the timing sources record almost every
+retirement only as "Retired". `f1data labels export` writes a workbook of every
+race and sprint retirement, prefilled from the archive, with a cause column
+(mechanical, driver error, collision at fault / victim / racing incident, damage,
+team error, withdrawal, other), plus a sheet of finishers whose result suggests a
+hidden problem. After review, `f1data labels import` merges the reviewed rows into
+`config/race-incident-labels.json`, keyed by session and car, with the source of
+each label. They are target labels only, never pre-race features. 2023–2024 are
+complete (101 retirements, 83 checked finishes).
 
 ## Document extraction
 
@@ -289,9 +313,8 @@ reconciliation step diffs them and flags mismatches instead of overwriting.
 
 ## Open items
 
-- Team lineage (constructor renames such as Toro Rosso to AlphaTauri to RB) and
-  circuit layout versions; candidates are generated, the mapping is confirmed by
-  hand. FIA event and driver names are mapped when the penalty model needs them.
+- Circuit layout versions (a reprofiled track as a new layout). FIA event and
+  driver names are mapped when the penalty model needs them.
 - Parsers for stewards' decisions, starting grids and the per-event "new PU
   elements" / "new gearboxes" notices (downloaded, not yet parsed), and for the
   2026 Pirelli pressure table.
