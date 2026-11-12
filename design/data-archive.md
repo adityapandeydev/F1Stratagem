@@ -30,6 +30,43 @@ Sessions that F1's archive lost in its 2024 server migration (most of 2022) are
 served by the FastF1 mirror (`livetiming-mirror.fastf1.dev`); the access check
 probes it before treating a session as unavailable.
 
+```mermaid
+flowchart LR
+    subgraph providers["Providers"]
+        ff1["FastF1 / F1 timing"]
+        jol["Jolpica API"]
+        om["Open-Meteo API"]
+        fiaweb["fia.com"]
+    end
+
+    subgraph writer["packages/f1data (single writer)"]
+        sessions["sessions + catalog"]
+        jolpica["jolpica"]
+        openmeteo["openmeteo"]
+        fia["fia"]
+    end
+
+    subgraph archive["data/"]
+        cache[("cache/ HTTP responses")]
+        sess[("sessions/ Parquet + manifests")]
+        jraw[("external/jolpica/raw")]
+        jtab[("external/jolpica/tables")]
+        oraw[("external/open-meteo/raw")]
+        otab[("external/open-meteo/tables")]
+        pdf[("external/fia/pdf")]
+        ftab[("external/fia/tables")]
+    end
+
+    readers["Readers: analysis service,<br/>prediction engine, API (DuckDB)"]
+
+    ff1 --> sessions --> cache
+    sessions --> sess
+    jol --> jolpica --> jraw -->|"jolpica tables"| jtab
+    om --> openmeteo --> oraw -->|"openmeteo tables"| otab
+    fiaweb --> fia --> pdf -->|"fia extract"| ftab
+    sess & jtab & otab & ftab --> readers
+```
+
 ## Layout
 
 ```
@@ -62,6 +99,52 @@ data/
   rebuilt offline from the HTTP cache.
 - FIA publication times are shown in Paris local time and stored as UTC.
 
+Package structure of `packages/f1data`. Arrows are imports; `storage` holds the
+atomic-write and checksum primitives every source uses.
+
+```mermaid
+classDiagram
+    direction LR
+    class cli { f1data entry point }
+    class paths { default_data_root() CONFIG_DIR }
+    class storage { atomic_json() checksum() write_table() }
+    class sessions { discover() ingest() verify_all() read_telemetry() compact() }
+    class catalog { select_schedule_sessions() ingestion_batch() }
+    class snapshots { record_snapshot() snapshot_asof() }
+    class ratelimit { restore() save() seconds_until_budget() }
+    class jolpica { download_season() build_tables() RateLimiter }
+    class openmeteo { download() build_tables() }
+    class fia { index_season() download() }
+    class fia_extract { extract() load_corrections() }
+    class audit { verify_source() report_source() }
+
+    cli --> sessions
+    cli --> jolpica
+    cli --> openmeteo
+    cli --> fia
+    cli --> audit
+    cli --> paths
+    sessions --> catalog
+    sessions --> snapshots
+    sessions --> ratelimit
+    sessions --> storage
+    sessions --> paths
+    catalog --> sessions
+    snapshots --> sessions
+    snapshots --> storage
+    jolpica --> storage
+    jolpica --> audit
+    openmeteo --> storage
+    openmeteo --> audit
+    fia --> jolpica
+    fia --> fia_extract
+    fia --> storage
+    fia --> audit
+    fia_extract --> storage
+    fia_extract --> paths
+    audit --> storage
+```
+
 ## Integrity
 
 - Writes go to a temporary file and are atomically renamed. Every file is listed in
@@ -77,6 +160,58 @@ data/
   fia.com at the robots.txt crawl delay of 10 s.
 - Extracted tables keep provenance per row: source file, SHA-256, document number,
   publication time, page.
+
+FastF1 session manifest states. Only `complete` sessions are skipped as done;
+known gaps are skipped until a `--retry-failed` pass.
+
+```mermaid
+stateDiagram-v2
+    [*] --> not_started: discovered from the schedule
+    not_started --> running: ingest
+    running --> complete: all tables and streams written
+    running --> partial: source returned some tables or streams empty
+    running --> failed: load or access error
+    complete --> [*]
+    state failed {
+        [*] --> transient
+        [*] --> known_gap
+        transient: rate limit, network, login
+        known_gap: no data upstream (checked against a known session)
+    }
+    failed --> running: next run (transient) or --retry-failed (known gap)
+    partial --> running: --retry-failed
+```
+
+Ingesting one FastF1 session.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLI as f1data fastf1 ingest
+    participant Dir as sessions/year/id
+    participant FF1 as FastF1
+    participant Up as F1 timing / mirror
+    participant Snap as snapshots/
+
+    CLI->>Dir: manifest present and files match recorded sizes?
+    alt present
+        CLI-->>CLI: skip
+    else
+        CLI->>Dir: manifest status running
+        CLI->>FF1: get_session / get_testing_session
+        CLI->>Up: SessionInfo on primary, then mirror
+        alt refused
+            CLI->>Up: uncached reference session
+            Up-->>CLI: 200 means no data for this session, otherwise login problem
+        end
+        CLI->>FF1: load laps, telemetry, weather, messages
+        FF1->>Up: HTTP (cached in cache/)
+        CLI->>Dir: write source and normalized Parquet (temp, read back, rename)
+        CLI->>Dir: manifest with rows, schema, SHA-256
+        CLI->>Snap: timestamped acquisition receipt
+        CLI->>CLI: update progress.json, missed-sessions.json
+    end
+```
 
 ## Document extraction
 

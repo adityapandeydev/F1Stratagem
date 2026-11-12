@@ -20,6 +20,26 @@ prediction engine. Not implemented.
    platform. Full articles are not republished.
 5. Feed the engine: structured records with availability times.
 
+```mermaid
+flowchart LR
+    subgraph sources["Sources"]
+        team["Team press releases"]
+        pirelli["Pirelli releases"]
+        outlets["Selected outlets"]
+        fiat[("Archive: FIA tables<br/>car_updates, pu_usage, tyre_nominations")]
+    end
+    collect["Collect"] --> dedupe["Deduplicate and attribute<br/>every source, publication time"]
+    team & pirelli & outlets --> collect
+    dedupe --> llm["Extract with an LLM<br/>classify and extract only"]
+    llm --> records[("Structured records<br/>with availability time")]
+    fiat --> records
+    records --> site["Platform: headline, summary,<br/>source link, time"]
+    records --> engine["Prediction engine"]
+```
+
+The community news feed (all F1 news, linked, with discussion threads) is a
+separate path and does not feed the model.
+
 ## Upgrade record
 
 | Field | Example |
@@ -45,6 +65,21 @@ gained or lost per speed regime, see [prediction-engine.md](prediction-engine.md
 is compared before and after across practice and qualifying, adjusted for the
 circuit's regime mix. The estimated effect and its uncertainty enter the pace
 model; the claim itself only marks when and where to look.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Rec as Upgrade record
+    participant PE as Prediction engine
+    participant Arc as Archive
+
+    Rec->>PE: team, component, first event, affected regimes
+    PE->>Arc: car profile and envelope before the upgrade
+    PE->>Arc: practice and qualifying after the upgrade
+    PE->>PE: compare per regime, adjust for circuit regime mix
+    PE->>PE: effect estimate with uncertainty into the pace model
+    Note over Rec,PE: the claimed gain is never used as a number
+```
 
 ## Rules
 

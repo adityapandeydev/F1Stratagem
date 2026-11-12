@@ -39,6 +39,64 @@ win probabilities sum to 1, each position column sums to 1.
 Every forecast records its cutoff, the sources it used, model version, data
 freshness and mode (`LIVE`, `REPLAY`, `OFFLINE`).
 
+Logical output model (field names indicative):
+
+```mermaid
+classDiagram
+    direction LR
+    class Forecast {
+        +forecast_id
+        +event
+        +session: qualifying | sprint_grid | sprint | race
+        +cutoff
+        +mode: LIVE | REPLAY | OFFLINE
+        +model_version
+        +data_fingerprint
+        +sources
+        +seed
+        +sha256
+        +supersedes
+    }
+    class EntrantForecast {
+        +driver
+        +team
+        +position_distribution
+        +expected_position
+        +interval_80
+    }
+    class QualifyingOutcome {
+        +pole_probability
+    }
+    class RaceOutcome {
+        +win
+        +other_points_finish
+        +outside_points_finish
+        +mechanical_retirement
+        +incident_or_other_retirement
+        +podium, top5, top10, points, finish
+        +expected_points
+    }
+    class AppliedPenalty {
+        +driver
+        +element
+        +grid_places
+        +operator_decision
+    }
+    class ChampionshipForecast {
+        +season
+        +calendar: real | user-built
+        +after_round
+        +title_probability
+        +final_position_distribution
+        +sha256
+    }
+    Forecast "1" *-- "20..22" EntrantForecast : entrants
+    EntrantForecast "1" *-- "0..1" QualifyingOutcome
+    EntrantForecast "1" *-- "0..1" RaceOutcome
+    Forecast "1" *-- "0..*" AppliedPenalty : penalties applied
+    ChampionshipForecast ..> Forecast : built from weekend simulations
+```
+
 ## Forecast cutoffs
 
 Before the weekend, after pre-season testing, after each practice session, after
@@ -47,7 +105,78 @@ before the race, and live (per lap and on events: pit stops, SC/VSC, red flags,
 rain, incidents, penalties). A forecast may only read data whose availability time
 is at or before its cutoff.
 
+```mermaid
+flowchart LR
+    prior["Season prior<br/>last season + winter variance"] --> test["After testing"]
+    test --> pre["Before the weekend"]
+    pre --> fp1["After FP1"]
+    fp1 --> fp2["After FP2"] --> fp3["After FP3"] --> quali["After qualifying"]
+    fp1 -->|"sprint weekend"| sq["After sprint grid session"] --> sprint["After sprint"] --> quali
+    quali --> pen["After grid penalties"] --> race["Before the race"]
+    race --> live["Live: per lap and on events"]
+    live --> review["Post-race review<br/>state update"]
+    review -->|"next event"| pre
+```
+
 ## Components
+
+Data flow through the components below (section numbers in brackets):
+
+```mermaid
+flowchart TB
+    subgraph inputs["Archive inputs (as of the cutoff)"]
+        tel["Sessions: laps, telemetry, position"]
+        hist["Jolpica history, pit stops"]
+        wx["Weather: forecasts as issued, observed"]
+        fiat["FIA: PU and gearbox usage, car updates, tyre nominations"]
+        newsr["News records (6)"]
+        ops["Operator penalty decisions"]
+    end
+
+    subgraph measure["Measured profiles"]
+        corners["Corner classes, track profiles (2)"]
+        carprof["Car regime profiles (2)"]
+        env["Car envelope and lap simulator (2a)"]
+        runs["Practice run classification (2b)"]
+        air["Clean-air tagging (2c)"]
+        deg["Degradation curves, tyre sets left (3d)"]
+    end
+
+    pace["Pace model: car and driver state, session offsets (1)"]
+
+    subgraph events["Event models"]
+        hz["Hazards and circuit priors (3)"]
+        learned["Starts, overtakes, pit decisions (3a)"]
+        scen["Weather scenarios (3b)"]
+        pens["Grid-penalty forecasts (3c)"]
+        strat["Strategy options (3d)"]
+    end
+
+    subgraph sims["Simulators"]
+        qsim["Qualifying simulator (4)"]
+        rsim["Race simulator (5)"]
+        csim["Championship simulator (7)"]
+    end
+
+    ledger[("Forecast ledger (8)")]
+
+    tel --> corners & carprof & env & runs & air & deg
+    hist --> hz & learned
+    newsr --> carprof & env
+    corners --> carprof
+    carprof & env & runs & air --> pace
+    wx --> scen
+    fiat --> pens & deg
+    ops --> pens
+    deg --> strat
+    scen --> strat
+    pace --> qsim & rsim
+    hz & learned & scen & pens & strat --> rsim
+    pens --> qsim
+    qsim --> rsim
+    rsim --> csim
+    qsim & rsim & csim --> ledger
+```
 
 ### 1. Pace model
 
@@ -284,6 +413,25 @@ corrections are new versions.
   low title probability), shown with the full frozen probability history so the
   story is verifiable and shareable to the community.
 
+Forecast lifecycle. Backtest forecasts (`REPLAY`, `OFFLINE`) skip operator
+confirmation and are never published live.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Computed: cutoff reached, simulation run
+    Computed --> AwaitingConfirmation: upcoming event with grid penalties
+    AwaitingConfirmation --> Computed: penalty rejected, rerun
+    AwaitingConfirmation --> Frozen: all penalties confirmed
+    Computed --> Frozen: no penalties to confirm
+    Frozen --> Published: before the session starts
+    Published --> Superseded: next cutoff forecast published
+    Published --> Corrected: error found, new version issued
+    Superseded --> Reviewed: result known, misses attributed
+    Published --> Reviewed: result known, misses attributed
+    Corrected --> Reviewed
+    Reviewed --> [*]
+```
+
 ## Training and evaluation
 
 - Walk-forward over races. 2018 is warm-up; 2019–2023 development and calibration;
@@ -302,6 +450,20 @@ corrections are new versions.
   circuits) without hurting the overall score. Otherwise it is dropped and logged
   with its result.
 - A new version is promoted only if it beats the current one on held-out events.
+
+```mermaid
+flowchart TB
+    cand["Candidate component or feature"] --> wf["Walk-forward evaluation<br/>hundreds of events, whole events kept together"]
+    wf --> overall{"Overall score better<br/>beyond run-to-run noise?"}
+    overall -->|"yes"| keep["Keep"]
+    overall -->|"no"| cls{"Clearly better on a class of events<br/>(wet, safety car, high degradation, street)<br/>without hurting overall?"}
+    cls -->|"yes"| keep
+    cls -->|"no"| drop["Drop and log the result"]
+    keep --> version["Candidate model version"]
+    version --> promo{"Beats the current version<br/>on held-out events?"}
+    promo -->|"yes"| promote["Promote"]
+    promo -->|"no"| stay["Current version stays"]
+```
 
 ## Known constraints
 

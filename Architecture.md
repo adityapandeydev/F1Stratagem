@@ -11,6 +11,29 @@ data archive. Subsystem designs live in [`design/`](design/):
 - [Prediction engine](design/prediction-engine.md): model, simulators, evaluation, forecast ledger.
 - [News and upgrade intelligence](design/news-intelligence.md): official evidence for the engine.
 
+### Diagrams
+
+Diagrams are Mermaid, kept next to the text they illustrate, and updated with
+the decision they describe. Mermaid has no native UML component, deployment or
+use-case notation, so those views are drawn as flowcharts.
+
+| View | Kind | Location |
+|---|---|---|
+| System context | Flowchart | [System context](#system-context) |
+| Containers and data stores | Flowchart | [System overview](#system-overview) |
+| Production deployment and network | Flowchart | [Deployment](#deployment) |
+| Local development | Flowchart | [Deployment](#deployment) |
+| Database schema (target) | ER | [PostgreSQL](#postgresql) |
+| Ingestion job lifecycle | State | [Ingestion](#ingestion) |
+| Missing-session ingestion | Sequence | [Ingestion](#ingestion) |
+| Session analysis request | Sequence | [Request flows](#request-flows) |
+| Forecast publication at a cutoff | Sequence | [Request flows](#request-flows) |
+| Championship on a user calendar | Sequence | [Request flows](#request-flows) |
+| Live race forecast (planned) | Sequence | [Request flows](#request-flows) |
+| Archive data flow, `f1data` packages, session manifest states, FastF1 ingestion | Flowchart, class, state, sequence | [design/data-archive.md](design/data-archive.md) |
+| Prediction pipeline, cutoff timeline, forecast lifecycle, output model, feature evaluation | Flowchart, state, class | [design/prediction-engine.md](design/prediction-engine.md) |
+| News pipeline, upgrade-effect measurement | Flowchart, sequence | [design/news-intelligence.md](design/news-intelligence.md) |
+
 ---
 
 ## Decisions
@@ -27,6 +50,39 @@ data archive. Subsystem designs live in [`design/`](design/):
 | Live data | OpenF1 (provisional) + FastF1 (authoritative), both kept | Post-session corrections; real receipt times enable strict backtests. |
 | Charts | Apache ECharts; Three.js / React Three Fiber for 3D | Large telemetry series; 3D track and globe. |
 | Authentication | Phase 4 (JWT) | Analysis is public; accounts arrive with the calendar builder and community. |
+
+---
+
+## System context
+
+```mermaid
+flowchart LR
+    visitor(["Visitor"])
+    member(["Registered member"])
+    operator(["Operator"])
+
+    platform["F1Stratagem<br/>analysis · predictions · calendars · community"]
+
+    fastf1["FastF1 / F1 live timing archive"]
+    jolpica["Jolpica (Ergast)"]
+    meteo["Open-Meteo"]
+    fia["FIA documents (fia.com)"]
+    openf1["OpenF1 live timing (planned)"]
+    press["Team and Pirelli releases (planned)"]
+    outlets["F1 news sites (planned)"]
+
+    visitor -->|"browses analysis and forecasts"| platform
+    member -->|"builds and shares calendars, discusses"| platform
+    operator -->|"confirms grid penalties before publication"| platform
+
+    platform -->|"sessions, telemetry"| fastf1
+    platform -->|"results history, laps"| jolpica
+    platform -->|"observed weather, forecasts as issued"| meteo
+    platform -->|"usage sheets, car updates, tyre nominations"| fia
+    platform -.->|"live timing and position"| openf1
+    platform -.->|"upgrade and compound evidence"| press
+    platform -.->|"links for the community feed"| outlets
+```
 
 ---
 
@@ -85,6 +141,71 @@ The Go API is the only public entry point. Python services are internal and are
 called over HTTP with typed contracts. For plain reads (laps, results, stints)
 the API may query the archive directly through DuckDB rather than through a
 Python service.
+
+---
+
+## Deployment
+
+Production target. The hosting provider is not chosen yet; the shape is fixed:
+only the frontend and the API are reachable from the internet, every Python
+service runs on a private network, and the archive moves from local disk to
+object storage in the same Parquet layout.
+
+```mermaid
+flowchart TB
+    subgraph client["User device"]
+        browser["Browser"]
+    end
+
+    subgraph edge["Static hosting / CDN"]
+        spa["Frontend bundle"]
+    end
+
+    subgraph public["Public endpoint (HTTPS)"]
+        api["Go API"]
+    end
+
+    subgraph private["Private network"]
+        analysis["Analysis service"]
+        predictor["Prediction engine (planned)"]
+        news["News service (planned)"]
+        jobs["f1data scheduled jobs<br/>sole archive writer"]
+    end
+
+    subgraph storage["Storage"]
+        pg[("PostgreSQL<br/>managed")]
+        archive[("Archive<br/>Parquet on object storage")]
+    end
+
+    providers["Data providers<br/>FastF1 · Jolpica · Open-Meteo · FIA · OpenF1"]
+
+    browser -->|"HTTPS"| spa
+    browser -->|"HTTPS REST · WebSocket"| api
+    api -->|"HTTP + JSON"| analysis
+    api -->|"HTTP + JSON"| predictor
+    api -->|"HTTP + JSON"| news
+    api -->|"SQL"| pg
+    api -->|"DuckDB reads"| archive
+    analysis -->|"read"| archive
+    predictor -->|"read"| archive
+    news -->|"read FIA tables"| archive
+    jobs -->|"write"| archive
+    jobs -->|"HTTPS, rate-limited"| providers
+```
+
+Local development: every process runs on one machine and the archive is the
+repository's `data/` directory.
+
+```mermaid
+flowchart LR
+    browser["Browser"] -->|"localhost:5173"| vite["Vite dev server<br/>frontend/"]
+    vite -->|"proxy /api"| api["Go API<br/>api/ · :8080"]
+    api -->|"HTTP · :8081"| analysis["Analysis service<br/>services/analysis/"]
+    api -->|"SQL · :5432"| pg[("PostgreSQL<br/>local")]
+    analysis -->|"own cache"| cache[("services/analysis/data/")]
+    cli["f1data CLI<br/>run by hand"] -->|"write"| data[("data/<br/>archive")]
+    analysis -.->|"read (target)"| data
+```
 
 ---
 
@@ -171,6 +292,92 @@ Postgres `sessions` rows carry the archive session ID (`<year>-<round>-<slot>`).
 Canonical IDs for drivers, teams and circuit layouts are shared by Postgres, the
 archive, the prediction engine and the calendar builder. A layout change (new
 chicane, reprofiled corner) creates a new layout ID under the same circuit.
+
+Target schema. Migration `001_core_schema` still differs (it also holds laps,
+stints, weather and session results); attributes are shown only where the DDL
+below defines them.
+
+```mermaid
+erDiagram
+    SEASONS ||--o{ EVENTS : schedules
+    CIRCUITS ||--o{ CIRCUIT_LAYOUTS : "has layouts"
+    CIRCUIT_LAYOUTS ||--o{ EVENTS : "raced on"
+    EVENTS ||--o{ SESSIONS : contains
+    SESSIONS ||--o{ INGESTION_JOBS : "ingested by"
+    EVENTS ||--o{ FORECAST_INDEX : "forecast for"
+    DRIVERS ||--o{ DRIVER_SEASONS : "drives in"
+    TEAMS ||--o{ DRIVER_SEASONS : employs
+    SEASONS ||--o{ DRIVER_SEASONS : covers
+    TEAMS ||--o{ TEAM_SEASONS : "competes as"
+    SEASONS ||--o{ TEAM_SEASONS : covers
+    USERS ||--o{ CALENDAR_POSTS : authors
+    USERS ||--o{ USER_SEARCH_HISTORY : records
+    CALENDAR_POSTS ||--o{ CALENDAR_ENTRIES : "slots"
+    CALENDAR_POSTS ||--o{ CALENDAR_ROTATIONS : "rotation pairs"
+    CALENDAR_POSTS ||--o{ CALENDAR_VARIANTS : "generated variants"
+    CIRCUIT_LAYOUTS ||--o{ CALENDAR_ENTRIES : "placed in"
+    CIRCUIT_LAYOUTS ||--o{ CALENDAR_ROTATIONS : "alternates in"
+
+    CIRCUITS {
+        int id PK
+        text circuit_key UK
+        text name
+        text country
+        float latitude
+        float longitude
+        text region
+    }
+    CIRCUIT_LAYOUTS {
+        int id PK
+        int circuit_id FK
+        text layout_key UK
+        int valid_from
+        int valid_to
+        float track_length_m
+        jsonb layout_data
+    }
+    SESSIONS {
+        int id PK
+        int event_id FK
+        text archive_session_id "e.g. 2023-12-3"
+    }
+    INGESTION_JOBS {
+        int id PK
+        int session_id FK
+        text status "PENDING to READY or FAILED"
+        int retry_count
+    }
+    FORECAST_INDEX {
+        int event_id FK
+        text cutoff
+        text model_version
+        text archive_path
+    }
+    CALENDAR_POSTS {
+        uuid id PK
+        int author_id FK
+        text title
+        int num_races
+        float logistics_score
+    }
+    CALENDAR_ENTRIES {
+        int id PK
+        uuid calendar_id FK
+        int slot_number
+        int circuit_layout_id FK
+    }
+    CALENDAR_ROTATIONS {
+        int id PK
+        uuid calendar_id FK
+        int circuit_a_layout_id FK
+        int circuit_b_layout_id FK
+    }
+    CALENDAR_VARIANTS {
+        int id PK
+        uuid calendar_id FK
+        jsonb race_sequence
+    }
+```
 
 ```sql
 CREATE TABLE circuits (
@@ -287,6 +494,172 @@ CREATE TABLE calendar_variants (             -- generated when rotations change 
 - **Live capture (planned).** OpenF1 data is stored as provisional with receipt
   times; the FastF1 version is loaded as authoritative after the session; both are
   kept and reconciled.
+
+Ingestion job lifecycle. The partial unique index allows one active job per
+session.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: API inserts job
+    PENDING --> DOWNLOADING: runner claims
+    DOWNLOADING --> PROCESSING: provider responses cached
+    PROCESSING --> READY: files written, manifest verified
+    DOWNLOADING --> FAILED: provider or network error
+    PROCESSING --> FAILED: validation error
+    FAILED --> PENDING: retry (retry_count + 1)
+    READY --> [*]
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant FE as Frontend
+    participant API as Go API
+    participant PG as PostgreSQL
+    participant Runner as f1data runner
+    participant Src as Provider
+    participant Arc as Archive
+
+    User->>FE: open a session not yet archived
+    FE->>API: GET /api/v1/sessions/{id}
+    API->>PG: session status
+    PG-->>API: not archived
+    API->>PG: INSERT ingestion_jobs (PENDING)
+    API-->>FE: 202 Accepted, job_id
+    FE->>API: WS /ws/ingestion/{job_id}
+    Runner->>PG: claim job (DOWNLOADING)
+    Runner->>Src: download session (rate-limited)
+    Src-->>Runner: timing, telemetry, weather
+    Runner->>Arc: write tables, manifest with SHA-256
+    Runner->>PG: status READY
+    API-->>FE: job READY
+    FE->>API: GET session data
+    API->>Arc: read
+    API-->>FE: 200 OK
+```
+
+---
+
+## Request flows
+
+Session analysis. The analysis service reads the archive; it no longer loads
+sessions from FastF1 at request time (target; see [Current state](#current-state)).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant FE as Frontend
+    participant API as Go API
+    participant PG as PostgreSQL
+    participant AN as Analysis service
+    participant Arc as Archive
+
+    User->>FE: compare drivers on a session
+    FE->>API: GET /api/v1/sessions/{id}/telemetry?drivers=VER,LEC
+    API->>PG: session and archive session ID
+    API->>AN: POST /telemetry/compare
+    AN->>Arc: read laps and per-driver telemetry
+    AN->>AN: align by distance, running delta
+    AN-->>API: comparison payload
+    API-->>FE: 200 OK
+```
+
+Forecast publication at a cutoff (after a practice session, after qualifying,
+and so on). Penalty confirmation applies to upcoming events only, never to
+backtests.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Sched as API job orchestration
+    participant F1D as f1data
+    participant Arc as Archive
+    participant PR as Prediction engine
+    actor Op as Operator
+    participant PG as PostgreSQL
+    participant FE as Frontend
+
+    Sched->>F1D: ingest the session that just ended
+    F1D->>Arc: write session, manifest
+    Sched->>PR: POST /forecast {event, cutoff, mode}
+    PR->>Arc: read data available at or before the cutoff
+    PR->>PR: update pace state, simulate 10k+ weekends
+    opt upcoming event with grid penalties to apply
+        PR->>Op: penalties about to be applied
+        Op-->>PR: confirm or reject each
+    end
+    PR->>Arc: freeze forecast in the ledger (SHA-256)
+    PR-->>Sched: forecast id, hash, cutoff
+    Sched->>PG: INSERT forecast_index
+    FE->>Sched: GET /api/v1/events/{id}/forecasts
+    Sched-->>FE: forecasts by cutoff
+```
+
+Championship on a user-built calendar. Results are cached per calendar so
+identical calendars share one simulation; calendar dates use climatology, not
+forecasts.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Member
+    participant FE as Frontend
+    participant API as Go API
+    participant PG as PostgreSQL
+    participant PR as Prediction engine
+    participant Arc as Archive
+
+    Member->>FE: simulate a championship on my calendar
+    FE->>API: POST /api/v1/calendar/posts/{id}/championship
+    API->>PG: daily simulation quota
+    API->>PG: cached result for this calendar
+    alt cached
+        PG-->>API: title probabilities
+    else not cached
+        API->>PR: POST /championship {season, calendar}
+        PR->>Arc: car envelopes, layout geometry, circuit priors, climatology
+        PR->>PR: simulate seasons, cancel races at risk in that share of draws
+        PR-->>API: title probabilities, per-race breakdown
+        API->>PG: cache result
+    end
+    API-->>FE: 200 OK
+```
+
+Live race forecast (planned). The pre-race and live forecasts are the same race
+simulator, started from lap 0 or from the observed race state.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OF as OpenF1 live
+    participant F1D as f1data live capture
+    participant Arc as Archive
+    participant PR as Prediction engine
+    participant API as Go API
+    participant FE as Frontend
+
+    loop every lap and on events (pit stop, SC, rain, retirement)
+        OF-->>F1D: timing, positions, race control
+        F1D->>Arc: provisional records with receipt time
+        F1D->>PR: race state changed
+        PR->>Arc: read observed state
+        PR->>PR: restart race simulator from current lap
+        PR->>Arc: freeze live forecast (mode LIVE)
+        PR-->>API: forecast id
+        API-->>FE: WS /ws/forecasts/{event}
+    end
+```
+
+### Open decisions
+
+- **Forecast ledger writer.** The archive has a single writer (`f1data`), but
+  frozen forecasts are produced by the prediction engine. Either the prediction
+  engine becomes the sole writer of `data/forecasts/`, or it hands each frozen
+  forecast to `f1data` to store.
+- **Scheduler.** Cutoff-triggered jobs are drawn under the API's job
+  orchestration; a separate scheduler process is the alternative.
 
 ---
 
