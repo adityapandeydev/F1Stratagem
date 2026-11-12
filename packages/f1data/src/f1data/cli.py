@@ -6,8 +6,8 @@
     f1data fia       index | download | extract | report | verify
     f1data verify    every source
 
-This is the only process that writes the archive. Never run two at once on one
-data root.
+This is the only process that writes the archive's source data (the prediction
+engine owns forecasts/). Never run two at once on one data root.
 """
 
 import argparse

@@ -45,7 +45,7 @@ use-case notation, so those views are drawn as flowcharts.
 | Repository | Monorepo, independently deployable services | Shared contracts and data code; separate processes and deploys. |
 | F1 timing, telemetry, documents | Parquet archive queried with DuckDB | Columnar, compressed, partition-scanned; hundreds of millions of telemetry rows. SQLite rejected. |
 | Application data | PostgreSQL (local in development) | Users, calendars, community content, small reference tables they join to. |
-| Archive ownership | One writer (`packages/f1data`), many readers | Avoids concurrent-write corruption; one place defines the data. |
+| Archive ownership | One writer per dataset, many readers: `packages/f1data` writes source data, the prediction engine writes `forecasts/` | No two processes ever write the same files; each dataset is defined in one place. |
 | Historical source of record | Own archive | FastF1 requires an F1TV subscription since October 2026; data is needed for retraining, backtests, replay and analysis. |
 | Live data | OpenF1 (provisional) + FastF1 (authoritative), both kept | Post-session corrections; real receipt times enable strict backtests. |
 | Charts | Apache ECharts; Three.js / React Three Fiber for 3D | Large telemetry series; 3D track and globe. |
@@ -110,7 +110,7 @@ graph TB
         Archive["Parquet archive (DuckDB)"]
     end
 
-    F1Data["packages/f1data — single writer"]
+    F1Data["packages/f1data — source data writer"]
     Sources["FastF1 · Jolpica · Open-Meteo · FIA documents · OpenF1 (planned)"]
 
     UI --> REST
@@ -122,6 +122,7 @@ graph TB
     Jobs -->|HTTP| News
     Analysis -->|read| Archive
     Predictor -->|read| Archive
+    Predictor -->|write forecasts/| Archive
     News -->|read FIA tables| Archive
     News -->|structured records| Predictor
     Sources --> F1Data
@@ -135,7 +136,7 @@ graph TB
 | Analysis service | `services/analysis/` | Session analysis and telemetry comparison over the archive |
 | Prediction engine | `services/predictor/` | Probabilistic forecasts, championship simulation, forecast ledger. No user state. |
 | News service | `services/news/` | Team and Pirelli releases, selected outlets; structured upgrade records |
-| Data archive | `packages/f1data/` | The only writer to `data/`: collection, extraction, verification, readers |
+| Data archive | `packages/f1data/` | Sole writer of the archive's source data: collection, extraction, verification, readers |
 
 The Go API is the only public entry point. Python services are internal and are
 called over HTTP with typed contracts. For plain reads (laps, results, stints)
@@ -169,7 +170,7 @@ flowchart TB
         analysis["Analysis service"]
         predictor["Prediction engine (planned)"]
         news["News service (planned)"]
-        jobs["f1data scheduled jobs<br/>sole archive writer"]
+        jobs["f1data scheduled jobs<br/>source data writer"]
     end
 
     subgraph storage["Storage"]
@@ -187,7 +188,7 @@ flowchart TB
     api -->|"SQL"| pg
     api -->|"DuckDB reads"| archive
     analysis -->|"read"| archive
-    predictor -->|"read"| archive
+    predictor -->|"read, append forecasts/"| archive
     news -->|"read FIA tables"| archive
     jobs -->|"write"| archive
     jobs -->|"HTTPS, rate-limited"| providers
@@ -229,8 +230,9 @@ F1Stratagem/
 └── Makefile
 ```
 
-- `packages/f1data` is the only code that writes `data/`. Services import its
-  readers; they never write the archive. Services keep their own caches under
+- Each archive dataset has exactly one writer. `packages/f1data` writes all source
+  data; the prediction engine writes only `data/forecasts/`, append-only. Every
+  other service only reads. Services import `f1data`'s readers. Services keep their own caches under
   `services/<name>/data/`.
 - `contracts/` holds JSON Schemas for every service endpoint. Go types and
   Pydantic models are tested against them, replacing the untyped
@@ -654,10 +656,6 @@ sequenceDiagram
 
 ### Open decisions
 
-- **Forecast ledger writer.** The archive has a single writer (`f1data`), but
-  frozen forecasts are produced by the prediction engine. Either the prediction
-  engine becomes the sole writer of `data/forecasts/`, or it hands each frozen
-  forecast to `f1data` to store.
 - **Scheduler.** Cutoff-triggered jobs are drawn under the API's job
   orchestration; a separate scheduler process is the alternative.
 

@@ -1,8 +1,9 @@
 # Data archive
 
 A local archive of F1 timing, telemetry, results, weather and official documents.
-One ingestion pipeline writes it; the analysis service and the prediction engine
-read it. FastF1 access requires an F1TV subscription since October 2026, so the
+Each dataset in it has exactly one writer: the ingestion pipeline (`f1data`)
+writes source data, the prediction engine writes the forecast ledger; every other
+service only reads. FastF1 access requires an F1TV subscription since October 2026, so the
 archive is the long-term source of record for historical data.
 
 ## Storage roles
@@ -39,7 +40,7 @@ flowchart LR
         fiaweb["fia.com"]
     end
 
-    subgraph writer["packages/f1data (single writer)"]
+    subgraph writer["packages/f1data (source data writer)"]
         sessions["sessions + catalog"]
         jolpica["jolpica"]
         openmeteo["openmeteo"]
@@ -81,6 +82,7 @@ data/
   progress.json, inventory.json         session ledger
   rate-limit-state.json                 FastF1 call window, kept across restarts
   logs/                                 download logs
+  forecasts/                            forecast ledger, append-only (written by the prediction engine)
   legacy/                               feasibility-pilot outputs, kept for reference
   external/
     jolpica/raw/<season>/...            API pages unchanged; manifest per season
@@ -150,7 +152,9 @@ classDiagram
 - Writes go to a temporary file and are atomically renamed. Every file is listed in
   a manifest with its SHA-256; a full audit (`f1data verify`) re-hashes every
   source and reports files that no manifest lists.
-- Single writer. Two ingestion processes must never share a data root.
+- One writer per dataset. `f1data` alone writes source data, and two ingestion
+  processes must never share a data root. The prediction engine alone writes
+  `forecasts/`, only adding files, never changing them.
 - A session is skipped on rerun only if every recorded file is present.
 - Failures the source cannot fix (cancelled sessions, empty feeds) are recorded in
   `missed-sessions.json` and skipped; one `--retry-failed` pass is run after a full

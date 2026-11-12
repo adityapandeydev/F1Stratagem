@@ -2,8 +2,9 @@
 
 Builds, verifies and reads the F1Stratagem data archive: FastF1 sessions
 (2018+), Jolpica results history (1950+), Open-Meteo weather and FIA documents.
-It is the only code that writes the archive; the analysis service and the
-prediction engine read it. Design: [design/data-archive.md](../../design/data-archive.md).
+It is the only code that writes the archive's source data; the analysis service
+and the prediction engine read it. The one other writer is the prediction engine,
+which appends to `data/forecasts/` and nothing else. Design: [design/data-archive.md](../../design/data-archive.md).
 
 ## Install
 
@@ -61,8 +62,8 @@ selection like `src/f1data/config/pilot-weekends.json`).
 
 ## Rules
 
-- One writer per data root. Never run two `f1data` downloads against the same
-  archive at once.
+- One `f1data` writer per data root. Never run two `f1data` downloads against
+  the same archive at once, and never write to `forecasts/` from here.
 - Values are stored as published. Source errors are flagged, not corrected.
 
 ## Tests
