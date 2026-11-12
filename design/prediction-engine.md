@@ -9,6 +9,7 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Component | State |
 |---|---|
 | Data archive (FastF1, Jolpica, Open-Meteo, FIA documents), see [data-archive.md](data-archive.md) | Implemented |
+| Cutoff-gated archive access, targets, forecast object, baselines, walk-forward evaluation | Implemented |
 | Pace model, circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
 | Practice run classification, clean-air tagging | Planned |

@@ -218,7 +218,7 @@ F1Stratagem/
 ├── api/                      Go API (cmd/, internal/, migrations/)
 ├── services/
 │   ├── analysis/             FastAPI analysis service; own cache in data/ (git-ignored)
-│   ├── predictor/            Prediction engine (added with the model)
+│   ├── predictor/            Prediction engine (evaluation foundation and baselines)
 │   └── news/                 News and upgrade service (planned)
 ├── packages/
 │   └── f1data/               Archive collection, verification and readers; CLI `f1data`

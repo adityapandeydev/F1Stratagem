@@ -65,7 +65,8 @@ flowchart LR
     jol --> jolpica --> jraw -->|"jolpica tables"| jtab
     om --> openmeteo --> oraw -->|"openmeteo tables"| otab
     fiaweb --> fia --> pdf -->|"fia extract"| ftab
-    sess & jtab & otab & ftab --> readers
+    sess & jraw --> refb["reference build"] --> ref[("reference/ canonical IDs")]
+    sess & jtab & otab & ftab & ref --> readers
 ```
 
 ## Layout
@@ -82,6 +83,7 @@ data/
   progress.json, inventory.json         session ledger
   rate-limit-state.json                 FastF1 call window, kept across restarts
   logs/                                 download logs
+  reference/                            canonical events, sessions, entrants, drivers, teams, circuits
   forecasts/                            forecast ledger, append-only (written by the prediction engine)
   legacy/                               feasibility-pilot outputs, kept for reference
   external/
@@ -119,6 +121,7 @@ classDiagram
     class fia { index_season() download() }
     class fia_extract { extract() load_corrections() }
     class audit { verify_source() report_source() }
+    class reference { build() resolve_entrants() lineage_candidates() }
 
     cli --> sessions
     cli --> jolpica
@@ -126,6 +129,8 @@ classDiagram
     cli --> fia
     cli --> audit
     cli --> paths
+    cli --> reference
+    reference --> storage
     sessions --> catalog
     sessions --> snapshots
     sessions --> ratelimit
@@ -217,6 +222,27 @@ sequenceDiagram
     end
 ```
 
+## Reference tables
+
+`f1data reference build` derives canonical identifiers from the archive. Driver,
+constructor and circuit IDs follow the Ergast scheme (`max_verstappen`, `red_bull`,
+`bahrain`) that Jolpica, FastF1 and the platform database share; FastF1 and
+Jolpica round numbers agree for every season.
+
+| Table | Contents |
+|---|---|
+| `events` | Championship rounds and pre-season tests: format, location, circuit ID, race date |
+| `sessions` | Every archived session: type, scheduled start, actual first lap start and last lap end (UTC) |
+| `entrants` | Every car in every session with its driver and constructor ID and how the ID was resolved |
+| `drivers`, `teams`, `circuits` | Jolpica records for 2018 onward |
+
+FastF1 leaves IDs blank for most testing and some practice and sprint qualifying
+sessions. They are filled from the same car in the same event, then from the same
+car number and abbreviation in the season, then from the same full name in
+another season; an ID is filled only when exactly one candidate exists. Drivers
+who only ran in practice and never started a race keep an empty driver ID; their
+team is still resolved. The manifest lists every unresolved entrant.
+
 ## Document extraction
 
 FIA PDFs are text-based; each document type has its own parser, and every parser
@@ -263,8 +289,9 @@ reconciliation step diffs them and flags mismatches instead of overwriting.
 
 ## Open items
 
-- Canonical driver, team and circuit-layout IDs across FastF1, Jolpica, FIA and
-  Open-Meteo.
+- Team lineage (constructor renames such as Toro Rosso to AlphaTauri to RB) and
+  circuit layout versions; candidates are generated, the mapping is confirmed by
+  hand. FIA event and driver names are mapped when the penalty model needs them.
 - Parsers for stewards' decisions, starting grids and the per-event "new PU
   elements" / "new gearboxes" notices (downloaded, not yet parsed), and for the
   2026 Pirelli pressure table.
