@@ -1,0 +1,228 @@
+{
+  "note": "Manual readings of FIA car presentation pages that have no text layer. Applied on top of parsed data by fia_extract.py; parsed values are never overwritten.",
+  "car_presentation": [
+    {
+      "file": "pdf/2024/las-vegas-grand-prix/doc-007-car-presentation-submissions.pdf",
+      "page": 14,
+      "team": "Williams Racing",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/australian-grand-prix/doc-009-car-presentation-submissions.pdf",
+      "page": 10,
+      "team": "ATLASSIAN WILLIAMS F1",
+      "status": "updates",
+      "updates": [
+        {
+          "item": 1,
+          "component": "Coke/Engine Cover",
+          "primary_reason": "Circuit specific - Cooling Range",
+          "geometric_difference": "Compared to the launch car, a new engine cover exit is available which reduces the exit area at the rear of the car.",
+          "description": "The smaller engine cover exit panels optimise the air mass flow through the cooling system, which keep the PU, Gbox and hydraulic fluids in the correct temperature window to suit the conditions and nature of the Melbourne circuit."
+        },
+        {
+          "item": 2,
+          "component": "Front Wing Endplate",
+          "primary_reason": "Performance - Flow Conditioning",
+          "geometric_difference": "A new FWEP Dive Plane geometry has been designed which has an alternative profile to the launch car configuration.",
+          "description": "This detailed geometric change works with the overall profiles of the launch front wing elements to generate flow structures that help deliver efficient load from the rest of the car."
+        },
+        {
+          "item": 3,
+          "component": "Floor",
+          "primary_reason": "Performance - Local Load",
+          "geometric_difference": "Compared to the launch car, a new floor update is available which features a new floor winglet/cutout ahead of the rear tyres.",
+          "description": "These detailed geometric updates offer both direct load from the local region as well as generating flow structures that help deliver efficient load from the rear of the floor."
+        },
+        {
+          "item": 4,
+          "component": "Rear Wing",
+          "primary_reason": "Performance - Flow Conditioning",
+          "geometric_difference": "New winglets and RW pillar extensions have been designed as optional parts to be fitted to the Launch spec RW assy.",
+          "description": "These revised RW Pillar profiles work to improve the aerodynamic performance of the upper RW elements under Corner Mode operation."
+        }
+      ],
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11",
+      "verified": "checked against the PDF page by the project owner, 2026-11-11"
+    },
+    {
+      "file": "pdf/2026/austrian-grand-prix/doc-014-car-presentation-submissions.pdf",
+      "page": 11,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/azerbaijan-grand-prix/doc-011-car-presentation-submissions.pdf",
+      "page": 14,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/bahrain-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 10,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/bahrain-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 19,
+      "team": "Cadillac",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/british-grand-prix/doc-013-car-presentation-submissions.pdf",
+      "page": 18,
+      "team": "Cadillac",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/chinese-grand-prix/doc-010-car-presentation-submissions.pdf",
+      "page": 7,
+      "team": "ATLASSIAN WILLIAMS F1",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/dutch-grand-prix/doc-010-car-presentation-submissions.pdf",
+      "page": 10,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/dutch-grand-prix/doc-010-car-presentation-submissions.pdf",
+      "page": 14,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/dutch-grand-prix/doc-010-car-presentation-submissions.pdf",
+      "page": 19,
+      "team": "Cadillac",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/mexico-city-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 9,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/mexico-city-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 13,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/mexico-city-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 18,
+      "team": "Cadillac",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/s-o-paulo-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 7,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/s-o-paulo-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 10,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/s-o-paulo-grand-prix/doc-012-car-presentation-submissions.pdf",
+      "page": 13,
+      "team": "Cadillac",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/singapore-grand-prix/doc-009-car-presentation-submissions.pdf",
+      "page": 9,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/singapore-grand-prix/doc-009-car-presentation-submissions.pdf",
+      "page": 12,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/singapore-grand-prix/doc-009-car-presentation-submissions.pdf",
+      "page": 15,
+      "team": "Cadillac",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/spanish-grand-prix/doc-011-car-presentation-submissions.pdf",
+      "page": 10,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/spanish-grand-prix/doc-011-car-presentation-submissions.pdf",
+      "page": 13,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/united-states-grand-prix/doc-011-car-presentation-submissions.pdf",
+      "page": 9,
+      "team": "Williams",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    },
+    {
+      "file": "pdf/2026/united-states-grand-prix/doc-011-car-presentation-submissions.pdf",
+      "page": 13,
+      "team": "TGR HAAS F1 TEAM",
+      "status": "no_updates",
+      "read_from": "rendered page image (scanned, no text layer)",
+      "entered": "2026-11-11"
+    }
+  ]
+}

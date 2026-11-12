@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "weekends": [
+    {"year": 2023, "round": 1, "event_name": "Bahrain Grand Prix", "purpose": "conventional dry weekend"},
+    {"year": 2023, "round": 13, "event_name": "Dutch Grand Prix", "purpose": "wet and disrupted race"},
+    {"year": 2023, "round": 12, "event_name": "Belgian Grand Prix", "purpose": "sprint weekend"}
+  ]
+}
