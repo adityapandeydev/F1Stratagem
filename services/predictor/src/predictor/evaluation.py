@@ -27,12 +27,12 @@ import numpy as np
 import pandas as pd
 
 from .archive import Archive
-from .baselines import RANKERS, Example, RankBaseline, _dense_ranks
+from .baselines import RANKERS, Example, RankBaseline, dense_ranks, rank_championship
 from .targets import HOLDOUT_SEASONS, OUTCOMES, RETIREMENTS, session_target
 
 EPS = 1e-12  # safety only; forecasts carry a prior pseudo-draw, so no probability is zero
 BANDS = ((1, 5, "front"), (6, 12, "midfield"), (13, 99, "back"))
-ID_COLUMNS = ("event_key", "season", "model", "beta")
+ID_COLUMNS = ("event_key", "season", "model")
 
 
 def score(forecast, example):
@@ -47,8 +47,7 @@ def score(forecast, example):
     lower, upper = lower[keep], upper[keep]
     inside = (np.arange(1, n + 1)[None, :] >= lower[:, None]) & (np.arange(1, n + 1)[None, :] <= upper[:, None])
     expected = forecast.expected_position[keep]
-    band_rank = example.ranks.get("championship")
-    band_rank = band_rank[keep] if band_rank is not None else actual
+    band_rank = example.band_rank[keep]
     row = {
         "winner_log_loss": -np.log(max(forecast.position_probs[winner, 0], EPS)),
         "rps": float(np.mean(np.sum((cdf - observed) ** 2, axis=1) / (n - 1))),
@@ -73,47 +72,72 @@ def score(forecast, example):
     return row
 
 
+def _pace_model():
+    from .pace import PaceModel
+    return PaceModel()
+
+
+def model_registry():
+    return {**{name: (lambda name=name: RankBaseline(name)) for name in RANKERS}, "pace": _pace_model}
+
+
+def select_cutoff(archive, event_key, cutoff_label, target_start):
+    """The named cutoff, or with 'last' the latest cutoff before the target session."""
+    before = [c for c in archive.cutoffs(event_key) if c.time < target_start]
+    if cutoff_label == "last":
+        return before[-1] if before else None
+    return next((c for c in before if c.label == cutoff_label), None)
+
+
 def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
-    """Examples (target + rankings at the cutoff) for every championship event in `seasons`."""
+    """Examples (target and cutoff) for every championship event in `seasons`."""
     examples = []
     events = archive.events[~archive.events.is_testing & archive.events.season.isin(seasons)]
     for event_key in events.sort_values(["season", "round"]).event_key:
-        cutoff = next((c for c in archive.cutoffs(event_key) if c.label == cutoff_label), None)
         target = session_target(archive, event_key, session_type, allow_holdout=allow_holdout)
-        if cutoff is None or target is None or target.empty:
+        if target is None or target.empty:
             continue
         target_session = archive.sessions[archive.sessions.session_id == target.session_id.iloc[0]].iloc[0]
-        if cutoff.time >= target_session.scheduled_start_utc:
-            continue  # the cutoff must precede the session being forecast
+        cutoff = select_cutoff(archive, event_key, cutoff_label, target_session.scheduled_start_utc)
+        if cutoff is None:
+            continue
         target = target.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
-        view = archive.view(cutoff)
         example = Example(
             event_key=event_key, season=int(event_key[:4]), session_type=session_type, cutoff_label=cutoff_label,
             cutoff_time=cutoff.time, target_available_at=target_session.available_at_utc,
             driver_numbers=target.driver_number.tolist(), driver_ids=target.driver_id.tolist(),
             positions=target.position.to_numpy(),
             outcomes=[None if pd.isna(o) else o for o in target.outcome],
-            excluded=target.excluded.to_numpy(dtype=bool), ranks={})
-        for name, ranker in RANKERS.items():
-            values = ranker(view, example)
-            example.ranks[name] = None if values is None else _dense_ranks(values)
+            excluded=target.excluded.to_numpy(dtype=bool), band_rank=np.array([]),
+            cutoff_session=cutoff.anchor_session, team_ids=target.team_id.tolist(),
+            lineage_ids=target.lineage_id.tolist() if "lineage_id" in target else [])
+        example.band_rank = dense_ranks(rank_championship(archive.view(cutoff), example))
         examples.append(example)
     return examples
 
 
-def walk_forward(examples, models, train_examples=()):
-    """Fit each model on everything finished before each example's cutoff, then score it."""
+def walk_forward(examples, models, archive, train_examples=()):
+    """Before each example, fit every model on targets that finished before its cutoff,
+    then forecast from an ArchiveView at the cutoff. Model instances persist through the
+    run, so a model can decide how often to refit its own parameters."""
     pool = sorted([*train_examples, *examples], key=lambda e: e.target_available_at)
+    registry = model_registry()
+    instances = {name: registry[name]() for name in models}
+
+    def view_for(example):
+        return archive.view(example.cutoff_time)
+
     rows = []
     for example in examples:
         history = [e for e in pool if e.target_available_at < example.cutoff_time]
-        for name in models:
-            model = RankBaseline(name).fit(history)
-            forecast = model.predict(example)
+        view = view_for(example)
+        for name, model in instances.items():
+            model.fit(history, view_for)
+            forecast = model.predict(view, example)
             if forecast is None:
                 continue
             rows.append({"event_key": example.event_key, "season": example.season, "model": forecast.model,
-                         "beta": model.beta, **score(forecast, example)})
+                         **score(forecast, example)})
     return pd.DataFrame(rows)
 
 
@@ -157,8 +181,12 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
 
 
 def git_revision():
+    """HEAD, and whether tracked files had uncommitted changes when the run started."""
     try:
-        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True,
+                               text=True, check=True).stdout.strip() != ""
+        return {"head": head, "uncommitted_changes": dirty}
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -170,7 +198,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
     train = prepare(archive, session_type, cutoff_label, warmup, allow_holdout=False)
     examples = prepare(archive, session_type, cutoff_label, seasons, allow_holdout=allow_holdout)
-    scores = walk_forward(examples, models, train)
+    scores = walk_forward(examples, models, archive, train)
     overall, by_season = summarise(scores)
     comparison = compare(scores, reference)
     manifest = {

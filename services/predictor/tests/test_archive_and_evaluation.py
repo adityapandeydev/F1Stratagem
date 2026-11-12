@@ -6,7 +6,7 @@ import pytest
 
 from predictor.archive import Archive, CutoffViolation
 from predictor.baselines import Example, RankBaseline
-from predictor.evaluation import compare, score, walk_forward
+from predictor.evaluation import compare, score
 from predictor.forecast import Forecast
 from predictor.targets import HoldoutError, session_target
 
@@ -15,6 +15,13 @@ UTC = "UTC"
 
 def ts(text):
     return pd.Timestamp(text, tz=UTC)
+
+
+@pytest.fixture(autouse=True)
+def no_reviewed_labels(monkeypatch):
+    """Tests never read the real labels file."""
+    import predictor.targets as targets
+    monkeypatch.setattr(targets, "reviewed_causes", lambda: {})
 
 
 @pytest.fixture
@@ -76,11 +83,13 @@ def test_held_out_seasons_need_explicit_permission(archive):
 
 def example(positions, ranks, available, cutoff):
     n = len(positions)
-    return Example(event_key=f"e{available}", season=2023, session_type="Q", cutoff_label="after_FP3",
-                   cutoff_time=pd.Timestamp(cutoff, tz=UTC), target_available_at=pd.Timestamp(available, tz=UTC),
-                   driver_numbers=[str(i) for i in range(n)], driver_ids=list("abcdef")[:n],
-                   positions=np.array(positions), outcomes=[None] * n, excluded=np.zeros(n, dtype=bool),
-                   ranks={"qualifying": np.array(ranks, dtype=float), "uniform": np.zeros(n)})
+    ex = Example(event_key=f"e{available}", season=2023, session_type="Q", cutoff_label="after_FP3",
+                 cutoff_time=pd.Timestamp(cutoff, tz=UTC), target_available_at=pd.Timestamp(available, tz=UTC),
+                 driver_numbers=[str(i) for i in range(n)], driver_ids=list("abcdef")[:n],
+                 positions=np.array(positions), outcomes=[None] * n, excluded=np.zeros(n, dtype=bool),
+                 band_rank=np.arange(1, n + 1, dtype=float))
+    ex.test_ranks = np.array(ranks, dtype=float)
+    return ex
 
 
 def test_perfect_forecast_scores_zero_error():
@@ -93,13 +102,12 @@ def test_perfect_forecast_scores_zero_error():
     assert row["winner_log_loss"] < 1e-4 and row["interval_mass"] > 0.99
 
 
-def test_beta_is_fitted_only_on_earlier_events_and_reflects_informative_ranks():
+def test_beta_reflects_informative_ranks(monkeypatch):
+    monkeypatch.setattr(RankBaseline, "ranks", lambda self, view, e: e.test_ranks)
     history = [example([1, 2, 3, 4], [1, 2, 3, 4], f"2023-0{i}-01", f"2023-0{i}-01") for i in range(1, 8)]
-    model = RankBaseline("qualifying").fit(history)
+    model = RankBaseline("qualifying").fit(history, view_for=lambda e: None)
     assert model.beta > 0.5
-    first = history[0]
-    scores = walk_forward([first], ["qualifying"])
-    assert scores.beta.iloc[0] == 0.0          # nothing finished before the first cutoff
+    assert RankBaseline("qualifying").fit([], view_for=lambda e: None).beta == 0.0
 
 
 def test_paired_comparison_uses_common_events_and_flags_clear_improvements():

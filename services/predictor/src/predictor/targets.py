@@ -75,8 +75,15 @@ def classify(results, season, session_type):
         "position": results.Position,
         "status": results.Status,
         "classified_position": results.ClassifiedPosition.astype("string"),
+        "laps": results.Laps if "Laps" in results else pd.Series(pd.NA, index=results.index),
     })
-    frame = frame.dropna(subset=["position"]).copy()
+    if session_type in ("R", "S") and frame.position.isna().any():
+        # The source occasionally leaves a starter's position blank (e.g. a crash on the
+        # opening lap). They are placed behind every positioned entrant, by laps completed.
+        blank = frame.position.isna() & ~frame.classified_position.fillna("").isin(EXCLUDED_CODES)
+        order = frame[blank].sort_values("laps", ascending=False, na_position="last").index
+        frame.loc[order, "position"] = range(int(frame.position.max()) + 1, int(frame.position.max()) + 1 + len(order))
+    frame = frame.dropna(subset=["position"]).drop(columns="laps").copy()
     frame["position_repaired"] = False
     if frame.position.duplicated().any():
         # The source occasionally repeats a position (e.g. two drivers 15th). Re-rank by the
@@ -122,11 +129,16 @@ def session_target(archive, event_key, session_type, allow_holdout=False):
         return None
     session_id = match.session_id.iloc[0]
     target = classify(archive._table(session_id, "results"), season, session_type)
-    ids = archive.entrants[archive.entrants.session_id == session_id][["driver_number", "driver_id", "team_id"]]
+    columns = [c for c in ("driver_number", "driver_id", "team_id", "lineage_id") if c in archive.entrants]
+    ids = archive.entrants[archive.entrants.session_id == session_id][columns]
     target = target.merge(ids, on="driver_number", how="left")
     target.insert(0, "session_id", session_id)
     if session_type in ("R", "S"):
         causes = reviewed_causes()
+        unmatched = [key for key in causes if key.startswith(f"{session_id}/")
+                     and key.split("/", 1)[1] not in set(target.driver_number)]
+        if unmatched:
+            raise ValueError(f"reviewed labels with no entrant in {session_id}: {unmatched}")
         target["reviewed_cause"] = [causes.get(f"{session_id}/{number}") for number in target.driver_number]
         relabel = target.outcome.isin(RETIREMENTS) & target.reviewed_cause.notna()
         target.loc[relabel, "outcome"] = target.loc[relabel, "reviewed_cause"].map(

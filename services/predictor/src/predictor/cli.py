@@ -11,7 +11,7 @@ import sys
 import pandas as pd
 
 from . import evaluation
-from .baselines import RANKERS
+from .evaluation import model_registry
 
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 DEVELOPMENT_SEASONS = (2019, 2020, 2021, 2022, 2023)
@@ -22,8 +22,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     evaluate = commands.add_parser("evaluate", help="walk-forward evaluation of baselines")
     evaluate.add_argument("--session", choices=["Q", "SQ", "S", "R"], required=True)
-    evaluate.add_argument("--cutoff", required=True, help="e.g. pre_weekend, after_FP2, after_Q")
-    evaluate.add_argument("--models", nargs="+", choices=sorted(RANKERS), default=sorted(RANKERS))
+    evaluate.add_argument("--cutoff", required=True, help="pre_weekend, after_<session> (e.g. after_FP2) or last (latest before the target)")
+    evaluate.add_argument("--models", nargs="+", choices=sorted(model_registry()), default=["uniform", "championship"])
     evaluate.add_argument("--seasons", type=int, nargs="+", default=list(DEVELOPMENT_SEASONS))
     evaluate.add_argument("--reference", default="uniform", help="model the others are compared against")
     evaluate.add_argument("--allow-holdout", action="store_true",
