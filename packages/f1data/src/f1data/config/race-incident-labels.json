@@ -1,0 +1,1766 @@
+{
+  "retirements": {
+    "2023-01-5/31": {
+      "session_id": "2023-01-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "withdrawn_by_team",
+      "other_driver": null,
+      "notes": "Retired by Alpine after three time penalties; engine running hot from long stops",
+      "source_url": "https://www.formula1.com/en/latest/article.everything-went-wrong-today-says-ocon-after-being-penalised-three-times-and.1Obkye7mOTceYVpzCX9Bp6.html",
+      "confidence": "medium"
+    },
+    "2023-01-5/16": {
+      "session_id": "2023-01-5",
+      "driver_number": "16",
+      "driver": "LEC",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Power unit failure (classified Engine)",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Bahrain_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-01-5/81": {
+      "session_id": "2023-01-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Electrical failure on debut",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Bahrain_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-02-5/23": {
+      "session_id": "2023-02-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Brake failure on lap 27",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Saudi_Arabian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-02-5/18": {
+      "session_id": "2023-02-5",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Engine failure; team told him to stop",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Saudi_Arabian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-03-5/63": {
+      "session_id": "2023-03-5",
+      "driver_number": "63",
+      "driver": "RUS",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Power unit fire; debris lodged in cylinder",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Australian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-03-5/23": {
+      "session_id": "2023-03-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Ran wide at turns 5-6, did not slow for turn 7, slid off into the barrier; solo crash (confirmed by owner, watched the race)",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Australian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-03-5/16": {
+      "session_id": "2023-03-5",
+      "driver_number": "16",
+      "driver": "LEC",
+      "cause": "collision_racing_incident",
+      "other_driver": "STR",
+      "notes": "Spun at turn 3 on lap 1 after contact with Stroll; stewards took no action",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Australian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-04-4/22": {
+      "session_id": "2023-04-4",
+      "driver_number": "22",
+      "driver": "TSU",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Hit wall at turn 13 losing rear-left tyre; suspension damage",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-04-4/2": {
+      "session_id": "2023-04-4",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "withdrawn_by_team",
+      "other_driver": null,
+      "notes": "Crashed in sprint shootout; withdrawn from sprint at team request",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-04-5/24": {
+      "session_id": "2023-04-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Overheating",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-04-5/21": {
+      "session_id": "2023-04-5",
+      "driver_number": "21",
+      "driver": "DEV",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Clipped wall at turn 5 and stopped; no other driver involved",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-06-5/18": {
+      "session_id": "2023-06-5",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "collision_racing_incident",
+      "other_driver": "MAG",
+      "notes": "Damage after contact with Magnussen (lap 38) and earlier contact; no fault stated",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Monaco_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-08-5/63": {
+      "session_id": "2023-08-5",
+      "driver_number": "63",
+      "driver": "RUS",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Hit wall at turn 9 earlier in race, then retired with brake damage",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Canadian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-08-5/2": {
+      "session_id": "2023-08-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Oil leak",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-09-5/27": {
+      "session_id": "2023-09-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Power unit issue, smoking",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Austrian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-10-5/20": {
+      "session_id": "2023-10-5",
+      "driver_number": "20",
+      "driver": "MAG",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Ferrari power unit fire",
+      "source_url": "https://en.wikipedia.org/wiki/2023_British_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-10-5/31": {
+      "session_id": "2023-10-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Oil/hydraulic leak",
+      "source_url": "https://en.wikipedia.org/wiki/2023_British_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-11-5/31": {
+      "session_id": "2023-11-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "collision_victim",
+      "other_driver": "ZHO",
+      "notes": "Lap 1 chain: Zhou hit Ricciardo who hit Ocon; Zhou penalised 5 s",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Hungarian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-11-5/10": {
+      "session_id": "2023-11-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "cause": "collision_victim",
+      "other_driver": "OCO",
+      "notes": "Hit by Ocon in lap 1 chain started by Zhou",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Hungarian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-12-4/11": {
+      "session_id": "2023-12-4",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "collision_victim",
+      "other_driver": "HAM",
+      "notes": "Wheels touched with Hamilton; Hamilton given 5 s penalty",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Belgian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-12-4/14": {
+      "session_id": "2023-12-4",
+      "driver_number": "14",
+      "driver": "ALO",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Lost control on kerb at turn 12 and spun into gravel",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Belgian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-12-5/55": {
+      "session_id": "2023-12-5",
+      "driver_number": "55",
+      "driver": "SAI",
+      "cause": "collision_racing_incident",
+      "other_driver": "PIA",
+      "notes": "Damage from lap 1 contact with Piastri; not investigated, drivers blamed each other",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Belgian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-12-5/81": {
+      "session_id": "2023-12-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "cause": "collision_racing_incident",
+      "other_driver": "SAI",
+      "notes": "Suspension damage from lap 1 contact with Sainz; not investigated",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Belgian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-13-5/24": {
+      "session_id": "2023-13-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Crashed heavily at turn 1 in heavy rain, red flag; no other driver",
+      "source_url": "https://www.autosport.com/f1/news/f1-dutch-gp-red-flagged-after-zhou-crashes-in-downpour/10512370/",
+      "confidence": "medium"
+    },
+    "2023-13-5/16": {
+      "session_id": "2023-13-5",
+      "driver_number": "16",
+      "driver": "LEC",
+      "cause": "damage",
+      "other_driver": null,
+      "notes": "Retired with floor damage picked up on first lap",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Dutch_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-13-5/2": {
+      "session_id": "2023-13-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Hydraulic issue reported, then crash; after qualifying shunt",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Dutch_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-14-5/31": {
+      "session_id": "2023-14-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Steering failure",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Italian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-15-5/77": {
+      "session_id": "2023-15-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Hydraulics failure",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Singapore_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-15-5/31": {
+      "session_id": "2023-15-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Gearbox issue",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Singapore_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-15-5/22": {
+      "session_id": "2023-15-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "cause": "collision_racing_incident",
+      "other_driver": "PER",
+      "notes": "Contact with Perez on lap 1 caused puncture and sidepod damage; no penalty found",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Singapore_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-16-5/23": {
+      "session_id": "2023-16-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "collision_racing_incident",
+      "other_driver": null,
+      "notes": "Damage from lap 1 contact with other cars; sources disagree whether Bottas or Zhou",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Japanese_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-16-5/2": {
+      "session_id": "2023-16-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "collision_at_fault",
+      "other_driver": "BOT",
+      "notes": "Penalised 5 s for hitting Bottas; Williams cited progressive damage for retirement",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Japanese_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-16-5/18": {
+      "session_id": "2023-16-5",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Rear wing broke off without contact; structural failure (confirmed by owner)",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Japanese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-16-5/11": {
+      "session_id": "2023-16-5",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "collision_at_fault",
+      "other_driver": "MAG",
+      "notes": "Hit Magnussen at turn 11 (5 s penalty) after earlier front wing damage; retired",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Japanese_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-16-5/77": {
+      "session_id": "2023-16-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "cause": "collision_victim",
+      "other_driver": "SAR",
+      "notes": "Hit by Sargeant on lap 5 after start contact; retired with handling problems",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Japanese_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-17-4/27": {
+      "session_id": "2023-17-4",
+      "driver_number": "27",
+      "driver": "HUL",
+      "cause": "collision_racing_incident",
+      "other_driver": "OCO",
+      "notes": "Ocon/Hulkenberg/Perez collision; stewards ruled racing incident",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-17-4/31": {
+      "session_id": "2023-17-4",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "collision_racing_incident",
+      "other_driver": "HUL",
+      "notes": "Ocon/Hulkenberg/Perez collision; stewards ruled racing incident",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-17-4/11": {
+      "session_id": "2023-17-4",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "collision_racing_incident",
+      "other_driver": "HUL",
+      "notes": "Ocon/Hulkenberg/Perez collision; stewards ruled racing incident",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-17-4/2": {
+      "session_id": "2023-17-4",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Spun into gravel",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-17-4/40": {
+      "session_id": "2023-17-4",
+      "driver_number": "40",
+      "driver": "LAW",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Spun into gravel",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-17-5/2": {
+      "session_id": "2023-17-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "illness_or_other",
+      "other_driver": null,
+      "notes": "Retired with heat exhaustion and dehydration",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-17-5/44": {
+      "session_id": "2023-17-5",
+      "driver_number": "44",
+      "driver": "HAM",
+      "cause": "collision_at_fault",
+      "other_driver": "RUS",
+      "notes": "Hamilton caused the turn 1 collision with Russell (confirmed by owner)",
+      "source_url": "https://www.racefans.net/2023/10/08/hamilton-and-russell-avoid-penalty-for-first-corner-crash-alonso-reprimanded/",
+      "confidence": "high"
+    },
+    "2023-18-4/18": {
+      "session_id": "2023-18-4",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Brake problems",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-18-5/14": {
+      "session_id": "2023-18-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Rear suspension and floor failure",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-18-5/81": {
+      "session_id": "2023-18-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "cause": "collision_racing_incident",
+      "other_driver": "OCO",
+      "notes": "Radiator damage after lap 1 contact with Ocon; no fault assigned",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-18-5/31": {
+      "session_id": "2023-18-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "collision_racing_incident",
+      "other_driver": "PIA",
+      "notes": "Damage from lap 1 contact with Piastri; no fault assigned",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-19-5/20": {
+      "session_id": "2023-19-5",
+      "driver_number": "20",
+      "driver": "MAG",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Left rear suspension failure and crash",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Mexico_City_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-19-5/11": {
+      "session_id": "2023-19-5",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "collision_racing_incident",
+      "other_driver": "LEC",
+      "notes": "Turned into Leclerc at turn 1; stewards no penalty, racing incident",
+      "source_url": "https://www.formula1.com/en/latest/article/i-paid-a-high-price-perez-admits-he-took-a-risk-in-race-ending-incident.4a40WXbkfF1LGKHa19dSgH",
+      "confidence": "high"
+    },
+    "2023-20-5/63": {
+      "session_id": "2023-20-5",
+      "driver_number": "63",
+      "driver": "RUS",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Oil temperature / overheating",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-20-5/77": {
+      "session_id": "2023-20-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Hydraulics",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-20-5/24": {
+      "session_id": "2023-20-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Engine",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-20-5/20": {
+      "session_id": "2023-20-5",
+      "driver_number": "20",
+      "driver": "MAG",
+      "cause": "collision_at_fault",
+      "other_driver": "ALB",
+      "notes": "Hit Albon before turn 1",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-20-5/23": {
+      "session_id": "2023-20-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "collision_victim",
+      "other_driver": "MAG",
+      "notes": "Hit by Magnussen before turn 1",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-21-5/4": {
+      "session_id": "2023-21-5",
+      "driver_number": "4",
+      "driver": "NOR",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Lost rear of car and hit wall on lap 3",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Las_Vegas_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-02-5/18": {
+      "session_id": "2024-02-5",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Crashed solo at Turn 23, bringing out the safety car",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Saudi_Arabian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-02-5/10": {
+      "session_id": "2024-02-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Gearbox issue; retired before/at the start",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Saudi_Arabian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-03-5/44": {
+      "session_id": "2024-03-5",
+      "driver_number": "44",
+      "driver": "HAM",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Power unit failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Australian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-03-5/1": {
+      "session_id": "2024-03-5",
+      "driver_number": "1",
+      "driver": "VER",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Brake failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Australian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-04-5/24": {
+      "session_id": "2024-04-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Gearbox problem",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Japanese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-04-5/3": {
+      "session_id": "2024-04-5",
+      "driver_number": "3",
+      "driver": "RIC",
+      "cause": "collision_racing_incident",
+      "other_driver": "ALB",
+      "notes": "Lap 1 Turn 3 contact with Albon; stewards took no further action",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Japanese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-04-5/23": {
+      "session_id": "2024-04-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "collision_racing_incident",
+      "other_driver": "RIC",
+      "notes": "Lap 1 Turn 3 contact with Ricciardo; stewards took no further action",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Japanese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-05-5/3": {
+      "session_id": "2024-05-5",
+      "driver_number": "3",
+      "driver": "RIC",
+      "cause": "collision_victim",
+      "other_driver": "STR",
+      "notes": "Hit from behind by Stroll at restart (Stroll given 10 s penalty); diffuser damage, retired later",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Chinese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-05-5/22": {
+      "session_id": "2024-05-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "cause": "collision_victim",
+      "other_driver": "MAG",
+      "notes": "Spun by Magnussen at turn 6 (MAG given 10 s penalty); terminal damage",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Chinese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-05-5/77": {
+      "session_id": "2024-05-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Engine failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Chinese_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-06-3/18": {
+      "session_id": "2024-06-3",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "collision_racing_incident",
+      "other_driver": null,
+      "notes": "Turn 1 multi-car clash (Hamilton, Alonso, Norris); retired with damage; stewards took no further action; contact partner not clearly established",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Miami_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-06-3/4": {
+      "session_id": "2024-06-3",
+      "driver_number": "4",
+      "driver": "NOR",
+      "cause": "collision_racing_incident",
+      "other_driver": "ALO",
+      "notes": "Turn 1 multi-car clash, Alonso's car contacted Norris; no further action by stewards (Norris blamed Hamilton)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Miami_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-06-5/2": {
+      "session_id": "2024-06-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "collision_victim",
+      "other_driver": "MAG",
+      "notes": "Hit wall after contact with Magnussen (MAG given 10 s penalty)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Miami_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-07-5/23": {
+      "session_id": "2024-07-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "withdrawn_by_team",
+      "other_driver": null,
+      "notes": "Williams chose to retire car after pit stop wheel-nut problem, unsafe release penalty and being lapped",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Emilia_Romagna_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-08-5/31": {
+      "session_id": "2024-08-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "collision_at_fault",
+      "other_driver": "GAS",
+      "notes": "Squeezed Gasly at Portier; admitted responsibility; 5-place grid penalty next race",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Monaco_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-08-5/11": {
+      "session_id": "2024-08-5",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "collision_racing_incident",
+      "other_driver": "MAG",
+      "notes": "Lap 1 contact with Magnussen; stewards deemed racing incident",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Monaco_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-08-5/27": {
+      "session_id": "2024-08-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "cause": "collision_victim",
+      "other_driver": "PER",
+      "notes": "Perez's car, spun in the lap 1 crash, hit his rear",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Monaco_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-08-5/20": {
+      "session_id": "2024-08-5",
+      "driver_number": "20",
+      "driver": "MAG",
+      "cause": "collision_racing_incident",
+      "other_driver": "PER",
+      "notes": "Lap 1 contact with Perez; stewards deemed racing incident",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Monaco_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-09-5/55": {
+      "session_id": "2024-09-5",
+      "driver_number": "55",
+      "driver": "SAI",
+      "cause": "collision_at_fault",
+      "other_driver": "ALB",
+      "notes": "Sainz spun and caused the collision with Albon (confirmed by owner)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-09-5/23": {
+      "session_id": "2024-09-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "collision_victim",
+      "other_driver": "SAI",
+      "notes": "Hit by the spinning Sainz (confirmed by owner)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-09-5/11": {
+      "session_id": "2024-09-5",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Spun into wall at turn 6 damaging rear wing",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-09-5/16": {
+      "session_id": "2024-09-5",
+      "driver_number": "16",
+      "driver": "LEC",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Engine problem",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-09-5/2": {
+      "session_id": "2024-09-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Spun out at the chicane (accident)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-12-5/63": {
+      "session_id": "2024-12-5",
+      "driver_number": "63",
+      "driver": "RUS",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Water leak / water pressure problem",
+      "source_url": "https://en.wikipedia.org/wiki/2024_British_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-13-5/10": {
+      "session_id": "2024-13-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Hydraulics leak",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Hungarian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-14-5/24": {
+      "session_id": "2024-14-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Hydraulics failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Belgian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-16-5/22": {
+      "session_id": "2024-16-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "cause": "collision_victim",
+      "other_driver": "HUL",
+      "notes": "Floor damage from lap 1 collision with Hulkenberg (HUL given 10 s penalty); classification lists overheating",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Italian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-17-5/22": {
+      "session_id": "2024-17-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "cause": "collision_racing_incident",
+      "other_driver": "STR",
+      "notes": "Lap 1 contact with Stroll caused race-ending damage; fault not established (Tsunoda said he was turned into)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Azerbaijan_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-18-5/23": {
+      "session_id": "2024-18-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Overheating",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Singapore_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-19-5/44": {
+      "session_id": "2024-19-5",
+      "driver_number": "44",
+      "driver": "HAM",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Spun off at Turn 19 on lap 1; no other car involved",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-20-5/14": {
+      "session_id": "2024-20-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Brake failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Mexico_City_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-20-5/23": {
+      "session_id": "2024-20-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "collision_racing_incident",
+      "other_driver": "TSU",
+      "notes": "Lap 1 collision sandwiched between Gasly and Tsunoda; no investigation, Albon said no one to blame",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Mexico_City_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-20-5/22": {
+      "session_id": "2024-20-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "cause": "collision_racing_incident",
+      "other_driver": "ALB",
+      "notes": "Lap 1 collision with Albon; no investigation by stewards",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Mexico_City_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-21-3/27": {
+      "session_id": "2024-21-3",
+      "driver_number": "27",
+      "driver": "HUL",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Gearbox failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-21-5/55": {
+      "session_id": "2024-21-5",
+      "driver_number": "55",
+      "driver": "SAI",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Crashed (accident), safety car",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-21-5/43": {
+      "session_id": "2024-21-5",
+      "driver_number": "43",
+      "driver": "COL",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Crashed heavily between turns 13 and 14 (red flag)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-22-5/23": {
+      "session_id": "2024-22-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Cooling issue (table lists turbo)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Las_Vegas_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-22-5/10": {
+      "session_id": "2024-22-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Engine failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Las_Vegas_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-23-5/27": {
+      "session_id": "2024-23-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "cause": "driver_error",
+      "other_driver": null,
+      "notes": "Classified as spun off after second safety car restart",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-23-5/11": {
+      "session_id": "2024-23-5",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Clutch problem caused the spin on a gear change; retirement was mechanical (confirmed by owner)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-23-5/18": {
+      "session_id": "2024-23-5",
+      "driver_number": "18",
+      "driver": "STR",
+      "cause": "collision_at_fault",
+      "other_driver": "ALB",
+      "notes": "Lap 1 collision with Albon, Stroll served 10 s penalty; retired with collision damage lap 8",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-23-5/43": {
+      "session_id": "2024-23-5",
+      "driver_number": "43",
+      "driver": "COL",
+      "cause": "collision_victim",
+      "other_driver": "OCO",
+      "notes": "Lap 1 collision: Ocon, tagged by Hulkenberg, hit Colapinto",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-23-5/31": {
+      "session_id": "2024-23-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "cause": "collision_victim",
+      "other_driver": "HUL",
+      "notes": "Lap 1: tagged by Hulkenberg after lock-up, then hit Colapinto",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-24-5/77": {
+      "session_id": "2024-24-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "cause": "collision_at_fault",
+      "other_driver": "MAG",
+      "notes": "Penalised for collision with Perez; spun Magnussen, front wing damage and puncture",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Abu_Dhabi_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-24-5/43": {
+      "session_id": "2024-24-5",
+      "driver_number": "43",
+      "driver": "COL",
+      "cause": "mechanical",
+      "other_driver": null,
+      "notes": "Engine failure",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Abu_Dhabi_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-24-5/11": {
+      "session_id": "2024-24-5",
+      "driver_number": "11",
+      "driver": "PER",
+      "cause": "collision_victim",
+      "other_driver": "BOT",
+      "notes": "Spun by Bottas at the start (Bottas penalised)",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Abu_Dhabi_Grand_Prix",
+      "confidence": "high"
+    }
+  },
+  "problems": {
+    "2023-01-5/27": {
+      "session_id": "2023-01-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Lapped; 15 s track-limits penalty did not change position; no cause given",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Bahrain_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-01-5/4": {
+      "session_id": "2023-01-5",
+      "driver_number": "4",
+      "driver": "NOR",
+      "had_problem": "yes_mechanical",
+      "description": "Hydraulics trouble, six pit stops",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Bahrain_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-02-5/27": {
+      "session_id": "2023-02-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Saudi_Arabian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-02-5/81": {
+      "session_id": "2023-02-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "yes_damage",
+      "description": "Front wing damaged in contact with Gasly, extra pit stop",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Saudi_Arabian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-03-5/55": {
+      "session_id": "2023-03-5",
+      "driver_number": "55",
+      "driver": "SAI",
+      "had_problem": "no",
+      "description": "Finished 4th on track; 5 s penalty for hitting Alonso dropped him to 12th",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Australian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-04-4/23": {
+      "session_id": "2023-04-4",
+      "driver_number": "23",
+      "driver": "ALB",
+      "had_problem": "no",
+      "description": "Passed by Alonso early; no problem reported",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-04-4/4": {
+      "session_id": "2023-04-4",
+      "driver_number": "4",
+      "driver": "NOR",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-04-5/81": {
+      "session_id": "2023-04-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Azerbaijan_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-05-5/77": {
+      "session_id": "2023-05-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Miami_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-06-5/22": {
+      "session_id": "2023-06-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "yes_mechanical",
+      "description": "Reported brake problems; two laps down",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Monaco_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-07-5/81": {
+      "session_id": "2023-07-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Spanish_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-07-5/27": {
+      "session_id": "2023-07-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Spanish_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-07-5/4": {
+      "session_id": "2023-07-5",
+      "driver_number": "4",
+      "driver": "NOR",
+      "had_problem": "yes_damage",
+      "description": "Contact with Hamilton at turn 1 damaged front wing; pitted and dropped to last",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Spanish_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-08-5/81": {
+      "session_id": "2023-08-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Canadian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-08-5/4": {
+      "session_id": "2023-08-5",
+      "driver_number": "4",
+      "driver": "NOR",
+      "had_problem": "no",
+      "description": "9th on track; 5 s penalty for slowing under safety car",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Canadian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-08-5/27": {
+      "session_id": "2023-08-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Canadian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-09-4/4": {
+      "session_id": "2023-09-4",
+      "driver_number": "4",
+      "driver": "NOR",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Austrian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-09-4/16": {
+      "session_id": "2023-09-4",
+      "driver_number": "16",
+      "driver": "LEC",
+      "had_problem": "unknown",
+      "description": "Started 9th after grid penalty; result not explained",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Austrian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-09-4/20": {
+      "session_id": "2023-09-4",
+      "driver_number": "20",
+      "driver": "MAG",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Austrian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-09-5/23": {
+      "session_id": "2023-09-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "had_problem": "no",
+      "description": "10 s track-limits penalty did not affect position; no problem reported",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Austrian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-11-5/77": {
+      "session_id": "2023-11-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Hungarian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-11-5/27": {
+      "session_id": "2023-11-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Hungarian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-11-5/24": {
+      "session_id": "2023-11-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "had_problem": "yes_damage",
+      "description": "Start glitch (failsafe mode), then hit Ricciardo causing front wing damage and 5 s penalty",
+      "source_url": "https://www.autosport.com/f1/news/zhous-hungarian-gp-pretty-much-over-after-strange-alfa-f1-start-glitch/10499375/",
+      "confidence": "medium"
+    },
+    "2023-12-4/31": {
+      "session_id": "2023-12-4",
+      "driver_number": "31",
+      "driver": "OCO",
+      "had_problem": "no",
+      "description": "Started 9th, finished 9th in sprint; no problem reported",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Belgian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-13-5/63": {
+      "session_id": "2023-13-5",
+      "driver_number": "63",
+      "driver": "RUS",
+      "had_problem": "yes_damage",
+      "description": "Collision with Tsunoda (Tsunoda penalised 5 s); damage not detailed in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Dutch_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-14-5/81": {
+      "session_id": "2023-14-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "yes_damage",
+      "description": "Front wing damage from Hamilton contact at turn 4 forced pit stop; also 5 s penalty",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Italian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-15-5/27": {
+      "session_id": "2023-15-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Singapore_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-15-5/14": {
+      "session_id": "2023-15-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "had_problem": "no",
+      "description": "Pit-entry line penalty and slow pit stop dropped him to last",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Singapore_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-16-5/22": {
+      "session_id": "2023-16-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "unknown",
+      "description": "Lapped; cause not stated",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Japanese_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-17-4/16": {
+      "session_id": "2023-17-4",
+      "driver_number": "16",
+      "driver": "LEC",
+      "had_problem": "no",
+      "description": "7th on track; 5 s track-limits penalty",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-17-5/10": {
+      "session_id": "2023-17-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "had_problem": "no",
+      "description": "10th on track; two 5 s track-limits penalties",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-18-4/23": {
+      "session_id": "2023-18-4",
+      "driver_number": "23",
+      "driver": "ALB",
+      "had_problem": "no",
+      "description": "Finished one place off grid; no problem reported",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-18-4/81": {
+      "session_id": "2023-18-4",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-18-4/3": {
+      "session_id": "2023-18-4",
+      "driver_number": "3",
+      "driver": "RIC",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-19-5/24": {
+      "session_id": "2023-19-5",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Mexico_City_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-19-5/77": {
+      "session_id": "2023-19-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "had_problem": "no",
+      "description": "14th on track; 5 s penalty for collision with Stroll",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Mexico_City_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-20-4/3": {
+      "session_id": "2023-20-4",
+      "driver_number": "3",
+      "driver": "RIC",
+      "had_problem": "no",
+      "description": "Completed sprint, no issues reported",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-20-4/81": {
+      "session_id": "2023-20-4",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "no",
+      "description": "Finished on grid position, no issues reported",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2023-20-5/81": {
+      "session_id": "2023-20-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "yes_damage",
+      "description": "Debris damage from lap 1 crash, restarted from pit lane, two laps down",
+      "source_url": "https://en.wikipedia.org/wiki/2023_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "high"
+    },
+    "2023-21-5/10": {
+      "session_id": "2023-21-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Las_Vegas_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-21-5/23": {
+      "session_id": "2023-21-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Las_Vegas_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-21-5/20": {
+      "session_id": "2023-21-5",
+      "driver_number": "20",
+      "driver": "MAG",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Las_Vegas_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-21-5/2": {
+      "session_id": "2023-21-5",
+      "driver_number": "2",
+      "driver": "SAR",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Las_Vegas_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-21-5/77": {
+      "session_id": "2023-21-5",
+      "driver_number": "77",
+      "driver": "BOT",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Las_Vegas_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-22-5/10": {
+      "session_id": "2023-22-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Abu_Dhabi_Grand_Prix",
+      "confidence": "low"
+    },
+    "2023-22-5/27": {
+      "session_id": "2023-22-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Result not explained in source",
+      "source_url": "https://en.wikipedia.org/wiki/2023_Abu_Dhabi_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-01-5/27": {
+      "session_id": "2024-01-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "yes_damage",
+      "description": "Early contact at turn 1 (Stroll/Bottas); nose change and early stop dropped him to the back",
+      "source_url": "https://www.si.com/fannation/racing/f1briefings/news/f1-news-nico-hulkenberg-frustrated-and-disappointed-after-bad-luck-in-bahrain",
+      "confidence": "medium"
+    },
+    "2024-02-5/22": {
+      "session_id": "2024-02-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "no",
+      "description": "One lap down on race pace; RB drivers cited lack of pace; no damage reported",
+      "source_url": "https://www.formula1.com/en/latest/article/rb-drivers-rue-lack-of-pace-after-slipping-backwards-during-pretty-painful.64lWaMbOo6VfNQSf12FCXJ",
+      "confidence": "low"
+    },
+    "2024-05-3/24": {
+      "session_id": "2024-05-3",
+      "driver_number": "24",
+      "driver": "ZHO",
+      "had_problem": "no",
+      "description": "Gained a place from grid (10th to 9th); no problem reported",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Chinese_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-05-3/77": {
+      "session_id": "2024-05-3",
+      "driver_number": "77",
+      "driver": "BOT",
+      "had_problem": "unknown",
+      "description": "Lost three places; no source explains it",
+      "source_url": "https://www.the-race.com/formula-1/max-verstappen-dominates-chinese-gp-f1-sprint-best-racing-of-2024",
+      "confidence": "low"
+    },
+    "2024-06-3/14": {
+      "session_id": "2024-06-3",
+      "driver_number": "14",
+      "driver": "ALO",
+      "had_problem": "yes_damage",
+      "description": "Turn 1 contact with Norris required a front-wing change",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Miami_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-06-5/27": {
+      "session_id": "2024-06-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "unknown",
+      "description": "Early pit stop mentioned, no cause of result given",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Miami_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-06-5/81": {
+      "session_id": "2024-06-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "yes_damage",
+      "description": "Lost front wing when Sainz hit him; dropped out of points",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Miami_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-07-5/27": {
+      "session_id": "2024-07-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "no",
+      "description": "Stuck behind Tsunoda and undercut; no damage reported",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Emilia_Romagna_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-07-5/3": {
+      "session_id": "2024-07-5",
+      "driver_number": "3",
+      "driver": "RIC",
+      "had_problem": "no",
+      "description": "Lost places at start, early stop, race pace; no damage reported",
+      "source_url": "https://www.grandprix.com.au/fan-zone/news/ricciardo-frustrated-after-boring-pointless-showing",
+      "confidence": "low"
+    },
+    "2024-08-5/3": {
+      "session_id": "2024-08-5",
+      "driver_number": "3",
+      "driver": "RIC",
+      "had_problem": "no",
+      "description": "Qualified 12th and stayed behind Alonso all race",
+      "source_url": "https://www.the-race.com/formula-1/monaco-grand-prix-report-2024-crash-charles-leclerc-win",
+      "confidence": "medium"
+    },
+    "2024-09-5/22": {
+      "session_id": "2024-09-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "no",
+      "description": "Spun under second safety car period, driver error",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Canadian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-10-5/14": {
+      "session_id": "2024-10-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "had_problem": "unknown",
+      "description": "Ran off at start avoiding Piastri; cause of lap-down not stated",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Spanish_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-11-3/31": {
+      "session_id": "2024-11-3",
+      "driver_number": "31",
+      "driver": "OCO",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Austrian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-11-3/10": {
+      "session_id": "2024-11-3",
+      "driver_number": "10",
+      "driver": "GAS",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Austrian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-11-5/16": {
+      "session_id": "2024-11-5",
+      "driver_number": "16",
+      "driver": "LEC",
+      "had_problem": "yes_damage",
+      "description": "Front wing damage in separate incidents, pitted for repairs",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Austrian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-11-5/31": {
+      "session_id": "2024-11-5",
+      "driver_number": "31",
+      "driver": "OCO",
+      "had_problem": "no",
+      "description": "Lost battle with Gasly; no damage reported",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Austrian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-11-5/4": {
+      "session_id": "2024-11-5",
+      "driver_number": "4",
+      "driver": "NOR",
+      "had_problem": "yes_damage",
+      "description": "Collision damage after Verstappen contact, 7 laps down",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Austrian_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-13-5/14": {
+      "session_id": "2024-13-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Hungarian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-13-5/3": {
+      "session_id": "2024-13-5",
+      "driver_number": "3",
+      "driver": "RIC",
+      "had_problem": "unknown",
+      "description": "No source explains lap-down finish",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Hungarian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-14-5/23": {
+      "session_id": "2024-14-5",
+      "driver_number": "23",
+      "driver": "ALB",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Belgian_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-15-5/18": {
+      "session_id": "2024-15-5",
+      "driver_number": "18",
+      "driver": "STR",
+      "had_problem": "no",
+      "description": "5 s pit-lane speeding penalty moved him 12th to 13th; lap-down reason not stated",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Dutch_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-16-5/27": {
+      "session_id": "2024-16-5",
+      "driver_number": "27",
+      "driver": "HUL",
+      "had_problem": "yes_damage",
+      "description": "Own turn 1 collision with Tsunoda; front wing change, 10 s penalty",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Italian_Grand_Prix",
+      "confidence": "medium"
+    },
+    "2024-18-5/22": {
+      "session_id": "2024-18-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "no",
+      "description": "Poor start dropped places; stuck in traffic",
+      "source_url": "https://www.motorsport.com/f1/news/worst-start-ever-tsunoda-rues-horror-singapore-f1-weekend/10765786/",
+      "confidence": "medium"
+    },
+    "2024-19-3/22": {
+      "session_id": "2024-19-3",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-19-3/43": {
+      "session_id": "2024-19-3",
+      "driver_number": "43",
+      "driver": "COL",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-19-5/20": {
+      "session_id": "2024-19-5",
+      "driver_number": "20",
+      "driver": "MAG",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-19-5/10": {
+      "session_id": "2024-19-5",
+      "driver_number": "10",
+      "driver": "GAS",
+      "had_problem": "unknown",
+      "description": "5 s penalty for track-limits advantage, no effect on position; cause of result not stated",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-19-5/14": {
+      "session_id": "2024-19-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-19-5/22": {
+      "session_id": "2024-19-5",
+      "driver_number": "22",
+      "driver": "TSU",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_United_States_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-21-3/30": {
+      "session_id": "2024-21-3",
+      "driver_number": "30",
+      "driver": "LAW",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-21-3/23": {
+      "session_id": "2024-21-3",
+      "driver_number": "23",
+      "driver": "ALB",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-21-3/50": {
+      "session_id": "2024-21-3",
+      "driver_number": "50",
+      "driver": "BEA",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-21-5/14": {
+      "session_id": "2024-21-5",
+      "driver_number": "14",
+      "driver": "ALO",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_S%C3%A3o_Paulo_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-23-3/10": {
+      "session_id": "2024-23-3",
+      "driver_number": "10",
+      "driver": "GAS",
+      "had_problem": "unknown",
+      "description": "No source explains result",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "low"
+    },
+    "2024-23-3/30": {
+      "session_id": "2024-23-3",
+      "driver_number": "30",
+      "driver": "LAW",
+      "had_problem": "no",
+      "description": "Lost places in lap 1 midfield melee",
+      "source_url": "https://velocitynews.co.nz/?p=72549",
+      "confidence": "medium"
+    },
+    "2024-23-5/44": {
+      "session_id": "2024-23-5",
+      "driver_number": "44",
+      "driver": "HAM",
+      "had_problem": "no",
+      "description": "Drive-through penalty for pit-lane speeding",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Qatar_Grand_Prix",
+      "confidence": "high"
+    },
+    "2024-24-5/81": {
+      "session_id": "2024-24-5",
+      "driver_number": "81",
+      "driver": "PIA",
+      "had_problem": "no",
+      "description": "Spun by Verstappen at turn 1, contact with Colapinto and own error; no damage reported",
+      "source_url": "https://en.wikipedia.org/wiki/2024_Abu_Dhabi_Grand_Prix",
+      "confidence": "medium"
+    }
+  },
+  "schema_version": 1,
+  "updated_at_utc": "2026-11-12T07:18:32.109886+00:00",
+  "note": "Hand-reviewed causes of race and sprint retirements and of poor finishes, from race reports. Target labels only; never a pre-race feature."
+}

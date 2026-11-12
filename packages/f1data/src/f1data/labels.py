@@ -4,12 +4,18 @@ From 2023 the timing sources record almost every retirement only as "Retired".
 `f1data labels export` writes a workbook with one row per race and sprint
 retirement (and a second sheet of finishers whose result suggests a problem),
 prefilled with everything the archive knows. A person fills in the cause from
-race reports; the filled workbook is later imported into a version-controlled
-labels file, like the FIA corrections.
+race reports; `f1data labels import` reads the reviewed rows into
+`config/race-incident-labels.json`, version-controlled like the FIA corrections.
 """
 
+import json
+
 import pandas as pd
+from openpyxl import load_workbook
 from openpyxl import Workbook
+
+from .paths import CONFIG_DIR
+from .storage import atomic_json, utcnow
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -28,6 +34,8 @@ CAUSES = {
 PROBLEM_ANSWERS = ("yes_mechanical", "yes_damage", "no", "unknown")
 FINISHED = r"^(Finished|\+\d+ Laps?|Lapped)$"
 LABEL_FILL = PatternFill("solid", fgColor="FFF2CC")
+LABELS_PATH = CONFIG_DIR / "race-incident-labels.json"
+SESSION_CODES = {"Race": "R", "Sprint": "S"}
 
 
 def race_rows(root, seasons):
@@ -143,16 +151,79 @@ def export(root, seasons, path):
             "retirements_by_season": retired.groupby("season").size().to_dict(), "path": str(path)}
 
 
+def _reviewed_rows(sheet):
+    rows = list(sheet.iter_rows(values_only=True))
+    frame = pd.DataFrame(rows[1:], columns=rows[0])
+    return frame[frame.verified.astype(str).str.strip().str.lower() == "yes"]
+
+
+def import_workbook(root, workbook, path=LABELS_PATH):
+    """Merge the reviewed rows of a filled workbook into the labels file.
+
+    Rows are keyed by session ID and car number; a re-import replaces earlier
+    labels for the same rows and keeps everything else."""
+    sessions = pd.read_parquet(root / "reference" / "sessions.parquet")
+    session_ids = {(int(r.season), int(r.round), r.session_type): r.session_id
+                   for r in sessions[sessions.session_type.isin(["R", "S"])].itertuples()}
+    book = load_workbook(workbook, read_only=True)
+    existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"retirements": {}, "problems": {}}
+
+    def key(row):
+        session_id = session_ids[(int(row.season), int(row.round), SESSION_CODES[row.session])]
+        return f"{session_id}/{row.car}", session_id
+
+    def text(value):
+        return None if value is None or (isinstance(value, float) and pd.isna(value)) else str(value)
+
+    counts = {}
+    for sheet, section, fields in (("Retirements", "retirements", ("cause", "other_driver", "notes")),
+                                   ("Finished with problems", "problems", ("had_problem", "description"))):
+        reviewed = _reviewed_rows(book[sheet])
+        for row in reviewed.itertuples():
+            label_key, session_id = key(row)
+            existing[section][label_key] = {
+                "session_id": session_id, "driver_number": str(row.car), "driver": row.driver,
+                **{field: text(getattr(row, field)) for field in fields},
+                "source_url": text(row.source_url), "confidence": text(row.confidence),
+            }
+        counts[section] = len(reviewed)
+    allowed = {"retirements": ("cause", CAUSES), "problems": ("had_problem", PROBLEM_ANSWERS)}
+    for section, (field, values) in allowed.items():
+        bad = {k: v[field] for k, v in existing[section].items() if v[field] not in values}
+        if bad:
+            raise ValueError(f"{section}: unknown {field} values {bad}")
+    existing.update({"schema_version": 1, "updated_at_utc": utcnow(),
+                     "note": "Hand-reviewed causes of race and sprint retirements and of poor finishes, "
+                             "from race reports. Target labels only; never a pre-race feature."})
+    atomic_json(path, existing)
+    return counts
+
+
+def load_labels(path=LABELS_PATH):
+    """Reviewed labels as {"retirements": {...}, "problems": {...}}, keyed "<session_id>/<car>"."""
+    if not path.is_file():
+        return {"retirements": {}, "problems": {}}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def register(commands, common):
     parser = commands.add_parser("labels", parents=[common], help="workbooks for hand-labelled data",
                                  description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=["export"])
-    parser.add_argument("--seasons", type=int, nargs="+", required=True)
+    parser.add_argument("command", choices=["export", "import"])
+    parser.add_argument("--seasons", type=int, nargs="+", help="export: seasons to include")
+    parser.add_argument("--workbook", help="import: the filled workbook")
     parser.set_defaults(handler=run, parser=parser)
 
 
 def run(args):
-    import json
+    if args.command == "import":
+        if not args.workbook:
+            args.parser.error("import needs --workbook")
+        from pathlib import Path
+        print(json.dumps(import_workbook(args.data_root, Path(args.workbook)), indent=2))
+        return 0
+    if not args.seasons:
+        args.parser.error("export needs --seasons")
     seasons = sorted(args.seasons)
     path = args.data_root / "labels" / f"retirements-{seasons[0]}-{seasons[-1]}.xlsx"
     print(json.dumps(export(args.data_root, seasons, path), indent=2, default=str))

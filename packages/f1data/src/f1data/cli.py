@@ -5,7 +5,7 @@
     f1data openmeteo download | tables | report | verify
     f1data fia       index | download | extract | report | verify
     f1data reference build | report | verify
-    f1data labels    export --seasons ...
+    f1data labels    export --seasons ... | import --workbook ...
     f1data verify    every source
 
 This is the only process that writes the archive's source data (the prediction
