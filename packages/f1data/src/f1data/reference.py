@@ -9,7 +9,7 @@ database: drivers (`max_verstappen`), constructors (`red_bull`) and circuits
       sessions.parquet    one row per archived session, with actual start and end
       entrants.parquet    one row per car in each session, with resolved IDs
       drivers.parquet     Jolpica driver records (2018+ entrants)
-      teams.parquet       constructor ID and name per season
+      teams.parquet       constructor ID, name and lineage per season (1996+)
       circuits.parquet    Jolpica circuit records
       manifest.json       SHA-256 per table, resolution report
 
@@ -25,9 +25,12 @@ import json
 
 import pandas as pd
 
+from .paths import CONFIG_DIR
 from .storage import atomic_json, utcnow, write_table
 
 FIRST_SEASON = 2018
+LINEAGE_FIRST_SEASON = 1996
+LINEAGE_CONFIG = CONFIG_DIR / "team-lineage.json"
 SESSION_TYPES = {
     "Practice 1": "FP1", "Practice 2": "FP2", "Practice 3": "FP3",
     "Qualifying": "Q", "Sprint Shootout": "SQ", "Sprint Qualifying": "SQ",
@@ -165,18 +168,29 @@ def unresolved(entrants):
              "example_session": r.example_session} for r in summary.itertuples()]
 
 
-def lineage_candidates(teams):
-    """Constructor IDs that end after a season, paired with IDs that start the next season."""
-    seasons = teams.groupby("constructor_id").season.agg(["min", "max"])
-    candidates = []
-    for team_id, span in seasons.iterrows():
-        nxt = int(span["max"]) + 1
-        if nxt > teams.season.max():
-            continue
-        starts = seasons[seasons["min"] == nxt].index.tolist()
-        if starts:
-            candidates.append({"ends": team_id, "last_season": int(span["max"]), "starting_next_season": starts})
-    return candidates
+def lineage_table(constructors, config_path=LINEAGE_CONFIG, last_season=None):
+    """(season, constructor_id) -> lineage_id from the lineage config.
+
+    Every constructor-season from 1996 must map to exactly one lineage, so a new
+    constructor or a renamed team fails the build until the config covers it."""
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    last_season = last_season or int(constructors.season.max())
+    rows = []
+    for lineage_id, lineage in config["lineages"].items():
+        for member in lineage["members"]:
+            for season in range(member["from"], member.get("to", last_season) + 1):
+                rows.append({"season": season, "constructor_id": member["constructor_id"], "lineage_id": lineage_id})
+    table = pd.DataFrame(rows)
+    duplicated = table[table.duplicated(["season", "constructor_id"], keep=False)]
+    if not duplicated.empty:
+        raise ValueError(f"constructor-seasons in more than one lineage: {duplicated.to_dict('records')}")
+    needed = constructors[constructors.season >= LINEAGE_FIRST_SEASON][["season", "constructor_id"]].drop_duplicates()
+    missing = needed.merge(table, how="left", on=["season", "constructor_id"])
+    missing = missing[missing.lineage_id.isna()]
+    if not missing.empty:
+        raise ValueError(f"constructor-seasons without a lineage in {config_path.name}: "
+                         f"{missing[['season', 'constructor_id']].to_dict('records')}")
+    return table
 
 
 def jolpica_tables(root):
@@ -232,8 +246,13 @@ def build(root):
                     .rename(columns={"driverId": "driver_id", "dateOfBirth": "date_of_birth",
                                      "familyName": "family_name", "givenName": "given_name",
                                      "permanentNumber": "permanent_number"}))
-    team_table = (constructors[constructors.season >= FIRST_SEASON]
-                  .rename(columns={"constructorId": "constructor_id"})[["season", "constructor_id", "name", "nationality"]])
+    constructors = constructors.rename(columns={"constructorId": "constructor_id"})
+    lineage = lineage_table(constructors)
+    team_table = (constructors[constructors.season >= LINEAGE_FIRST_SEASON]
+                  [["season", "constructor_id", "name", "nationality"]]
+                  .merge(lineage, on=["season", "constructor_id"], how="left"))
+    entrants = entrants.merge(lineage.rename(columns={"constructor_id": "team_id"}),
+                              on=["season", "team_id"], how="left")
     circuit_table = (circuits.sort_values("season").drop_duplicates("circuitId", keep="last").drop(columns="season")
                      .rename(columns={"circuitId": "circuit_id", "circuitName": "circuit_name",
                                       "Location_country": "country", "Location_locality": "locality",
@@ -252,8 +271,8 @@ def build(root):
             "driver_ids_not_in_jolpica": sorted(driver_ids - set(driver_table.driver_id)),
             "unresolved": gaps,
         },
-        "team_lineage_candidates": lineage_candidates(team_table),
-        "note": "Unresolved entrants keep empty IDs. Lineage candidates need confirmation before use.",
+        "lineages": int(team_table.lineage_id.nunique()),
+        "note": "Unresolved entrants keep empty IDs.",
     }
     atomic_json(out / "manifest.json", manifest)
     return manifest
@@ -273,5 +292,5 @@ def run(args):
     manifest = build(args.data_root)
     print(json.dumps({key: value for key, value in manifest["entrants"].items() if key != "unresolved"}
                      | {"unresolved_groups": len(manifest["entrants"]["unresolved"]),
-                        "team_lineage_candidates": manifest["team_lineage_candidates"]}, indent=2, default=str))
+                        "lineages": manifest["lineages"]}, indent=2, default=str))
     return 0

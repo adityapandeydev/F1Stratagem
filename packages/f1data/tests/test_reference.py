@@ -1,6 +1,6 @@
 import pandas as pd
 
-from f1data.reference import lineage_candidates, resolve_entrants
+from f1data.reference import resolve_entrants
 
 
 def entrants(rows):
@@ -41,8 +41,16 @@ def test_practice_only_driver_keeps_empty_id_but_gets_the_team():
     assert pd.isna(rookie.driver_id) and rookie.team_id == "mercedes"
 
 
-def test_lineage_candidates_pair_ending_and_starting_constructors():
-    teams = pd.DataFrame({"season": [2019, 2019, 2020, 2020], "constructor_id": ["toro_rosso", "ferrari",
-                                                                                "alphatauri", "ferrari"]})
-    assert lineage_candidates(teams) == [{"ends": "toro_rosso", "last_season": 2019,
-                                          "starting_next_season": ["alphatauri"]}]
+def test_lineage_maps_every_constructor_season_once(tmp_path):
+    import json
+    import pytest
+    from f1data.reference import lineage_table
+    config = tmp_path / "lineage.json"
+    config.write_text(json.dumps({"lineages": {"faenza": {"members": [
+        {"constructor_id": "toro_rosso", "from": 2018, "to": 2019}, {"constructor_id": "alphatauri", "from": 2020}]}}}))
+    constructors = pd.DataFrame({"season": [2019, 2020, 2021], "constructor_id": ["toro_rosso", "alphatauri", "alphatauri"]})
+    table = lineage_table(constructors, config)
+    assert set(table[table.season == 2021].constructor_id) == {"alphatauri"}
+    with pytest.raises(ValueError, match="without a lineage"):
+        lineage_table(pd.concat([constructors, pd.DataFrame({"season": [2021], "constructor_id": ["cadillac"]})]),
+                      config)

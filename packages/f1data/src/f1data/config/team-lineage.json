@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "note": "Constructor IDs (Ergast scheme) grouped into lineages: one racing team through its renames and ownership changes, keyed by its factory base. 2018 onward confirmed by the project owner; 1996-2017 from the public record. Every constructor-season since 1996 must map to exactly one lineage.",
+  "lineages": {
+    "maranello": {"name": "Ferrari", "members": [{"constructor_id": "ferrari", "from": 1996}]},
+    "woking": {"name": "McLaren", "members": [{"constructor_id": "mclaren", "from": 1996}]},
+    "grove": {"name": "Williams", "members": [{"constructor_id": "williams", "from": 1996}]},
+    "enstone": {"name": "Benetton / Renault / Lotus / Alpine", "members": [
+      {"constructor_id": "benetton", "from": 1996, "to": 2001},
+      {"constructor_id": "renault", "from": 2002, "to": 2011},
+      {"constructor_id": "lotus_f1", "from": 2012, "to": 2015},
+      {"constructor_id": "renault", "from": 2016, "to": 2020},
+      {"constructor_id": "alpine", "from": 2021}]},
+    "brackley": {"name": "Tyrrell / BAR / Honda / Brawn / Mercedes", "members": [
+      {"constructor_id": "tyrrell", "from": 1996, "to": 1998},
+      {"constructor_id": "bar", "from": 1999, "to": 2005},
+      {"constructor_id": "honda", "from": 2006, "to": 2008},
+      {"constructor_id": "brawn", "from": 2009, "to": 2009},
+      {"constructor_id": "mercedes", "from": 2010}]},
+    "milton_keynes": {"name": "Stewart / Jaguar / Red Bull", "members": [
+      {"constructor_id": "stewart", "from": 1997, "to": 1999},
+      {"constructor_id": "jaguar", "from": 2000, "to": 2004},
+      {"constructor_id": "red_bull", "from": 2005}]},
+    "silverstone": {"name": "Jordan / Midland / Spyker / Force India / Racing Point / Aston Martin", "members": [
+      {"constructor_id": "jordan", "from": 1996, "to": 2005},
+      {"constructor_id": "mf1", "from": 2006, "to": 2006},
+      {"constructor_id": "spyker_mf1", "from": 2006, "to": 2006},
+      {"constructor_id": "spyker", "from": 2007, "to": 2007},
+      {"constructor_id": "force_india", "from": 2008, "to": 2018},
+      {"constructor_id": "racing_point", "from": 2019, "to": 2020},
+      {"constructor_id": "aston_martin", "from": 2021}]},
+    "hinwil": {"name": "Sauber / BMW Sauber / Alfa Romeo / Audi", "members": [
+      {"constructor_id": "sauber", "from": 1996, "to": 2005},
+      {"constructor_id": "bmw_sauber", "from": 2006, "to": 2009},
+      {"constructor_id": "sauber", "from": 2010, "to": 2018},
+      {"constructor_id": "alfa", "from": 2019, "to": 2023},
+      {"constructor_id": "sauber", "from": 2024, "to": 2025},
+      {"constructor_id": "audi", "from": 2026}]},
+    "faenza": {"name": "Minardi / Toro Rosso / AlphaTauri / RB", "members": [
+      {"constructor_id": "minardi", "from": 1996, "to": 2005},
+      {"constructor_id": "toro_rosso", "from": 2006, "to": 2019},
+      {"constructor_id": "alphatauri", "from": 2020, "to": 2023},
+      {"constructor_id": "rb", "from": 2024}]},
+    "kannapolis": {"name": "Haas", "members": [{"constructor_id": "haas", "from": 2016}]},
+    "cadillac": {"name": "Cadillac", "members": [{"constructor_id": "cadillac", "from": 2026}]},
+    "leafield": {"name": "Footwork / Arrows", "members": [
+      {"constructor_id": "footwork", "from": 1996, "to": 1996},
+      {"constructor_id": "arrows", "from": 1997, "to": 2002}]},
+    "magny_cours": {"name": "Ligier / Prost", "members": [
+      {"constructor_id": "ligier", "from": 1996, "to": 1996},
+      {"constructor_id": "prost", "from": 1997, "to": 2001}]},
+    "cologne": {"name": "Toyota", "members": [{"constructor_id": "toyota", "from": 2002, "to": 2009}]},
+    "super_aguri": {"name": "Super Aguri", "members": [{"constructor_id": "super_aguri", "from": 2006, "to": 2008}]},
+    "forti": {"name": "Forti", "members": [{"constructor_id": "forti", "from": 1996, "to": 1996}]},
+    "lola": {"name": "Lola", "members": [{"constructor_id": "lola", "from": 1997, "to": 1997}]},
+    "hrt": {"name": "HRT", "members": [{"constructor_id": "hrt", "from": 2010, "to": 2012}]},
+    "hingham": {"name": "Lotus Racing / Caterham", "members": [
+      {"constructor_id": "lotus_racing", "from": 2010, "to": 2011},
+      {"constructor_id": "caterham", "from": 2012, "to": 2014}]},
+    "banbury": {"name": "Virgin / Marussia / Manor", "members": [
+      {"constructor_id": "virgin", "from": 2010, "to": 2011},
+      {"constructor_id": "marussia", "from": 2012, "to": 2014},
+      {"constructor_id": "manor", "from": 2015, "to": 2016}]}
+  }
+}
