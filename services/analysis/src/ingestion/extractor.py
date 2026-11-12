@@ -11,12 +11,11 @@ import fastf1
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = os.getenv("FASTF1_CACHE_DIR", "./data/fastf1_cache")
-TELEMETRY_DIR = os.getenv("TELEMETRY_STORAGE_PATH", "./data/telemetry")
+from src.config import FASTF1_CACHE_DIR as CACHE_DIR, TELEMETRY_DIR
 
-Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
-Path(TELEMETRY_DIR).mkdir(parents=True, exist_ok=True)
-fastf1.Cache.enable_cache(CACHE_DIR)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
+fastf1.Cache.enable_cache(str(CACHE_DIR))
 
 
 def get_season_schedule(year: int) -> List[Dict[str, Any]]:

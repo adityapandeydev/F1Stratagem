@@ -22,17 +22,18 @@ go.work.sum
 
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 .eggs/
 *.egg
 
-# Data and Cache
+# Data and caches
 /data/
-/backend/cache/
-worker/data/
+services/*/data/
 *.parquet
 *.sqlite
+*.ff1pkl
 
 # Local scripts
 start-backend.ps1
