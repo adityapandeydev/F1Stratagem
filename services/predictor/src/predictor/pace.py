@@ -40,6 +40,15 @@ there instead of moving the car's long-run pace. Before the weekend the effect i
 unknown (prior spread, shared by teammates); after practice it carries what that
 weekend's practice showed into the same weekend's qualifying.
 
+Car x circuit affinity (v3wa): each car lineage also has a persistent effect
+per circuit, shared by every session it runs there and kept from one visit to
+the next. Its uncertainty grows with time and at every season start, multiplied
+at regulation changes, but its value is kept: last year at a track weighs more
+than the year before, and an old regulation era still counts for something.
+Only the current circuit's affinities are active in the joint state; the others
+are parked with their mean and variance (their cross-correlations are dropped)
+and resume, with the variance accrued while parked, at the next visit.
+
 Frozen shared settings (v2s): car and driver drift, priors and qualifying noise
 are fitted on qualifying alone, then frozen; only practice noise and offsets are
 fitted on the full evidence.
@@ -78,13 +87,17 @@ class Hyper:
     driver_winter: float = 0.0
     regulation_multiplier: float = 1.0   # car winter variance multiplier at new regulations
     weekend_prior: float = 0.0  # spread of a car's weekend effect; 0 disables it
+    affinity_prior: float = 0.0  # spread of a car x circuit affinity; 0 disables it
+    affinity_drift: float = 0.0  # affinity variance added per 14 days
+    affinity_winter: float = 0.0  # affinity variance added at each season start
 
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
-               "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior")
+               "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior",
+               "affinity_prior", "affinity_drift", "affinity_winter")
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
-    def fitted(types, winter=False, regulation=False, weekend=False):
+    def fitted(types, winter=False, regulation=False, weekend=False, affinity=False):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations."""
@@ -92,7 +105,8 @@ class Hyper:
         return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()), "car_prior", "driver_prior",
                 *(("offset_prior",) if offsets else ()), *(("car_winter", "driver_winter") if winter else ()),
                 *(("regulation_multiplier",) if winter and regulation else ()),
-                *(("weekend_prior",) if weekend else ()))
+                *(("weekend_prior",) if weekend else ()),
+                *(("affinity_prior", "affinity_drift", *(("affinity_winter",) if winter else ())) if affinity else ()))
 
     def vector(self, noise_types, scalars):
         return np.log([self.noise[t] for t in noise_types] + [getattr(self, name) for name in scalars])
@@ -153,34 +167,73 @@ class Filter:
         self.time = None
         self.log_likelihood = 0.0
         self.priors = {"car": hyper.car_prior, "driver": hyper.driver_prior, "offset": hyper.offset_prior,
-                       "weekend": hyper.weekend_prior}
+                       "weekend": hyper.weekend_prior, "affinity": hyper.affinity_prior}
         self.drifts = {"car": hyper.car_drift, "driver": hyper.driver_drift, "offset": hyper.offset_drift,
-                       "weekend": 0.0}
+                       "weekend": 0.0, "affinity": hyper.affinity_drift}
         self.weekend = hyper.weekend_prior > 0
+        self.affinity = hyper.affinity_prior > 0
         self.event = None
+        self.circuit = None
+        self.parked = {}   # affinity key -> (mean, variance, time parked)
 
     def column(self, key, kind):
         if (kind, key) not in self.index:
+            mean, variance = 0.0, self.priors[kind] ** 2
+            if kind == "affinity" and key in self.parked:
+                mean, variance, since = self.parked.pop(key)
+                variance += self._accrued("affinity", since, self.time)
             self.index[(kind, key)] = len(self.kind)
             self.kind.append(kind)
-            self.mean = np.append(self.mean, 0.0)
+            self.mean = np.append(self.mean, mean)
             size = len(self.kind)
             cov = np.zeros((size, size))
             cov[:-1, :-1] = self.cov
-            cov[-1, -1] = self.priors[kind] ** 2
+            cov[-1, -1] = variance
             self.cov = cov
         return self.index[(kind, key)]
+
+    def _winter(self, kind, season):
+        multiplier = self.hyper.regulation_multiplier if season in REGULATION_CHANGES else 1
+        if kind == "car":
+            return self.hyper.car_winter * multiplier
+        if kind == "affinity":
+            return self.hyper.affinity_winter * multiplier
+        return self.hyper.driver_winter if kind == "driver" else 0.0
+
+    def _accrued(self, kind, start, end):
+        """Variance a state of `kind` gains between two times: drift plus season starts."""
+        if start is None or end is None or end <= start:
+            return 0.0
+        steps = (end - start).total_seconds() / 86400 / DAY_SCALE
+        return self.drifts[kind] * steps + sum(self._winter(kind, s) for s in range(start.year + 1, end.year + 1))
+
+    def _remove(self, indices):
+        keep = [i for i in range(len(self.kind)) if i not in set(indices)]
+        keys = sorted(self.index, key=self.index.get)
+        self.index = {key: position for position, key in enumerate(keys[i] for i in keep)}
+        self.kind = [self.kind[i] for i in keep]
+        self.mean = self.mean[keep]
+        self.cov = self.cov[np.ix_(keep, keep)]
 
     def copy(self):
         clone = Filter.__new__(Filter)
         clone.__dict__.update(self.__dict__)
-        clone.index, clone.kind = dict(self.index), list(self.kind)
+        clone.index, clone.kind, clone.parked = dict(self.index), list(self.kind), dict(self.parked)
         clone.mean, clone.cov = self.mean.copy(), self.cov.copy()
         return clone
 
-    def start_event(self, event):
-        """A new event: every car's weekend effect returns to its prior, uncorrelated."""
+    def start_event(self, event, circuit=None):
+        """A new event: weekend effects return to their prior, and affinities for other
+        circuits are parked until the next visit."""
         self.event = event
+        if self.affinity:
+            active = [i for i, kind in enumerate(self.kind) if kind == "affinity"]
+            keys = sorted(self.index, key=self.index.get)
+            for i in active:
+                self.parked[keys[i][1]] = (float(self.mean[i]), float(self.cov[i, i]), self.time)
+            if active:
+                self._remove(active)
+            self.circuit = circuit
         if not self.weekend:
             return
         for index, kind in enumerate(self.kind):
@@ -195,9 +248,7 @@ class Filter:
             steps = (time - self.time).total_seconds() / 86400 / DAY_SCALE
             added = np.array([self.drifts[k] * steps for k in self.kind])
             for season in range(self.time.year + 1, time.year + 1):
-                car = self.hyper.car_winter * (self.hyper.regulation_multiplier if season in REGULATION_CHANGES else 1)
-                added = added + np.array([car if k == "car" else self.hyper.driver_winter if k == "driver" else 0.0
-                                          for k in self.kind])
+                added = added + np.array([self._winter(k, season) for k in self.kind])
             self.cov = self.cov + np.diag(added)
         self.time = time if self.time is None else max(self.time, time)
 
@@ -209,6 +260,8 @@ class Filter:
                 row.append(self.column((car, session_type), "offset"))
             if self.weekend:
                 row.append(self.column(car, "weekend"))
+            if self.affinity and self.circuit is not None:
+                row.append(self.column((car, self.circuit), "affinity"))
             columns.append(row)
         design = np.zeros((len(cars), len(self.kind)))
         for row, indices in enumerate(columns):
@@ -239,13 +292,15 @@ class PaceModel:
     `session_types` selects the evidence: ("Q",) is stage 1, ALL_SESSIONS stage 2."""
 
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
-                 weekend=False, shared_from_qualifying=False):
+                 weekend=False, shared_from_qualifying=False, affinity=False):
         self.session_types = tuple(session_types)
         self.name = name
         self.winter = winter
         self.objective = objective
         self.weekend = weekend
         self.shared_from_qualifying = shared_from_qualifying
+        self.affinity = affinity
+        self._circuits = None
         self.hyper = None
         self.fitted_season = None
         self.fit_log = {}
@@ -266,6 +321,14 @@ class PaceModel:
                 session.session_type, view.results(session.session_id), laps, view.entrants(session.session_id))
         return self._observations[session.session_id]
 
+    def circuit(self, view, event):
+        """Circuit ID of an event (reference data); None for testing or unknown."""
+        if self._circuits is None:
+            events = view.archive.events
+            self._circuits = {k: (None if pd.isna(c) else c) for k, c in zip(events.event_key, events.circuit_id)} \
+                if "circuit_id" in events else {}
+        return self._circuits.get(event)
+
     def run(self, view, hyper, sessions):
         """Filter every session. `state.objective` is the quantity the settings maximise."""
         state = Filter(hyper)
@@ -275,7 +338,7 @@ class PaceModel:
             state.advance(session.scheduled_start_utc)
             if session.event_key != event:
                 event = session.event_key
-                state.start_event(event)
+                state.start_event(event, self.circuit(view, event))
                 before_weekend = state.copy()
             groups = self.observations(view, session)
             if self.objective == "qualifying" and session.session_type == "Q":
@@ -302,7 +365,8 @@ class PaceModel:
         seasons = sorted(set(sessions.scheduled_start_utc.dt.year))
         winter = self.winter and len(seasons) > 1
         regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
-        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend) if s not in frozen]
+        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, self.affinity)
+                   if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
 
         def negative(values):
@@ -324,7 +388,9 @@ class PaceModel:
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
         start = self.hyper or Hyper(**({"car_winter": 0.5, "driver_winter": 0.05, "regulation_multiplier": 3.0}
-                                       if self.winter else {}), **({"weekend_prior": 0.3} if self.weekend else {}))
+                                       if self.winter else {}), **({"weekend_prior": 0.3} if self.weekend else {}),
+                                    **({"affinity_prior": 0.2, "affinity_drift": 0.001, "affinity_winter": 0.02}
+                                       if self.affinity else {}))
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
         if (sessions.session_type == "Q").sum() < 5:
             self.hyper = start
@@ -348,7 +414,8 @@ class PaceModel:
         state = self.run(view, self.hyper, self.sessions(view))
         state.advance(example.cutoff_time)
         if state.event != example.event_key:
-            state.start_event(example.event_key)   # before the weekend: its effect is still unknown
+            # before the weekend: its weekend effect is unknown; this circuit's affinity resumes
+            state.start_event(example.event_key, self.circuit(view, example.event_key))
         drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
         cars = [c if pd.notna(c) else f"unknown:{n}" for c, n in zip(example.lineage_ids, example.driver_numbers)]
         design = state.design(cars, drivers, "Q")
