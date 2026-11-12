@@ -1,5 +1,5 @@
 ﻿.PHONY: api api-build api-test analysis analysis-install frontend frontend-install frontend-build \
-        f1data-install f1data-test archive-verify migrate-up migrate-down dev setup
+        f1data-install f1data-test archive-verify predictor-install predictor-test migrate-up migrate-down dev setup
 
 # --- API ---
 api:
@@ -27,6 +27,13 @@ f1data-test:
 
 archive-verify:
 	f1data verify
+
+# --- Prediction engine ---
+predictor-install:
+	uv pip install -e "services/predictor[dev]"
+
+predictor-test:
+	python -m pytest services/predictor
 
 # --- Frontend ---
 frontend:

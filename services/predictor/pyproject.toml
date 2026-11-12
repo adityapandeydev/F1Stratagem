@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predictor"
+version = "0.1.0"
+description = "F1Stratagem prediction engine: probabilistic qualifying, sprint and race forecasts"
+requires-python = ">=3.10"
+dependencies = [
+    "f1data",
+    "numpy>=1.26",
+    "pandas>=2.2,<3",
+    "pyarrow>=18",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+predictor = "predictor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
