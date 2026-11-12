@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import pandas as pd
 
 from predictor.archive import Archive
@@ -15,7 +16,7 @@ LINEUP = [("a", "fast"), ("b", "fast"), ("c", "mid"), ("d", "mid"), ("e", "slow"
 
 def test_filter_recovers_car_and_driver_pace_from_qualifying_segments():
     rng = np.random.default_rng(1)
-    state = Filter(Hyper(noise=0.1, car_drift=1e-4, driver_drift=1e-4, car_prior=2.0, driver_prior=0.5))
+    state = Filter(Hyper(noise={"Q": 0.1}, car_drift=1e-4, driver_drift=1e-4, car_prior=2.0, driver_prior=0.5))
     start = pd.Timestamp("2023-01-01", tz=UTC)
     for week in range(30):
         state.advance(start + pd.Timedelta(weeks=week))
@@ -48,7 +49,9 @@ def write_archive(root, later_time_q1):
         folder.mkdir(parents=True, exist_ok=True)
         times = [base * (1 + (CARS[c] + DRIVERS[d]) / 100) for d, c in LINEUP]
         pd.DataFrame({"DriverNumber": [str(i) for i in range(len(LINEUP))], "Position": range(1, 7),
-                      "Q1": pd.to_timedelta(times, unit="s"), "Q2": pd.NaT, "Q3": pd.NaT}).to_parquet(
+                      "Q1": pd.to_timedelta(times, unit="s"),
+                      "Q2": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]"),
+                      "Q3": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]")}).to_parquet(
             folder / "results.parquet")
 
 
@@ -72,3 +75,24 @@ def test_data_after_the_cutoff_cannot_change_a_forecast(tmp_path):
     second = forecast_after_first_session(tmp_path / "two")
     assert np.array_equal(first.position_probs, second.position_probs)
     assert first.position_probs[0, 0] > first.position_probs[5, 0]   # fast car, faster driver leads
+
+
+def test_team_session_offset_absorbs_practice_flattering():
+    """One team is always 0.6% quicker in FP2 than its qualifying pace (e.g. engine
+    modes). The offset learns it, so the qualifying estimate is not fooled."""
+    rng = np.random.default_rng(2)
+    noise = {"Q": 0.1, "FP2": 0.15}
+    state = Filter(Hyper(noise=noise, car_drift=1e-4, driver_drift=1e-4, offset_drift=1e-5,
+                         car_prior=2.0, driver_prior=0.5, offset_prior=1.0))
+    cars, drivers = [c for _, c in LINEUP], [d for d, _ in LINEUP]
+    truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
+    flatter = np.array([-0.6 if c == "fast" else 0.0 for _, c in LINEUP])
+    start = pd.Timestamp("2023-01-01", tz=UTC)
+    for week in range(40):
+        state.advance(start + pd.Timedelta(weeks=week))
+        state.update(cars, drivers, truth + flatter + rng.normal(0, 0.15, 6), "FP2")
+        state.update(cars, drivers, truth + rng.normal(0, 0.1, 6), "Q")
+    offsets = {c: state.mean[state.index[("offset", (c, "FP2"))]] for c in CARS}
+    assert offsets["fast"] - np.mean([offsets["mid"], offsets["slow"]]) == pytest.approx(-0.6, abs=0.1)
+    estimate = state.design(cars, drivers, "Q") @ state.mean
+    assert np.allclose(estimate - estimate.mean(), truth - truth.mean(), atol=0.08)

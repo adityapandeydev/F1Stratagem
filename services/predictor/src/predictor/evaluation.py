@@ -72,13 +72,14 @@ def score(forecast, example):
     return row
 
 
-def _pace_model():
-    from .pace import PaceModel
-    return PaceModel()
+def _pace_model(stage):
+    from .pace import ALL_SESSIONS, QUALIFYING_ONLY, PaceModel
+    return PaceModel(QUALIFYING_ONLY, "pace:v1") if stage == 1 else PaceModel(ALL_SESSIONS, "pace:v2")
 
 
 def model_registry():
-    return {**{name: (lambda name=name: RankBaseline(name)) for name in RANKERS}, "pace": _pace_model}
+    return {**{name: (lambda name=name: RankBaseline(name)) for name in RANKERS},
+            "pace": lambda: _pace_model(1), "pace2": lambda: _pace_model(2)}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):
