@@ -1,409 +1,208 @@
 # F1Stratagem
 
-> A next-generation Formula 1 intelligence, analytics, simulation, and calendar optimization platform.
+F1Stratagem is a Formula 1 analysis, prediction and community platform. It
+combines a permanent archive of F1 timing, telemetry, results, weather and
+official documents with session analysis tools, a probabilistic prediction
+engine and a calendar builder where fans design, simulate and share their own
+seasons.
+
+The project is under active development. The data archive is complete and
+verified; the prediction engine is the current focus; the analysis frontend and
+API are being rebuilt around the archive.
+
+## Status
+
+| Area | State |
+|---|---|
+| Data archive: FastF1 2018–2026, Jolpica 1950–2026, Open-Meteo, FIA documents 2019–2026 | Built, verified (37 GB) |
+| Session analysis and multi-driver telemetry comparison | Prototype, being rebuilt on the archive |
+| Go API | Prototype, being reworked as the orchestrator of all services |
+| Prediction engine | Designed; implementation next |
+| Calendar builder, community | Planned |
+| News and contextual intelligence | Planned |
+
+## Features
+
+### Session and race analysis
+
+Explore every session from 2018 onward: telemetry overlays for up to four
+drivers, lap-by-lap and sector analysis, race pace and tyre degradation, pit
+stops, qualifying evolution, practice programmes, and historical comparisons
+across drivers, teams, circuits and regulation eras. The full catalogue of
+metrics and views is in [DataUsePlan.md](DataUsePlan.md).
+
+### Predictions
+
+Probabilistic forecasts for qualifying, sprint and Grand Prix for every driver:
+the full finishing-position distribution, pole and win probabilities, a likely
+range ("P3–P7"), retirement risk and expected points. Forecasts are issued at
+every stage of a weekend (after testing, each practice session, qualifying and
+grid penalties) and update live during a race.
+
+- Performance transfers between circuits through measured characteristics, not
+  results: corners are classified from telemetry, each circuit is a mix of speed
+  regimes, and each car has a measured performance envelope.
+- Championship odds are recomputed after every race, for the real calendar and
+  for calendars built by users.
+- Every published forecast is frozen and hashed before its session starts and
+  scored afterwards, so the track record is public and verifiable.
+
+Design: [design/prediction-engine.md](design/prediction-engine.md).
+
+### Strategy and scenarios
+
+Tyre strategy, pit windows, undercut and overcut, degradation and weather
+crossover windows, modelled from historical data and the remaining tyre sets of
+each driver. Users can change race conditions (rain mid-race, a different
+starting compound, safety-car likelihood, track temperature, aggressive or
+conservative strategy) and see the simulated outcome.
+
+### Driver and car profiling
+
+Profiles built from telemetry and history: performance by corner type and
+mini-sector, braking and throttle application, tyre management, wet-weather
+pace, qualifying versus race execution, consistency and risk. Profiles relate
+driver style to car characteristics, track layouts and regulation eras, and
+track strengths, weaknesses and trends over time.
+
+### Calendar builder
+
+Design a season: choose the number of races, add or remove circuits on a 3D
+globe, order them, define rotating slots (for example Monza in even years and
+Imola in odd years), and generate multi-year schedules. Calendars are scored for
+freight distance, backtracking, regional clustering, timezone transitions,
+environmental impact and seasonal weather suitability, with suggestions for
+better sequencing. Any calendar can be published, compared with others, and used
+to simulate a championship.
+
+### News and contextual intelligence
+
+- Official evidence for the prediction engine: FIA documents, team and Pirelli
+  releases, extracted into structured, timestamped records. Upgrade effects are
+  measured from timing data, never taken from claims. Design:
+  [design/news-intelligence.md](design/news-intelligence.md).
+- A retrieval layer over news, FIA documents, technical directives and
+  interviews to explain forecasts and track technical changes. Language models
+  extract and explain; they never produce forecast numbers.
+- A community news feed linking to the original articles, with discussion.
+
+### Community
+
+Public profiles, calendar sharing, voting and discussions.
+
+## Architecture
+
+A monorepo of independently deployable services. A Go API is the single public
+entry point; Python services handle analysis and prediction; one package owns
+the data archive, which every service reads.
+
+| Component | Path | Technology |
+|---|---|---|
+| Frontend | `frontend/` | React 19, TypeScript, Vite, Bun, Tailwind CSS, ECharts, Three.js |
+| API | `api/` | Go, PostgreSQL (pgx) |
+| Analysis service | `services/analysis/` | Python, FastAPI, FastF1, pandas |
+| Prediction engine | `services/predictor/` | Python (Rust extensions for hot paths if profiling requires them) |
+| Data archive | `packages/f1data/` | Python, Parquet, DuckDB |
+
+Under consideration, adopted only where they prove their value: Redis for
+caching, gradient boosting or neural models where they beat simpler models in
+walk-forward evaluation, and a vector store for the retrieval layer.
+
+System context, deployment, network, sequence and schema diagrams are in
+[Architecture.md](Architecture.md).
+
+## Repository layout
+
+```
+F1Stratagem/
+├── frontend/              web application
+├── api/                   Go API
+├── services/
+│   └── analysis/          session analysis service
+├── packages/
+│   └── f1data/            data archive: collection, verification, readers
+├── design/                subsystem designs
+├── data/                  the archive (not in version control)
+├── Architecture.md        platform architecture and diagrams
+└── DataUsePlan.md         catalogue of metrics and views
+```
+
+## Getting started
+
+Requirements: Go 1.27+, Python 3.10+ with [uv](https://docs.astral.sh/uv/),
+Bun, PostgreSQL, and optionally GNU make (the Makefile wraps the commands below).
+
+```powershell
+# configuration
+copy .env.example .env                      # then set DATABASE_URL and the DB_* values
+
+# database schema (a migration runner is planned)
+psql -d f1stratagem -f api/migrations/001_core_schema.up.sql
+
+# data archive tooling
+uv pip install -e "packages/f1data[dev]"
+f1data verify                               # audit an existing archive in data/
+
+# services, each in its own terminal
+cd api; go run ./cmd/server                                   # :8080
+cd services/analysis; pip install -r requirements.txt
+python -m uvicorn src.main:app --port 8081 --reload           # :8081
+cd frontend; bun install; bun run dev                          # :5173
+```
+
+The archive is not distributed with the repository. Building it from scratch
+takes one to two days and requires an F1TV account for FastF1; see
+[packages/f1data/README.md](packages/f1data/README.md).
+
+Tests:
+
+```powershell
+cd api; go test ./...
+python -m pytest packages/f1data
+```
+
+## Data sources
+
+| Source | Data | Licence |
+|---|---|---|
+| [FastF1](https://github.com/theOehrly/Fast-F1) | Timing, telemetry, weather and race control from the F1 live timing archive, 2018+ | Library MIT; data subject to Formula 1's terms |
+| [Jolpica](https://github.com/jolpica/jolpica-f1) | Results, standings, pit stops and lap times, 1950+ | CC BY-NC-SA 4.0 |
+| [Open-Meteo](https://open-meteo.com/) | Observed weather and forecasts as issued for every race weekend | CC BY 4.0 |
+| [FIA](https://www.fia.com/documents) | Power unit and gearbox usage, car presentations, tyre nominations | All rights reserved; documents are not redistributed |
+
+Weather data by Open-Meteo.com. Commercial use of Jolpica, Open-Meteo's API and
+FIA documents requires the providers' permission and will be arranged before any
+commercial release.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Architecture.md](Architecture.md) | Services, data stores, deployment, request flows, schema, roadmap |
+| [design/data-archive.md](design/data-archive.md) | Sources, layout, integrity, extraction, time semantics |
+| [design/prediction-engine.md](design/prediction-engine.md) | Model components, simulators, forecast ledger, evaluation |
+| [design/news-intelligence.md](design/news-intelligence.md) | News pipeline and upgrade measurement |
+| [DataUsePlan.md](DataUsePlan.md) | Metrics and views the platform will offer |
+| [packages/f1data/README.md](packages/f1data/README.md) | Building and verifying the archive |
+
+## Roadmap
+
+| Phase | Focus |
+|---|---|
+| 1 | Core analysis: session browser and telemetry comparison |
+| 1b | Monorepo and data archive (done); analysis on the archive; typed service contracts; canonical driver, team and circuit identifiers |
+| 2 | Prediction engine, built and evaluated one component at a time; forecast ledger; championship odds after every race |
+| 3 | Driver, car and circuit profiling |
+| 4 | Calendar builder, accounts and community; championship simulation on user calendars |
+| 5 | Live forecasting and replay; news and contextual intelligence |
+| 6 | Strategy tools and user-defined scenarios |
+
+Details per phase: [Architecture.md](Architecture.md#roadmap).
+
+## License
+
+No licence has been chosen yet.
 
 ---
 
-# 🚧 Work In Progress
-
-F1Stratagem is currently under active development.
-
-This repository is the beginning of a long-term project focused on building one of the most comprehensive Formula 1 platforms possible — combining:
-
-* advanced telemetry analysis
-* race strategy visualization
-* historical and live analytics
-* AI-assisted prediction systems
-* community-driven calendar creation
-* logistics and sustainability optimization
-* scenario simulation
-* interactive visualizations
-* motorsport intelligence systems
-
-The project is still in its early stages, and many systems are experimental or incomplete.
-
----
-
-# 🌍 Vision
-
-The goal of F1Stratagem is to create a platform that goes far beyond a traditional Formula 1 statistics website.
-
-The long-term vision is to build:
-
-* a full-featured analytics platform
-* a motorsport intelligence ecosystem
-* a race prediction and simulation engine
-* a community-driven calendar platform
-* an experimental AI-assisted strategy system
-
----
-
-# 🏎️ Formula 1 Analytics Platform
-
-A full-featured web platform capable of visualizing and exploring nearly every type of data available through the FastF1 ecosystem.
-
-Including:
-
-* telemetry overlays
-* lap-by-lap analysis
-* tyre degradation graphs
-* race pace comparisons
-* sector analysis
-* pit stop analytics
-* qualifying simulations
-* race strategy breakdowns
-* historical comparisons
-* team and driver dashboards
-* interactive data exploration
-
-The analytics platform is intended to become the foundational layer of the project.
-
----
-
-# 🧠 Prediction & Simulation Engine
-
-F1Stratagem is also planned to include an advanced prediction engine powered by machine learning and deep learning.
-
-The long-term goal is to create a system capable of:
-
-* qualifying predictions
-* race predictions
-* scenario-based simulations
-* dynamic race outcome modeling
-* probabilistic finishing orders
-* strategy outcome prediction
-* weather-aware simulations
-* track-specific driver modeling
-* team performance modeling
-* tyre strategy simulations
-
-Planned features include models that consider:
-
-* historical race data
-* telemetry-derived metrics
-* track layouts
-* weather conditions
-* track temperatures
-* humidity
-* wind speed and direction
-* driver strengths and weaknesses
-* team-specific strengths and weaknesses
-* pit stop performance
-* reliability trends
-* season momentum
-* track evolution
-* tyre degradation characteristics
-* race incidents and variability
-
-The project may eventually explore advanced neural network architectures and contextual AI-assisted prediction systems.
-
----
-
-# 🛞 Strategy Intelligence Engine
-
-F1Stratagem is also planned to include a dedicated race strategy and tyre strategy analysis system.
-
-The long-term vision is to build a platform capable of predicting and simulating:
-
-* tyre strategies
-* pit windows
-* undercut/overcut opportunities
-* degradation trends
-* weather crossover windows
-* safety car sensitivity
-* race strategy outcomes
-
-The system is planned to combine:
-
-* historical race data
-* tyre degradation patterns
-* weather forecasts
-* track characteristics
-* team strategy tendencies
-* driver tyre management characteristics
-* pit stop performance
-* race pace simulations
-
-Future plans also include scenario-based simulations where users can modify race conditions and explore alternate strategic outcomes.
-
-Example scenarios may include:
-
-* rain beginning mid-race
-* alternate starting compounds
-* safety car probability changes
-* varying track temperatures
-* aggressive vs conservative strategy approaches
-
----
-
-# 🧬 Driver Profiling & Motorsport Intelligence
-
-One of the long-term goals of F1Stratagem is to build advanced driver profiling systems using telemetry and historical performance analysis.
-
-The planned system aims to analyze:
-
-* mini-sector performance
-* corner-type specialization
-* braking characteristics
-* throttle application
-* tyre management
-* wet-weather adaptability
-* qualifying vs race pace tendencies
-* high-speed vs low-speed corner performance
-* consistency and risk profiles
-
-The project also plans to explore relationships between:
-
-* driver styles
-* car characteristics
-* track layouts
-* setup tendencies
-* regulation eras
-
-The long-term vision is to create dynamic driver intelligence profiles capable of identifying:
-
-* strengths
-* weaknesses
-* preferred car characteristics
-* ideal track conditions
-* performance trends over time
-
----
-
-# 📅 Community Calendar Builder
-
-One of the major planned systems inside F1Stratagem is a fully interactive Formula 1 calendar creation platform.
-
-Users will be able to:
-
-* create custom F1 calendars
-* choose race counts
-* add or remove circuits
-* create rotational race slots
-* generate multi-year schedules
-* publish calendars publicly
-* view community-created calendars
-* compare logistics efficiency
-* compare sustainability scores
-* experiment with alternate championship structures
-
-The calendar system is intended to function as both:
-
-* a community-driven feature
-* an optimization and simulation system
-
----
-
-# 🔁 Rotational Calendar System
-
-F1Stratagem plans to support rotational race systems.
-
-Example:
-
-* Even years → Monza
-* Odd years → Imola
-
-This allows realistic multi-year calendar generation and alternate championship structures.
-
-The system is planned to support:
-
-* binary track rotation
-* geographic clustering
-* alternate season structures
-* logistics-aware scheduling
-* AI-assisted schedule recommendations
-
-More advanced rotational systems may be explored in the future.
-
----
-
-# 🌱 Sustainability & Logistics Optimization
-
-The calendar engine is planned to include systems for evaluating:
-
-* freight distance
-* continental travel flow
-* race clustering efficiency
-* environmental impact
-* backtracking reduction
-* timezone transition efficiency
-* seasonal weather suitability
-
-The long-term vision is to create an intelligent scheduling assistant capable of suggesting:
-
-* better race sequencing
-* lower-emission travel paths
-* improved regional grouping
-* optimized rotational slots
-
----
-
-# 📰 F1 Intelligence & RAG Systems
-
-F1Stratagem is also planned to include an experimental motorsport intelligence system powered by Retrieval-Augmented Generation (RAG) techniques.
-
-The goal is to combine structured racing data with real-world contextual information from sources such as:
-
-* Formula 1 news articles
-* FIA documents
-* technical directives
-* interviews
-* team announcements
-* weather reports
-* track updates
-* social media discussions
-
-This system is planned to support:
-
-* contextual race predictions
-* strategy analysis
-* technical change tracking
-* track condition intelligence
-* upgrade monitoring
-* community news feeds
-
-The long-term vision is to build a contextual motorsport intelligence layer capable of connecting real-world events to analytics and prediction systems.
-
----
-
-# 👥 Community Features
-
-Planned social/community systems include:
-
-* public profiles
-* calendar sharing
-* likes and voting
-* community discussions
-
-The goal is to make the platform feel like a living community project rather than only a statistics tool.
-
----
-
-# 🛠️ Planned Tech Stack
-
-## Frontend
-
-* React
-* TypeScript
-* TailwindCSS
-* Plotly / Recharts / ECharts
-
-## Backend
-
-* Python
-* FastAPI
-* FastF1
-
-## Future Backend Expansion
-
-* Go backend systems
-* Python microservices
-* Redis
-* PostgreSQL
-* WebSocket systems
-
-## Machine Learning
-
-* PyTorch
-* XGBoost / LightGBM
-* pandas
-* NumPy
-* custom simulation systems
-
-## Experimental AI / RAG Systems
-
-* vector databases
-* embedding systems
-* semantic retrieval
-* contextual intelligence pipelines
-
----
-
-# 📌 Current Development Focus
-
-Current areas being explored:
-
-* FastF1 data extraction
-* race pace analysis
-* telemetry handling
-* data caching systems
-* report generation
-* visualization systems
-* project architecture planning
-* calendar engine design
-
-The current focus is intentionally centered around building a strong analytics and data foundation before moving toward more advanced systems.
-
----
-
-# 🛣️ Development Philosophy
-
-F1Stratagem is intended to be a very long-term project expected to evolve gradually over multiple years.
-
-The platform will likely go through many architectural and design iterations over time.
-
-Development will begin with relatively simple systems focused on:
-
-* telemetry visualization
-* race analytics
-* FastF1 integration
-* plotting systems
-* report generation
-* foundational backend architecture
-
-More advanced systems such as:
-
-* prediction engines
-* optimization systems
-* RAG pipelines
-* strategy simulation
-* driver intelligence models
-* community systems
-
-will be explored incrementally over time as the platform matures.
-
-The primary goal is to build strong foundations first before expanding into more experimental and computationally intensive systems.
-
----
-
-# ⚠️ Important Note
-
-This project is currently experimental and under heavy development.
-
-Features, architecture, technologies, and design decisions may change significantly over time.
-
-Many ideas described in this repository represent long-term goals rather than immediate functionality.
-
----
-
-# 🚀 Long-Term Goal
-
-The long-term goal of F1Stratagem is to become:
-
-> A complete Formula 1 intelligence ecosystem.
-
-Combining:
-
-* analytics
-* simulations
-* optimization
-* prediction systems
-* visualization
-* strategy engineering
-* contextual intelligence
-* community-driven experimentation
-* motorsport systems analysis
-
-into a single platform.
-
----
-
-# 📄 License
-
-License information will be added later.
-
----
-
-# ❤️ Formula 1
-
-Built by a Formula 1 fan for Formula 1 fans.
+Built by a Formula 1 fan, for Formula 1 fans.
