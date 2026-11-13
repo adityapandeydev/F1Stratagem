@@ -21,8 +21,7 @@ const RESET: i64 = 3;
 const UPDATE: i64 = 4;
 const SNAPSHOT: i64 = 5;
 const TRACKS: usize = 2;
-const WEEKEND: usize = 3;
-const KINDS: usize = 5;
+const KINDS: usize = 6; // car, driver, offset, weekend, affinity, form
 
 pub struct Settings<'a> {
     pub priors: &'a [f64],
@@ -234,8 +233,12 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                 st.remove(&removed);
             }
             RESET => {
+                // c = the kind whose prior the states return to (weekend effects, season form)
+                if c < 0 || c as usize >= KINDS {
+                    return Err(Failure::Invalid(format!("unknown kind {c} in RESET")));
+                }
                 let cap = st.cap;
-                let prior = s.priors[WEEKEND] * s.priors[WEEKEND];
+                let prior = s.priors[c as usize] * s.priors[c as usize];
                 for &i in &p.ints[a as usize..(a + b) as usize] {
                     let i = i as usize;
                     st.mean[i] = 0.0;

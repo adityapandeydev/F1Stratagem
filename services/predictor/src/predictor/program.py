@@ -24,7 +24,7 @@ try:
 except ImportError as error:   # pragma: no cover - the build step is part of installing the service
     raise ImportError("predictor_native is not built; run `make predictor-native`") from error
 
-KINDS = ("car", "driver", "offset", "weekend", "affinity")
+KINDS = ("car", "driver", "offset", "weekend", "affinity", "form")
 REFERENCE_TYPES = ("Q", "H")  # session types read without an offset: qualifying and historical qualifying
 DAY_SCALE = 14.0  # drift variances are per 14 days
 
@@ -32,7 +32,7 @@ DAY_SCALE = 14.0  # drift variances are per 14 days
 ADVANCE = 0   # a = steps (index into floats), b = ordinary season starts crossed, c = regulation season starts crossed
 ADD = 1       # a = kind, b = parked slot or -1, c = accrual record (start in ints: steps index or -1, two counts)
 PARK = 2      # a = start in ints, b = count: pairs (state index, slot); the states are then removed
-RESET = 3     # a = start in ints, b = count: weekend state indices returned to their prior
+RESET = 3     # a = start in ints, b = count, c = kind: state indices returned to that kind's prior
 UPDATE = 4    # a = group index, b = 1 if its log-likelihood counts towards the objective
 SNAPSHOT = 5  # track 1 becomes a copy of track 0 (state and parked affinities)
 
@@ -81,10 +81,11 @@ class State:
 
 def settings(hyper, noise_types):
     """Settings as the arrays the native filter reads."""
-    priors = [hyper.car_prior, hyper.driver_prior, hyper.offset_prior, hyper.weekend_prior, hyper.affinity_prior]
-    drifts = [hyper.car_drift, hyper.driver_drift, hyper.offset_drift, 0.0, hyper.affinity_drift]
-    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter]
-    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0]   # which kinds the regulation multiplier scales
+    priors = [hyper.car_prior, hyper.driver_prior, hyper.offset_prior, hyper.weekend_prior, hyper.affinity_prior,
+              hyper.form_prior]
+    drifts = [hyper.car_drift, hyper.driver_drift, hyper.offset_drift, 0.0, hyper.affinity_drift, 0.0]
+    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0]
+    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]   # which kinds the regulation multiplier scales
     noise = [hyper.noise.get(t, 0.0) for t in noise_types]
     return (np.array(priors, dtype=np.float64), np.array(drifts, dtype=np.float64),
             np.array(winters, dtype=np.float64), np.array(multiplied, dtype=np.float64),
@@ -110,8 +111,8 @@ class Recorder:
     update), then `replay(hyper)` for the state under any settings with the same
     weekend / affinity switches. `columns` adds the states a forecast reads."""
 
-    def __init__(self, noise_types, weekend=False, affinity=False):
-        self.weekend, self.affinity = weekend, affinity
+    def __init__(self, noise_types, weekend=False, affinity=False, form=False):
+        self.weekend, self.affinity, self.form = weekend, affinity, form
         self.noise_types = list(noise_types)
         self.tracks = [_Track()]
         self.slot_of = {}
@@ -158,6 +159,8 @@ class Recorder:
             ordinary, regulation = self._seasons(t.time, time)
             steps = (time - t.time).total_seconds() / 86400 / DAY_SCALE
             self._op(ADVANCE, track, self._float(steps), ordinary, regulation)
+            if self.form and ordinary + regulation:     # a new season: season form returns to its prior
+                self._reset("form", track)
         t.time = time if t.time is None else max(t.time, time)
 
     def start_event(self, event, circuit=None):
@@ -182,11 +185,15 @@ class Recorder:
                 t.kind = [t.kind[i] for i in keep]
             self.circuit = circuit
         if self.weekend:
-            weekend = [i for i, kind in enumerate(t.kind) if kind == "weekend"]
-            if weekend:
-                start = len(self.ints)
-                self.ints += weekend
-                self._op(RESET, 0, start, len(weekend), 0)
+            self._reset("weekend", 0)
+
+    def _reset(self, kind, track):
+        t = self.tracks[track]
+        states = [i for i, k in enumerate(t.kind) if k == kind]
+        if states:
+            start = len(self.ints)
+            self.ints += states
+            self._op(RESET, track, start, len(states), KINDS.index(kind))
 
     def snapshot(self):
         """Track 1 becomes a copy of track 0."""
@@ -204,6 +211,8 @@ class Recorder:
                 row.append(self.column((car, session_type), "offset", track))
             if self.weekend and session_type != "H":   # a historical session is its weekend's only one
                 row.append(self.column(car, "weekend", track))
+            if self.form:
+                row.append(self.column(driver, "form", track))
             if self.affinity and self.circuit is not None:
                 row.append(self.column((car, self.circuit), "affinity", track))
             rows.append(row)
@@ -235,7 +244,8 @@ class Recorder:
         return self._program
 
     def _check(self, hyper):
-        if (hyper.weekend_prior > 0, hyper.affinity_prior > 0) != (self.weekend, self.affinity):
+        if (hyper.weekend_prior > 0, hyper.affinity_prior > 0, hyper.form_prior > 0) != \
+                (self.weekend, self.affinity, self.form):
             raise ValueError("settings switch a term the recorded program does not have")
 
     def objective(self, hyper):

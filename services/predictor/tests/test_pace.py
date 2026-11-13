@@ -659,3 +659,36 @@ def test_a_screen_freezes_what_the_base_holds_and_refuses_non_extensions(tmp_pat
     narrower.screen_base = base
     with pytest.raises(ValueError, match="weekend"):
         narrower._ensure_hyper(view, 2023)
+
+
+def test_season_form_resets_each_season_and_the_career_level_carries_on():
+    hyper = Hyper(form_prior=0.3, driver_drift=0.0, car_drift=0.0)
+    state = Recorder(("Q",), form=True)
+    state.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    for _ in range(5):          # driver "a" much faster than his teammate "b" in the same car
+        state.update(["fast", "fast"], ["a", "b"], [0.0, 1.0])
+    replayed = state.replay(hyper)
+    form = [i for i, (kind, key) in enumerate(replayed.keys) if kind == "form"]
+    driver = [i for i, (kind, key) in enumerate(replayed.keys) if kind == "driver"]
+    assert np.abs(replayed.mean[form]).max() > 0.01            # this season's evidence moved the form
+    state.advance(pd.Timestamp("2022-03-01", tz=UTC))           # a new season
+    after = state.replay(hyper)
+    assert np.allclose(after.mean[form], 0.0) and np.allclose(np.diag(after.cov)[form], 0.3 ** 2)
+    assert np.allclose(after.cov[np.ix_(form, driver)], 0.0)
+    assert np.allclose(after.mean[driver], replayed.mean[driver])     # the career level is kept
+    assert program.RESET in set(state.program().ops[:, 0])
+
+
+def test_season_form_is_fitted_only_once_the_counted_data_crosses_a_season(tmp_path, monkeypatch):
+    from predictor import pace
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    write_circuit_archive(tmp_path)
+    archive = Archive(tmp_path)
+    fitted = {}
+    for season in (2022, 2023):
+        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, form=True)
+        view = archive.view(pd.Timestamp(f"{season}-01-01", tz=UTC))
+        hyper = model.fit_hyper(view, model.sessions(view), model._default_start())
+        fitted[season] = ("form_prior" in model.last_fit["fitted"], hyper.form_prior)
+    assert fitted[2022] == (False, 0.0)          # one season: form off
+    assert fitted[2023][0] and fitted[2023][1] > 0
