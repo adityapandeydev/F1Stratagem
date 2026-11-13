@@ -26,7 +26,7 @@ Models (`predictor evaluate --models ...`):
 | `pace` | v1: qualifying evidence only |
 | `pace2` | v2: + practice, sprint qualifying, testing, team × session offsets |
 | `pace3w` | v3w: + weekend effect and winter reset (current) |
-| `pace3wa` | v3wa: v3w + car × circuit affinity (in evaluation) |
+| `pace3wa` | v3wa: v3w + car × circuit affinity (tested, not adopted) |
 | `pace3`, `pace2q`, `pace3q`, `pace2w`, `pace2s` | Development variants kept for comparison |
 
 ## Availability in backtests

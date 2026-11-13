@@ -31,7 +31,7 @@ use-case notation, so those views are drawn as flowcharts.
 | Championship on a user calendar | Sequence | [Request flows](#request-flows) |
 | Live race forecast (planned) | Sequence | [Request flows](#request-flows) |
 | Archive data flow, `f1data` packages, session manifest states, FastF1 ingestion | Flowchart, class, state, sequence | [design/data-archive.md](design/data-archive.md) |
-| Prediction pipeline, pace model, cutoff timeline, forecast lifecycle, output model, feature evaluation | Flowchart, state, class | [design/prediction-engine.md](design/prediction-engine.md) |
+| Prediction pipeline, pace model, Python/Rust split of the filter, cutoff timeline, forecast lifecycle, output model, feature evaluation | Flowchart, state, class | [design/prediction-engine.md](design/prediction-engine.md) |
 | News pipeline, upgrade-effect measurement | Flowchart, sequence | [design/news-intelligence.md](design/news-intelligence.md) |
 
 ---
@@ -41,7 +41,7 @@ use-case notation, so those views are drawn as flowcharts.
 | Decision | Choice | Rationale |
 |---|---|---|
 | API language | Go | Concurrency, mature HTTP/Postgres ecosystem. Public entry point and orchestrator of all services. |
-| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Hot spots that profiling proves slow (race Monte Carlo, lap simulator) move to Rust extensions (PyO3). |
+| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Hot spots that profiling proves slow move to Rust extension modules (PyO3, built with maturin) inside the same service; the pace model's Kalman filter is the first (4.3–6.4× faster fits, same forecasts). Race Monte Carlo and the lap simulator are candidates. |
 | Repository | Monorepo, independently deployable services | Shared contracts and data code; separate processes and deploys. |
 | F1 timing, telemetry, documents | Parquet archive queried with DuckDB | Columnar, compressed, partition-scanned; hundreds of millions of telemetry rows. SQLite rejected. |
 | Application data | PostgreSQL (local in development) | Users, calendars, community content, small reference tables they join to. |
@@ -673,6 +673,10 @@ by users. All quantities come from one joint simulation per event, so they are
 consistent by construction. Every published forecast is frozen and hashed in the
 forecast ledger before its session starts. Grid penalties the model is about to
 apply to an upcoming race are confirmed by an operator before publication.
+
+The engine is one Python service. Its hot loop, the pace model's Kalman filter,
+is a Rust extension module (`predictor_native`) that the service imports like
+any Python package; the Go API sees only the service.
 
 Design, components (pace model, car envelope and lap simulator, run
 classification, learned race events, weather scenarios, grid penalties, tyre

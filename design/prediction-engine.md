@@ -11,7 +11,8 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Data archive (FastF1, Jolpica, Open-Meteo, FIA documents), see [data-archive.md](data-archive.md) | Implemented |
 | Cutoff-gated archive access, targets, forecast object, baselines, walk-forward evaluation | Implemented |
 | Pace model for qualifying: car, driver, team × session offsets, weekend effect, winter reset | Implemented (v3w) |
-| Car × circuit affinity | Implemented, in evaluation (v3wa) |
+| Native Kalman filter (Rust, PyO3) for fits and forecasts | Implemented |
+| Car × circuit affinity | Tested, not adopted (v3wa); retest with 1996–2017 history planned |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
 | Pace model for races, circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
@@ -214,7 +215,7 @@ car(lineage, t) + driver(t) + offset(lineage, session type)
   conditions, upgrades), so they do not move long-run pace. Before the weekend it
   is unknown (prior spread, shared by teammates); after practice it carries what
   the weekend's practice showed into the same weekend's qualifying.
-- **Car × circuit affinity (in evaluation).** A persistent per-circuit effect for
+- **Car × circuit affinity (tested, not adopted).** A persistent per-circuit effect for
   each lineage, kept between visits. Its variance grows with time and at each
   season start, multiplied at regulation changes; its value is kept, so recent
   visits weigh more and an earlier regulation era still counts. Only the current
@@ -228,7 +229,17 @@ car(lineage, t) + driver(t) + offset(lineage, session type)
   regulation multiplier are fitted by maximum one-step predictive likelihood on
   sessions available before each evaluated season. A setting is fitted only when
   the data can identify it (offsets only with non-qualifying evidence; the
-  regulation multiplier only once the data crosses a regulation change).
+  regulation multiplier only once the data crosses a regulation change; affinity
+  only once the data spans two seasons, so circuits have been revisited).
+- **Fitting.** Fit quality matters more than run time. Settings are fitted as
+  logs within bounds. Each round runs Powell, then L-BFGS-B and adaptive
+  Nelder-Mead from the best point so far, and rounds repeat until one gains less
+  than 0.01 in log-likelihood; methods stall in different places, so alternating
+  them escapes false optima. Fits start from the previous season's settings and
+  from defaults; a model that extends another (v3wa extends v3w) also starts from
+  the smaller model's optimum with the extra terms barely on, so its fit can
+  never end below the model it extends. Every fit records its convergence,
+  evaluations and the log-likelihood reached from each start.
 - **Forecast.** States are drawn jointly from the posterior (10,000 draws) with
   qualifying noise added, and each draw is ranked.
 
@@ -261,8 +272,71 @@ Lessons from development:
   on qualifying likelihood alone did not.
 - The winter reset had no effect while car drift was inflated; once drift was
   fixed it improved the 2022 regulation-change season at both cutoffs.
+- The first fitter (Nelder-Mead alone) stopped short of the optimum, by up to
+  10 log-likelihood. With one season of history it gave the affinity a drift so
+  large that forecasts were near-uniform. The current fitter reaches the optimum
+  from every start tried; refitting v3w with it improved RPS before the weekend
+  beyond noise (0.1040 to 0.1038) and was within noise at the last cutoff
+  (0.0990 to 0.0989).
+- Car × circuit affinity (v3wa), fairly fitted, gains +3.6 log-likelihood on
+  2018–2022 for three extra settings, with a small fitted spread (0.09) and
+  almost no growth over time. Forecasts were not better: +0.0003 RPS before the
+  weekend (within noise; worse beyond noise on each season's first three rounds)
+  and +0.0003 at the last cutoff (worse beyond noise). With 2018 onwards most
+  car–circuit pairs have only a few visits; the retest adds Jolpica qualifying
+  from 1996, and circuit characteristics from telemetry are a second route to
+  the same effect.
 
 Not yet modelled: compound and tyre age, fuel, traffic, and races.
+
+**Python and Rust.** The filter is split in two. Which states exist, when they
+are added, parked, reset or removed, and which states each observation touches
+depend on the sessions only, never on the settings. Python records that once
+as a flat program (`program.py`); a Rust extension module, `predictor_native`
+(`services/predictor/native`, built with maturin and PyO3), replays it for a
+set of settings and returns the log-likelihood and the final mean and
+covariance. A settings fit records once and replays the program for every
+candidate; a forecast records up to its cutoff and samples from the returned
+state in Python. Everything that changes often (evidence, features, model
+variants, evaluation) stays in Python; only the arithmetic, which rarely
+changes, is in Rust.
+
+Rust replaced the Python filter after a side-by-side comparison. Forecasts
+were the same: on the 2019–2023 gate both versions gave identical verdicts and
+the largest per-event RPS difference was 0.000001; on real data before 2023 the
+final state and every 2023 forecast agree to 1e-15. Fits were faster:
+
+| Fit | Python | Rust | Speed-up |
+|---|---:|---:|---:|
+| v3w, before 2020 | 185 s | 36 s | 5.1× |
+| v3wa, before 2020 | 1,332 s | 209 s | 6.4× |
+| v3w, before 2023 | 1,238 s | 287 s | 4.3× |
+| v3wa, before 2023 | 12,511 s | 2,172 s | 5.8× |
+| Full gate (v3w + v3wa, both cutoffs) | 6 h 40 min | 1 h 14 min | 5.4× |
+
+A fit spends almost all its time in sequential optimiser steps, so running
+candidates on several cores did not help (192 s against 193 s); making each
+evaluation cheaper did. Reference values written by the Python filter before it
+was removed are kept in the tests (`tests/data/pace_golden.json`).
+
+```mermaid
+flowchart LR
+    subgraph py["predictor (Python)"]
+        arch["archive.py<br/>cutoff-gated reads"]
+        pace["pace.py<br/>evidence, model variants"]
+        rec["program.py<br/>Recorder: state bookkeeping"]
+        opt["scipy optimiser<br/>settings fit"]
+        fc["Forecast: joint draws,<br/>ranking"]
+    end
+    subgraph rs["predictor_native (Rust, PyO3)"]
+        kf["Kalman filter replay"]
+    end
+    arch --> pace --> rec
+    rec -->|"program (numpy arrays)"| kf
+    opt -->|"candidate settings"| kf
+    kf -->|"log-likelihood"| opt
+    kf -->|"mean, covariance"| fc
+```
 
 - Car and driver strength are latent states that evolve over time, not fixed
   per-season constants. Each new session (testing, FP, qualifying, race) updates the
@@ -549,6 +623,7 @@ lower is better):
 | v1: qualifying evidence only | 0.108 | 0.108 |
 | v2: + practice, testing, team × session offsets | 0.112 | 0.102 |
 | v3w: + weekend effect, winter reset (current) | 0.104 | 0.099 |
+| v3wa: v3w + car × circuit affinity (not adopted) | 0.104 | 0.099 |
 
 v3w's pole log loss is 1.61 at the last cutoff against 2.08 for championship
 order. Its 80% intervals contain the result 89–91% of the time against an
@@ -580,8 +655,8 @@ flowchart TB
   labelled the same way. Unknown causes stay unknown.
 - Circuits are identified by circuit ID, not by layout version, so a reprofiled
   track still counts as the same circuit for affinity.
-- The settings optimiser (Nelder-Mead) often stops at its iteration limit; fits
-  are usable but not converged.
+- A thorough settings fit takes minutes per season for v3w and up to about
+  40 minutes for v3wa (before 2023, native filter); fits run once per season.
 - 2026 grid has 22 cars; entrant and points rules are versioned by season.
 - Open: whether "open" means published methodology plus reproducible frozen
   forecasts, or also open-sourcing the model code.

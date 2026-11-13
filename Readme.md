@@ -101,7 +101,7 @@ shared by every service, and each dataset in it has exactly one writer.
 | Frontend | `frontend/` | React 19, TypeScript, Vite, Bun, Tailwind CSS, ECharts, Three.js |
 | API | `api/` | Go, PostgreSQL (pgx) |
 | Analysis service | `services/analysis/` | Python, FastAPI, FastF1, pandas |
-| Prediction engine | `services/predictor/` | Python (Rust extensions for hot paths if profiling requires them) |
+| Prediction engine | `services/predictor/` | Python, NumPy, SciPy; Rust (PyO3) for the pace model's Kalman filter |
 | Data archive | `packages/f1data/` | Python, Parquet, DuckDB |
 
 Under consideration, adopted only where they prove their value: Redis for
@@ -130,7 +130,8 @@ F1Stratagem/
 ## Getting started
 
 Requirements: Go 1.27+, Python 3.10+ with [uv](https://docs.astral.sh/uv/),
-Bun, PostgreSQL, and optionally GNU make (the Makefile wraps the commands below).
+Bun, PostgreSQL, a Rust toolchain for the prediction engine, and optionally GNU
+make (the Makefile wraps the commands below).
 
 ```powershell
 # configuration
@@ -142,6 +143,10 @@ psql -d f1stratagem -f api/migrations/001_core_schema.up.sql
 # data archive tooling
 uv pip install -e "packages/f1data[dev]"
 f1data verify                               # audit an existing archive in data/
+
+# prediction engine: the Python package, then its Rust module
+uv pip install -e "services/predictor[dev]"
+cd services/predictor/native; maturin develop --release
 
 # services, each in its own terminal
 cd api; go run ./cmd/server                                   # :8080
@@ -159,6 +164,7 @@ Tests:
 ```powershell
 cd api; go test ./...
 python -m pytest packages/f1data
+python -m pytest services/predictor
 ```
 
 ## Data sources
