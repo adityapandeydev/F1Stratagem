@@ -344,3 +344,47 @@ def test_settings_that_switch_a_recorded_term_are_rejected():
     state.update(["fast", "mid"], ["a", "c"], np.array([90.0, 90.5]))
     with pytest.raises(ValueError):
         state.replay(Hyper())
+
+
+def write_grid_archive(root):
+    """One qualifying session: 20 drivers, the same lap times in Q1, Q2 and Q3."""
+    reference = root / "reference"
+    reference.mkdir(parents=True, exist_ok=True)
+    start = pd.Timestamp("2023-03-04 15:00", tz=UTC)
+    pd.DataFrame([{"session_id": "2023-01-4", "event_key": "2023-01", "season": 2023, "session_type": "Q",
+                   "scheduled_start_utc": start, "last_lap_end_utc": start + pd.Timedelta(hours=1)}]).to_parquet(
+        reference / "sessions.parquet")
+    pd.DataFrame({"event_key": ["2023-01"], "season": [2023], "is_testing": [False], "round": [1]}).to_parquet(
+        reference / "events.parquet")
+    pd.DataFrame([{"session_id": "2023-01-4", "driver_number": str(i), "driver_id": f"d{i}", "team_id": f"c{i // 2}",
+                   "lineage_id": f"c{i // 2}"} for i in range(20)]).to_parquet(reference / "entrants.parquet")
+    (reference / "manifest.json").write_text(json.dumps({"built_at_utc": "now"}))
+    folder = root / "sessions" / "2023" / "2023-01-4" / "normalized"
+    folder.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(0)
+    base = 90 + rng.normal(0, 0.5, 20)
+    segments = {s: pd.to_timedelta(base, unit="s") for s in ("Q1", "Q2", "Q3")}
+    pd.DataFrame({"DriverNumber": [str(i) for i in range(20)], "Position": range(1, 21), **segments}).to_parquet(
+        folder / "results.parquet")
+
+
+def test_a_numerically_failing_candidate_is_rejected_not_fatal(tmp_path):
+    """At noise near the lower bound (exp(-20)) the covariance update loses its
+    precision and an innovation covariance stops being positive definite. The
+    optimiser reaches such candidates from an ordinary start; the fit must reject
+    them and keep the best finite settings."""
+    write_grid_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-04-01", tz=UTC))
+    model = PaceModel()
+    sessions = model.sessions(view)
+    recorder = model.record(view, sessions, False, False)
+    with pytest.raises(ArithmeticError):
+        recorder.objective(Hyper(noise={"Q": np.exp(-20)}))
+    with pytest.raises(ArithmeticError):                     # a forecast never reads a failed state
+        recorder.replay(Hyper(noise={"Q": np.exp(-20)}))
+    start = Hyper()
+    hyper = model.fit_hyper(view, sessions, start)
+    assert model.last_fit["rejected"] > 0
+    assert np.isfinite(model.last_fit["objective"])
+    assert model.last_fit["objective"] >= recorder.objective(start)
+    assert model.last_fit["objective"] == pytest.approx(recorder.objective(hyper))

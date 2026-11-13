@@ -11,7 +11,7 @@
 //! for the qualifying objective's before-the-weekend horizon.
 
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyArithmeticError, PyValueError};
 use pyo3::prelude::*;
 
 const ADVANCE: i64 = 0;
@@ -156,8 +156,27 @@ fn cholesky_solve(l: &[f64], k: usize, b: &mut [f64]) {
     }
 }
 
+/// Why a replay stopped.
+#[derive(Debug)]
+pub enum Failure {
+    /// The settings make an innovation covariance numerically not positive definite
+    /// (e.g. noise so small that the covariance update loses its precision).
+    Numerical(String),
+    /// The program itself is malformed.
+    Invalid(String),
+}
+
+impl From<Failure> for PyErr {
+    fn from(failure: Failure) -> PyErr {
+        match failure {
+            Failure::Numerical(message) => PyArithmeticError::new_err(message),
+            Failure::Invalid(message) => PyValueError::new_err(message),
+        }
+    }
+}
+
 /// Replays the program: counted log-likelihood per track, and track 0's final state.
-pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), String> {
+pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure> {
     let mut states = [State::new(), State::new()];
     let mut parkeds = [vec![(0.0f64, 0.0f64); p.slots], vec![(0.0f64, 0.0f64); p.slots]];
     let mut likelihoods = [0.0; TRACKS];
@@ -168,7 +187,7 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), String> 
     for op in p.ops.chunks_exact(5) {
         let (code, track, a, b, c) = (op[0], op[1] as usize, op[2], op[3], op[4]);
         if track >= TRACKS {
-            return Err(format!("unknown track {track}"));
+            return Err(Failure::Invalid(format!("unknown track {track}")));
         }
         if code == SNAPSHOT {
             states[1] = states[0].clone();
@@ -189,7 +208,7 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), String> 
             ADD => {
                 let kind = a as usize;
                 if kind >= KINDS {
-                    return Err(format!("unknown kind {kind}"));
+                    return Err(Failure::Invalid(format!("unknown kind {kind}")));
                 }
                 if b >= 0 {
                     let (mean, mut variance) = parked[b as usize];
@@ -282,7 +301,7 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), String> 
                     }
                 }
                 if !cholesky(&mut sm, m) {
-                    return Err("innovation covariance is not positive definite".into());
+                    return Err(Failure::Numerical("innovation covariance is not positive definite".into()));
                 }
                 // log-likelihood of the innovation
                 let mut solved = innovation.clone();
@@ -328,7 +347,7 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), String> 
                     }
                 }
             }
-            _ => return Err(format!("unknown opcode {code}")),
+            _ => return Err(Failure::Invalid(format!("unknown opcode {code}"))),
         }
     }
     let [first, _] = states;
@@ -372,7 +391,7 @@ fn replay(
         regulation_multiplier,
         noise: noise.as_slice()?,
     };
-    py.allow_threads(|| run(&program, &settings)).map_err(PyValueError::new_err)
+    py.allow_threads(|| run(&program, &settings)).map_err(PyErr::from)
 }
 
 /// Counted log-likelihood of a recorded program under one set of settings.

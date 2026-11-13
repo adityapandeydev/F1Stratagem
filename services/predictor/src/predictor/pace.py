@@ -137,7 +137,8 @@ def _optimise(negative, x0):
     Nelder-Mead from the best point so far; rounds repeat until one improves the
     objective by less than FIT_TOLERANCE. Methods differ in where they stall, so
     alternating them escapes points that a single method takes for an optimum.
-    Returns (best point, best value, converged)."""
+    `negative` returns +inf for candidates it rejects; only finite results are
+    adopted. Returns (best point, best value, converged)."""
     bounds = [LOG_BOUNDS] * len(x0)
     x = np.clip(np.asarray(x0, dtype=float), *LOG_BOUNDS)
     value = negative(x)
@@ -148,9 +149,11 @@ def _optimise(negative, x0):
                                 ("Nelder-Mead", {"xatol": 1e-4, "fatol": 1e-4, "maxfev": 20000,
                                                  "adaptive": True})):
             result = minimize(negative, x, method=method, bounds=bounds, options=options)
-            if np.isfinite(result.fun) and result.fun < value:
+            if np.isfinite(result.fun) and np.all(np.isfinite(result.x)) and result.fun < value:
                 x, value = np.clip(result.x, *LOG_BOUNDS), float(result.fun)
-        if round_start - value < FIT_TOLERANCE:
+        if not np.isfinite(value):
+            return x, value, False     # nothing finite found from this start
+        if np.isfinite(round_start) and round_start - value < FIT_TOLERANCE:
             return x, value, True
     return x, value, False
 
@@ -283,12 +286,21 @@ class PaceModel:
         start = replace(start, **({"affinity_prior": 0.0} if self.affinity and not affinity else {}),
                         **{s: getattr(default, s) for s in scalars if getattr(start, s) <= 0})
 
-        evaluations = [0]
+        evaluations, rejected = [0], [0]
         objective = self.objective_function(view, sessions, start)
 
         def negative(values):
+            """Minus the objective; +inf rejects a candidate whose filter fails numerically
+            (e.g. noise so small that an innovation covariance is no longer positive definite)."""
             evaluations[0] += 1
-            return -objective(Hyper.from_vector(values, noise_types, scalars, start))
+            try:
+                value = -objective(Hyper.from_vector(values, noise_types, scalars, start))
+            except ArithmeticError:
+                value = np.inf
+            if not np.isfinite(value):
+                rejected[0] += 1
+                return np.inf
+            return value
 
         starts = {"given": start}
         if start != default:
@@ -308,8 +320,11 @@ class PaceModel:
             results[label] = -float(value)
             if best is None or value < best[1]:
                 best = (x, value, converged, label)
-        self.last_fit = {"converged": bool(best[2]), "evaluations": evaluations[0], "objective": -float(best[1]),
-                         "best_start": best[3], "starts": results, "fitted": noise_types + scalars}
+        if not np.isfinite(best[1]):
+            raise ArithmeticError("no start reached a finite log-likelihood")
+        self.last_fit = {"converged": bool(best[2]), "evaluations": evaluations[0], "rejected": rejected[0],
+                         "objective": -float(best[1]), "best_start": best[3], "starts": results,
+                         "fitted": noise_types + scalars}
         return Hyper.from_vector(best[0], noise_types, scalars, start)
 
     def _default_start(self):
