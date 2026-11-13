@@ -25,6 +25,7 @@ except ImportError as error:   # pragma: no cover - the build step is part of in
     raise ImportError("predictor_native is not built; run `make predictor-native`") from error
 
 KINDS = ("car", "driver", "offset", "weekend", "affinity")
+REFERENCE_TYPES = ("Q", "H")  # session types read without an offset: qualifying and historical qualifying
 DAY_SCALE = 14.0  # drift variances are per 14 days
 
 # opcodes; every op is one row of `ops` (code, track, a, b, c) plus optional slices of the shared arrays
@@ -199,9 +200,9 @@ class Recorder:
         rows = []
         for car, driver in zip(cars, drivers):
             row = [self.column(car, "car", track), self.column(driver, "driver", track)]
-            if session_type != "Q":
+            if session_type not in REFERENCE_TYPES:
                 row.append(self.column((car, session_type), "offset", track))
-            if self.weekend:
+            if self.weekend and session_type != "H":   # a historical session is its weekend's only one
                 row.append(self.column(car, "weekend", track))
             if self.affinity and self.circuit is not None:
                 row.append(self.column((car, self.circuit), "affinity", track))

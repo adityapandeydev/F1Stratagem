@@ -56,6 +56,11 @@ Qualifying history (v3wh, v3wah): qualifying before the FastF1 archive, from
 Jolpica (best times per segment, no laps), filtered from 2006 like every other
 session, on the low-fuel segments only (`rules.low_fuel_segments`). It gives the
 car x circuit affinity repeat visits to learn from and drivers a longer record.
+`history` chooses how it enters: "shared" reads it as qualifying (v3wh);
+"noise" as its own session type H, with its own noise, no offset and no weekend
+effect (its only session would make the weekend effect absorb noise) (v3whn);
+"state" as qualifying that updates the state but not the objective, so the
+settings are fitted on the FastF1 era alone (v3whs).
 
 Frozen shared settings (v2s): car and driver drift, priors and qualifying noise
 are fitted on qualifying alone, then frozen; only practice noise and offsets are
@@ -70,7 +75,7 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .forecast import Forecast
-from .program import Recorder
+from .program import REFERENCE_TYPES, Recorder
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
 SEGMENTS = ("Q1", "Q2", "Q3")
@@ -81,12 +86,13 @@ QUALIFYING_ONLY = ("Q",)
 ALL_SESSIONS = ("Q", "SQ", "FP1", "FP2", "FP3", "T")
 HISTORY_FIRST_SEASON = 2006      # first season with low-fuel qualifying segments
 HISTORY_PREFIX = "history:"
+HISTORY_MODES = ("shared", "noise", "state")
 
 
 @dataclass
 class Hyper:
     noise: dict = field(default_factory=lambda: {"Q": 0.3, "SQ": 0.35, "FP1": 0.8, "FP2": 0.7, "FP3": 0.6,
-                                                 "T": 1.2})
+                                                 "T": 1.2, "H": 0.3})
     car_drift: float = 0.05     # variances added per 14 days
     driver_drift: float = 0.01
     offset_drift: float = 0.005
@@ -111,7 +117,7 @@ class Hyper:
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations."""
-        offsets = any(t != "Q" for t in types)
+        offsets = any(t not in REFERENCE_TYPES for t in types)
         return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()), "car_prior", "driver_prior",
                 *(("offset_prior",) if offsets else ()), *(("car_winter", "driver_winter") if winter else ()),
                 *(("regulation_multiplier",) if winter and regulation else ()),
@@ -228,7 +234,9 @@ class PaceModel:
 
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False):
-        self.session_types = tuple(session_types)
+        history = "shared" if history is True else history
+        assert history in (False, *HISTORY_MODES), history
+        self.session_types = tuple(session_types) + (("H",) if history == "noise" else ())
         self.name = name
         self.winter = winter
         self.objective = objective
@@ -257,7 +265,8 @@ class PaceModel:
         history = history[history.season >= HISTORY_FIRST_SEASON]
         events = history.groupby("event_key").agg(season=("season", "first"), scheduled_start_utc=("start_utc", "first"),
                                                   available_at_utc=("available_at_utc", "first")).reset_index()
-        return events.assign(session_id=HISTORY_PREFIX + events.event_key, session_type="Q")
+        return events.assign(session_id=HISTORY_PREFIX + events.event_key,
+                             session_type="H" if self.history == "noise" else "Q")
 
     def observations(self, view, session):
         """Cached per session; the view still decides whether the session may be read."""
@@ -299,6 +308,10 @@ class PaceModel:
                 if objective == "qualifying":
                     recorder.snapshot()
             groups = self.observations(view, session)
+            if self.history == "state" and session.session_id.startswith(HISTORY_PREFIX):
+                for cars, drivers, values in groups:
+                    recorder.update(cars, drivers, values, session.session_type, counted=False)
+                continue
             if objective == "qualifying" and session.session_type == "Q":
                 recorder.advance(session.scheduled_start_utc, track=1)
                 for cars, drivers, values in groups:

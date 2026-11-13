@@ -77,7 +77,8 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
-        + ("a" if affinity else "") + ("h" if history else "")
+        + ("a" if affinity else "") + ("h" if history else "") \
+        + {"noise": "n", "state": "s"}.get(history, "")
     return PaceModel(ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history)
 
@@ -90,7 +91,9 @@ def model_registry():
             "pace3w": lambda: _pace_model(3, weekend=True), "pace2s": lambda: _pace_model(2, shared=True),
             "pace3wa": lambda: _pace_model(3, weekend=True, affinity=True),
             "pace3wh": lambda: _pace_model(3, weekend=True, history=True),
-            "pace3wah": lambda: _pace_model(3, weekend=True, affinity=True, history=True)}
+            "pace3wah": lambda: _pace_model(3, weekend=True, affinity=True, history=True),
+            "pace3whn": lambda: _pace_model(3, weekend=True, history="noise"),
+            "pace3whs": lambda: _pace_model(3, weekend=True, history="state")}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):

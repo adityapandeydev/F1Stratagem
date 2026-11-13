@@ -388,3 +388,40 @@ def test_a_numerically_failing_candidate_is_rejected_not_fatal(tmp_path):
     assert np.isfinite(model.last_fit["objective"])
     assert model.last_fit["objective"] >= recorder.objective(start)
     assert model.last_fit["objective"] == pytest.approx(recorder.objective(hyper))
+
+
+def write_history(root):
+    """Two qualifying sessions of 2017 in the reference history (all segments low fuel)."""
+    rows = []
+    for event, circuit, day in (("2017-01", "A", "2017-03-25"), ("2017-02", "B", "2017-04-08")):
+        rng = np.random.default_rng(int(event[-1]))
+        for d, c in LINEUP:
+            seconds = 90 * (1 + (CARS[c] + DRIVERS[d] + rng.normal(0, 0.3, 3)) / 100)
+            rows.append({"event_key": event, "season": 2017, "circuit_id": circuit, "driver_id": d, "lineage_id": c,
+                         "q1_seconds": seconds[0], "q2_seconds": seconds[1], "q3_seconds": seconds[2],
+                         "start_utc": pd.Timestamp(f"{day} 06:00", tz=UTC)})
+    pd.DataFrame(rows).to_parquet(root / "reference" / "qualifying_history.parquet")
+
+
+@pytest.mark.parametrize("mode", ["shared", "noise", "state"])
+def test_history_modes_read_history_as_qualifying_without_an_offset(tmp_path, mode):
+    write_circuit_archive(tmp_path)
+    write_history(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, history=mode)
+    sessions = model.sessions(view)
+    history = sessions[sessions.session_id.str.startswith("history:")]
+    assert len(history) == 2 and set(history.session_type) == {"H" if mode == "noise" else "Q"}
+    recorder = model.record(view, sessions, True, False)
+    assert not any(kind == "offset" and key[1] in ("Q", "H") for kind, key in recorder.keys)
+    if mode == "noise":   # historical rows read car and driver only
+        assert all(len(recorder.entries[a:b]) == 2 for a, b in zip(recorder.row_starts[:36], recorder.row_starts[1:37]))
+    updates = recorder.program().ops
+    updates = updates[updates[:, 0] == program.UPDATE]
+    counted = updates[:, 3]
+    groups = 2 * 3                                     # two sessions, three segments each
+    assert list(counted[:groups]) == [0 if mode == "state" else 1] * groups
+    assert counted[groups:].all()
+    hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
+    assert ("H" in model.last_fit["fitted"]) == (mode == "noise")
+    assert np.isfinite(model.last_fit["objective"]) and hyper.noise["Q"] > 0
