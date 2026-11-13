@@ -601,3 +601,61 @@ def test_a_fit_is_not_saved_if_the_data_changed_while_it_ran(tmp_path):
     assert entry == {"hyper": 2} and not cached and path.exists()
     assert cache.get_or_fit(path, lambda: {"hyper": 3}) == ({"hyper": 2}, True)
     assert not list(path.parent.glob("*.lock")) and not list(path.parent.glob("*.tmp"))
+
+
+def test_a_screen_fits_only_what_the_model_adds(tmp_path, monkeypatch):
+    from predictor import pace
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    base = PaceModel(ALL_SESSIONS, "pace:base", winter=True, weekend=True)
+    model = PaceModel(ALL_SESSIONS, "pace:candidate", winter=True, weekend=True, affinity=True)
+    model.screen_base = base
+    model._ensure_hyper(view, 2023)
+    assert set(model.last_fit["fitted"]) == {"affinity_prior", "affinity_drift", "affinity_winter"}
+    for name in Hyper.SCALARS:
+        if not name.startswith("affinity"):
+            assert getattr(model.hyper, name) == getattr(base.hyper, name), name
+    assert model.hyper.noise == {**model.hyper.noise, **base.hyper.noise}
+    assert model.options()["screen_base"][0] == "pace:base"
+
+
+def test_cache_paths_are_valid_folder_names(tmp_path):
+    from predictor.fitcache import FitCache
+    model = PaceModel(ALL_SESSIONS, "pace:v3whw|screen")
+    path = FitCache(tmp_path / "fits").path(model, 2022, "0" * 64)
+    assert path.parent.name == "pace_v3whw_screen"
+    path.parent.mkdir(parents=True)
+
+
+def test_a_screen_with_nothing_to_fit_keeps_the_base_settings(tmp_path, monkeypatch):
+    from predictor import pace
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2022-01-01", tz=UTC))       # one season: affinity not identified
+    base = PaceModel(ALL_SESSIONS, "pace:base", winter=True, weekend=True)
+    model = PaceModel(ALL_SESSIONS, "pace:candidate", winter=True, weekend=True, affinity=True)
+    model.screen_base = base
+    model._ensure_hyper(view, 2022)
+    assert model.last_fit["fitted"] == [] and model.hyper.affinity_prior == 0.0
+    assert model.hyper.noise["Q"] == base.hyper.noise["Q"] and model.hyper.car_drift == base.hyper.car_drift
+
+
+def test_a_screen_freezes_what_the_base_holds_and_refuses_non_extensions(tmp_path, monkeypatch):
+    from predictor import pace
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    write_circuit_archive(tmp_path)
+    write_history(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    base = PaceModel(ALL_SESSIONS, "pace:base", winter=True, weekend=True)
+    model = PaceModel(ALL_SESSIONS, "pace:candidate", winter=True, weekend=True, history="shared")
+    model.screen_base = base
+    model._ensure_hyper(view, 2023)
+    # counted history crosses more season starts, but the winter terms belong to the base: frozen
+    assert not set(model.last_fit["fitted"]) & {"car_winter", "driver_winter", "regulation_multiplier", "car_drift"}
+    for name in ("car_winter", "driver_winter", "regulation_multiplier", "weekend_prior"):
+        assert getattr(model.hyper, name) == getattr(base.hyper, name), name
+    narrower = PaceModel(ALL_SESSIONS, "pace:narrower", winter=True)
+    narrower.screen_base = base
+    with pytest.raises(ValueError, match="weekend"):
+        narrower._ensure_hyper(view, 2023)

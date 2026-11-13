@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 import time
 import warnings
@@ -87,10 +88,12 @@ class FitCache:
         for season in seasons:
             self._data.setdefault(season, data_fingerprint(root, season))
 
-    def key(self, model, season, start, qualifying_start, root):
+    def key(self, model, season, start, qualifying_start, root, base=None):
+        """`base`: in a screen, the base model's fitted settings for the season."""
         self.prime(root, [season])
         content = {"model": model.name, "options": model.options(), "season": season,
                    "start": hyper_dict(start), "qualifying_start": hyper_dict(qualifying_start),
+                   "base": hyper_dict(base),
                    "code": self._code, "data": self._data[season]}
         return _sha(json.dumps(content, sort_keys=True).encode())
 
@@ -98,7 +101,7 @@ class FitCache:
         return code_fingerprint() == self._code and data_fingerprint(root, season) == self._data[season]
 
     def path(self, model, season, key):
-        safe = model.name.replace(":", "_")
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", model.name)      # a valid folder name on every system
         return self.folder / safe / f"{season}-{key[:24]}.json"
 
     def load(self, path):

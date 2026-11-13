@@ -262,6 +262,7 @@ class PaceModel:
         self._circuits = None
         self.hyper = None
         self.fit_cache = None        # a fitcache.FitCache: reuse fits across cutoffs and runs
+        self.screen_base = None      # a PaceModel: screen against it (see `_fit_season`)
         self.fitted_season = None
         self.fit_log = {}
         self._qualifying_hyper = None
@@ -394,6 +395,10 @@ class PaceModel:
             + [LOG_BOUNDS[0]] * len(scalars)
         evaluations, rejected = [0], [0]
         objective = self.objective_function(view, sessions, start)
+        if not noise_types and not scalars:   # everything frozen (only in a screen): nothing to fit
+            self.last_fit = {"converged": True, "evaluations": 0, "rejected": 0, "objective": float(objective(start)),
+                             "best_start": "given", "starts": {}, "fitted": []}
+            return start
 
         def negative(values):
             """Minus the objective; +inf rejects a candidate whose filter fails numerically
@@ -418,8 +423,9 @@ class PaceModel:
             base = [s for s in scalars if s not in extra]
             assert scalars == base + extra
             off = np.log([NESTED_AFFINITY[s] for s in extra])
-            x, _, _ = _optimise(lambda v: negative(np.concatenate([v, off])), start.vector(noise_types, base),
-                                lower[:len(noise_types) + len(base)])
+            inner = start.vector(noise_types, base)
+            x = _optimise(lambda v: negative(np.concatenate([v, off])), inner,
+                          lower[:len(noise_types) + len(base)])[0] if len(inner) else inner
             starts["nested"] = Hyper.from_vector(np.concatenate([x, off]), noise_types, scalars, start)
         best, results = None, {}
         for label, initial in starts.items():
@@ -439,6 +445,44 @@ class PaceModel:
         groups = [group for session in sessions.itertuples() for group in self.observations(view, session)]
         return {c for cars, _, _ in groups for c in cars}, {d for _, drivers, _ in groups for d in drivers}
 
+    def _screen_season(self, view, season, earlier, sessions, start):
+        """Quick screen: every setting the base model fitted (or holds) is taken from
+        its fit for this season and frozen; only the settings this model adds are
+        fitted. Minutes instead of hours; a screen only decides whether a full gate
+        run is worth it, never whether a feature is adopted."""
+        base = self.screen_base
+        self._check_extends(base)
+        base._ensure_hyper(view, season)
+        # every setting the base model has, fitted or held, by its switches
+        owned = Hyper.fitted(base.session_types, winter=base.winter, regulation=base.winter, weekend=base.weekend,
+                             affinity=base.affinity)
+        noise = {**start.noise, **{t: base.hyper.noise[t] for t in base.session_types}}
+        merged = replace(start, noise=noise, **{name: getattr(base.hyper, name) for name in owned})
+        if base.fit_log[season].get("fitted") is None:     # the base kept its starting values: too little data
+            self.hyper, self.last_fit = merged, dict(base.fit_log[season])
+            return
+        frozen = [f"noise:{t}" for t in base.session_types] + list(owned)
+        self.hyper = self.fit_hyper(earlier, sessions, merged, frozen=frozen)
+        self.last_fit = {**self.last_fit, "screened_against": base.name}
+
+    def _check_extends(self, base):
+        """A screen compares a model with one it extends: same objective, the base's
+        evidence and terms all present. Shared-from-qualifying fits are not screened."""
+        problems = []
+        if not set(base.session_types) <= set(self.session_types):
+            problems.append("session types")
+        if base.objective != self.objective:
+            problems.append("objective")
+        if base.shared_from_qualifying or self.shared_from_qualifying:
+            problems.append("shared-from-qualifying fit")
+        for flag in ("winter", "weekend", "affinity"):
+            if getattr(base, flag) and not getattr(self, flag):
+                problems.append(flag)
+        if base.history and base.history != self.history:
+            problems.append("history mode")
+        if problems:
+            raise ValueError(f"{self.name} does not extend {base.name} ({', '.join(problems)}); cannot screen")
+
     def _default_start(self):
         return Hyper(**({"car_winter": 0.5, "driver_winter": 0.05, "regulation_multiplier": 3.0}
                         if self.winter else {}), **({"weekend_prior": 0.3} if self.weekend else {}),
@@ -452,17 +496,23 @@ class PaceModel:
         """Everything besides the name that changes what this model fits."""
         return {"session_types": list(self.session_types), "winter": self.winter, "objective": self.objective,
                 "weekend": self.weekend, "shared_from_qualifying": self.shared_from_qualifying,
-                "affinity": self.affinity, "history": self.history}
+                "affinity": self.affinity, "history": self.history,
+                "screen_base": None if self.screen_base is None else
+                [self.screen_base.name, self.screen_base.options()]}
 
     def _ensure_hyper(self, view, season):
         if self.fitted_season == season:
             return
         start = self.hyper or self._default_start()
+        if self.screen_base is not None:
+            # the base's own chain of seasons, so a screen resumed from the cache starts it right
+            self.screen_base._ensure_hyper(view, season)
         if self.fit_cache is None:
             self._fit_season(view, season, start)
         else:
             from dataclasses import asdict
-            key = self.fit_cache.key(self, season, start, self._qualifying_hyper, view.archive.root)
+            key = self.fit_cache.key(self, season, start, self._qualifying_hyper, view.archive.root,
+                                     base=None if self.screen_base is None else self.screen_base.hyper)
 
             def fit():
                 self._fit_season(view, season, start)
@@ -483,6 +533,8 @@ class PaceModel:
         """Fit the settings on data before `season` (sets hyper and last_fit)."""
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
+        if self.screen_base is not None:
+            return self._screen_season(view, season, earlier, sessions, start)
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
         counted = sessions[~sessions.session_id.str.startswith(HISTORY_PREFIX)] \
             if self.history in UNCOUNTED_HISTORY else sessions

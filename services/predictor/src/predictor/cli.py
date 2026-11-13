@@ -31,13 +31,19 @@ def main(argv=None):
                           help="evaluate held-out seasons (2025-2026); only at model selection")
     evaluate.add_argument("--no-fit-cache", action="store_true",
                           help="fit every season afresh instead of reusing saved fits (data/fits)")
+    evaluate.add_argument("--screen-base", choices=sorted(n for n in model_registry() if n.startswith("pace")),
+                          help="quick screen: take this model's fitted settings, fit only what each other "
+                               "model adds (never a basis for adoption)")
     args = parser.parse_args(argv)
+    if args.screen_base and args.no_fit_cache:
+        parser.error("--screen-base reads the base model's fits from the fit cache")
     fit_cache = None if args.no_fit_cache else FitCache(SERVICE_ROOT / "data" / "fits")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = SERVICE_ROOT / "data" / "runs" / f"{stamp}-{args.session}-{args.cutoff}"
+    out = SERVICE_ROOT / "data" / "runs" / f"{stamp}-{args.session}-{args.cutoff}{'-screen' if args.screen_base else ''}"
     scores, overall, _, comparison, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
                                                          allow_holdout=args.allow_holdout, out=out,
-                                                         reference=args.reference, fit_cache=fit_cache)
+                                                         reference=args.reference, fit_cache=fit_cache,
+                                                         screen_base=args.screen_base)
     with pd.option_context("display.width", 200, "display.max_columns", 30, "display.precision", 3):
         print(f"{manifest['events']} events, session {args.session}, cutoff {args.cutoff}")
         print(overall.T)

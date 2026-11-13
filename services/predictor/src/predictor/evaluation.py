@@ -133,16 +133,26 @@ def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
     return examples
 
 
-def walk_forward(examples, models, archive, train_examples=(), fit_cache=None):
+def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, screen_base=None):
     """Before each example, fit every model on targets that finished before its cutoff,
     then forecast from an ArchiveView at the cutoff. Model instances persist through the
     run, so a model can decide how often to refit its own parameters."""
     pool = sorted([*train_examples, *examples], key=lambda e: e.target_available_at)
     registry = model_registry()
     instances = {name: registry[name]() for name in models}
-    for model in instances.values():
+    base = None
+    if screen_base is not None:
+        if fit_cache is None:
+            raise ValueError("a screen reads the base model's fits from the fit cache")
+        base = registry[screen_base]()
+        base.fit_cache = fit_cache
+    for name, model in instances.items():
         if fit_cache is not None and hasattr(model, "fit_cache"):
             model.fit_cache = fit_cache
+        if base is not None and name != screen_base and hasattr(model, "screen_base"):
+            # quick screen: the base's settings frozen, only this model's own settings fitted
+            model.screen_base = base
+            model.name = f"{model.name}|screen"
 
     def view_for(example):
         return archive.view(example.cutoff_time)
@@ -238,7 +248,7 @@ def git_revision():
 
 
 def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdout=False, archive=None, out=None,
-        reference="uniform", fit_cache=None):
+        reference="uniform", fit_cache=None, screen_base=None):
     archive = archive or Archive()
     revision = git_revision()   # the code the run starts with; the tree may change while it runs
     if fit_cache is not None:
@@ -247,14 +257,14 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
     train = prepare(archive, session_type, cutoff_label, warmup, allow_holdout=False)
     examples = prepare(archive, session_type, cutoff_label, seasons, allow_holdout=allow_holdout)
-    scores = walk_forward(examples, models, archive, train, fit_cache)
+    scores = walk_forward(examples, models, archive, train, fit_cache, screen_base)
     overall, by_season = summarise(scores)
     comparison = compare(scores, reference)
     stages = stage_comparison(scores, reference)
     manifest = {
         "session_type": session_type, "cutoff": cutoff_label, "seasons": list(seasons), "warmup": list(warmup),
         "models": list(models), "events": len(examples), "git_revision": revision,
-        "fit_cache": None if fit_cache is None else str(fit_cache.folder),
+        "fit_cache": None if fit_cache is None else str(fit_cache.folder), "screen_base": screen_base,
         "reference_manifest": json.loads((archive.root / "reference" / "manifest.json").read_text(encoding="utf-8"))
         .get("built_at_utc"), "allow_holdout": allow_holdout,
     }
