@@ -9,8 +9,22 @@ RACE_POINTS = (25, 18, 15, 12, 10, 8, 6, 4, 2, 1)
 SPRINT_POINTS = {2021: (3, 2, 1)}
 SPRINT_POINTS_DEFAULT = (8, 7, 6, 5, 4, 3, 2, 1)
 FIRST_SPRINT_SEASON = 2021
-# Seasons that began under new technical regulations.
-REGULATION_CHANGES = frozenset({2014, 2017, 2022, 2026})
+# Seasons that began under new technical regulations (2009: slicks and the aero reset;
+# 2014: hybrid power units; 2017: wider cars and tyres; 2022: ground effect; 2026).
+REGULATION_CHANGES = frozenset({2009, 2014, 2017, 2022, 2026})
+
+
+def low_fuel_segments(season):
+    """Qualifying segments run on low fuel, so lap times compare car and driver pace.
+
+    2003-2005 qualifying laps were run on race fuel, as was Q3 from 2006 to 2009
+    (in the data Q3 is 0.6-1.9% slower than Q2 then, 0.2-0.4% faster from 2010).
+    The FastF1 archive (2018+) has every segment on low fuel."""
+    if season >= 2010:
+        return ("Q1", "Q2", "Q3")
+    if season >= 2006:
+        return ("Q1", "Q2")
+    return ()
 
 
 def points_table(season, session_type):

@@ -52,6 +52,11 @@ Only the current circuit's affinities are active in the joint state; the others
 are parked with their mean and variance (their cross-correlations are dropped)
 and resume, with the variance accrued while parked, at the next visit.
 
+Qualifying history (v3wh, v3wah): qualifying before the FastF1 archive, from
+Jolpica (best times per segment, no laps), filtered from 2006 like every other
+session, on the low-fuel segments only (`rules.low_fuel_segments`). It gives the
+car x circuit affinity repeat visits to learn from and drivers a longer record.
+
 Frozen shared settings (v2s): car and driver drift, priors and qualifying noise
 are fitted on qualifying alone, then frozen; only practice noise and offsets are
 fitted on the full evidence.
@@ -66,7 +71,7 @@ from scipy.optimize import minimize
 
 from .forecast import Forecast
 from .program import Recorder
-from .rules import REGULATION_CHANGES
+from .rules import REGULATION_CHANGES, low_fuel_segments
 
 SEGMENTS = ("Q1", "Q2", "Q3")
 SEGMENTED = frozenset({"Q", "SQ"})
@@ -74,6 +79,8 @@ SLOW_CUTOFF = 1.07
 DRAWS = 10000
 QUALIFYING_ONLY = ("Q",)
 ALL_SESSIONS = ("Q", "SQ", "FP1", "FP2", "FP3", "T")
+HISTORY_FIRST_SEASON = 2006      # first season with low-fuel qualifying segments
+HISTORY_PREFIX = "history:"
 
 
 @dataclass
@@ -176,19 +183,41 @@ def _lap_groups(session_type, results, laps):
         yield pd.DataFrame({"number": best.index, "seconds": best.to_numpy()})
 
 
+def _group_observation(cars, drivers, seconds):
+    """(car keys, driver keys, log times x 100) of one group, without laps beyond 107%
+    of its best and drivers without IDs; None if fewer than two remain."""
+    seconds = np.asarray(seconds, dtype=float)
+    fast = seconds <= np.nanmin(seconds) * SLOW_CUTOFF
+    keep = [bool(f) and pd.notna(c) and pd.notna(d) for f, c, d in zip(fast, cars, drivers)]
+    if sum(keep) < 2:
+        return None
+    return ([c for c, k in zip(cars, keep) if k], [d for d, k in zip(drivers, keep) if k],
+            100 * np.log(seconds[keep]))
+
+
 def session_observations(session_type, results, laps, entrants):
     """[(car keys, driver keys, log times x 100)] for one session."""
     ids = entrants.set_index("driver_number")
     observations = []
     for frame in _lap_groups(session_type, results, laps):
-        frame = frame[frame.seconds <= frame.seconds.min() * SLOW_CUTOFF]
         cars = [ids.lineage_id.get(n) if "lineage_id" in ids else None for n in frame.number]
         drivers = [ids.driver_id.get(n) for n in frame.number]
-        keep = [pd.notna(c) and pd.notna(d) for c, d in zip(cars, drivers)]
-        if sum(keep) < 2:
-            continue
-        values = 100 * np.log(frame.seconds.to_numpy()[keep])
-        observations.append(([c for c, k in zip(cars, keep) if k], [d for d, k in zip(drivers, keep) if k], values))
+        group = _group_observation(cars, drivers, frame.seconds.to_numpy())
+        if group is not None:
+            observations.append(group)
+    return observations
+
+
+def history_observations(rows):
+    """Observations of one historical qualifying session: one group per low-fuel segment."""
+    observations = []
+    for segment in low_fuel_segments(int(rows.season.iloc[0])):
+        times = rows[rows[f"{segment.lower()}_seconds"].notna()]
+        if len(times) >= 2:
+            group = _group_observation(list(times.lineage_id), list(times.driver_id),
+                                       times[f"{segment.lower()}_seconds"].to_numpy())
+            if group is not None:
+                observations.append(group)
     return observations
 
 
@@ -198,7 +227,7 @@ class PaceModel:
     `session_types` selects the evidence: ("Q",) is stage 1, ALL_SESSIONS stage 2."""
 
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
-                 weekend=False, shared_from_qualifying=False, affinity=False):
+                 weekend=False, shared_from_qualifying=False, affinity=False, history=False):
         self.session_types = tuple(session_types)
         self.name = name
         self.winter = winter
@@ -206,6 +235,7 @@ class PaceModel:
         self.weekend = weekend
         self.shared_from_qualifying = shared_from_qualifying
         self.affinity = affinity
+        self.history = history
         self._circuits = None
         self.hyper = None
         self.fitted_season = None
@@ -215,12 +245,28 @@ class PaceModel:
 
     def sessions(self, view, before=None):
         sessions = view.sessions[view.sessions.session_type.isin(self.session_types)]
+        if self.history:
+            sessions = pd.concat([self._history_sessions(view), sessions], ignore_index=True)
         if before is not None:
             sessions = sessions[sessions.available_at_utc < before]
-        return sessions.sort_values("scheduled_start_utc")
+        return sessions.sort_values("scheduled_start_utc", kind="stable")
+
+    def _history_sessions(self, view):
+        """One pseudo-session per historical qualifying with low-fuel segments."""
+        history = view.qualifying_history()
+        history = history[history.season >= HISTORY_FIRST_SEASON]
+        events = history.groupby("event_key").agg(season=("season", "first"), scheduled_start_utc=("start_utc", "first"),
+                                                  available_at_utc=("available_at_utc", "first")).reset_index()
+        return events.assign(session_id=HISTORY_PREFIX + events.event_key, session_type="Q")
 
     def observations(self, view, session):
         """Cached per session; the view still decides whether the session may be read."""
+        if session.session_id.startswith(HISTORY_PREFIX):
+            if session.session_id not in self._observations:
+                history = view.qualifying_history()
+                self._observations[session.session_id] = history_observations(
+                    history[history.event_key == session.event_key])
+            return self._observations[session.session_id]
         if session.session_id not in self._observations:
             laps = view.laps(session.session_id) if session.session_type not in SEGMENTED else None
             self._observations[session.session_id] = session_observations(
@@ -233,6 +279,9 @@ class PaceModel:
             events = view.archive.events
             self._circuits = {k: (None if pd.isna(c) else c) for k, c in zip(events.event_key, events.circuit_id)} \
                 if "circuit_id" in events else {}
+            history = view.archive.qualifying_history
+            if self.history and history is not None:
+                self._circuits.update(zip(history.event_key, history.circuit_id))
         return self._circuits.get(event)
 
     def record(self, view, sessions, weekend, affinity, objective=None):

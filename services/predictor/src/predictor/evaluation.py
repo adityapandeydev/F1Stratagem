@@ -72,14 +72,14 @@ def score(forecast, example):
     return row
 
 
-def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False):
+def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
-        + ("a" if affinity else "")
+        + ("a" if affinity else "") + ("h" if history else "")
     return PaceModel(ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
-                     weekend=weekend, shared_from_qualifying=shared, affinity=affinity)
+                     weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history)
 
 
 def model_registry():
@@ -88,7 +88,9 @@ def model_registry():
             "pace3": lambda: _pace_model(3), "pace2q": lambda: _pace_model(2, "qualifying"),
             "pace3q": lambda: _pace_model(3, "qualifying"), "pace2w": lambda: _pace_model(2, weekend=True),
             "pace3w": lambda: _pace_model(3, weekend=True), "pace2s": lambda: _pace_model(2, shared=True),
-            "pace3wa": lambda: _pace_model(3, weekend=True, affinity=True)}
+            "pace3wa": lambda: _pace_model(3, weekend=True, affinity=True),
+            "pace3wh": lambda: _pace_model(3, weekend=True, history=True),
+            "pace3wah": lambda: _pace_model(3, weekend=True, affinity=True, history=True)}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):

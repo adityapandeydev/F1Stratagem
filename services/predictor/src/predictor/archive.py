@@ -59,6 +59,11 @@ class Archive:
         sessions["available_at_utc"] = available_at(sessions)
         self.sessions = sessions.sort_values("available_at_utc").reset_index(drop=True)
         self.entrants = pd.read_parquet(reference / "entrants.parquet")
+        history = reference / "qualifying_history.parquet"
+        self.qualifying_history = pd.read_parquet(history) if history.exists() else None
+        if self.qualifying_history is not None:
+            self.qualifying_history["available_at_utc"] = (self.qualifying_history.start_utc + NOMINAL_DURATION["Q"]
+                                                           + PUBLICATION_DELAY["Q"])
 
     def event_sessions(self, event_key):
         return self.sessions[self.sessions.event_key == event_key].sort_values("scheduled_start_utc")
@@ -110,6 +115,15 @@ class ArchiveView:
     def entrants(self, session_id):
         self._check(session_id)
         return self.archive.entrants[self.archive.entrants.session_id == session_id].copy()
+
+    def qualifying_history(self):
+        """Qualifying times before the FastF1 archive (Jolpica, one row per driver per
+        event) available at the cutoff; empty if the reference build has none."""
+        history = self.archive.qualifying_history
+        if history is None:
+            return pd.DataFrame(columns=["event_key", "season", "circuit_id", "driver_id", "lineage_id",
+                                         "q1_seconds", "q2_seconds", "q3_seconds", "start_utc", "available_at_utc"])
+        return history[history.available_at_utc <= self.cutoff].copy()
 
     def standings(self, season):
         """Drivers' points from races and sprints of `season` available at the cutoff.
