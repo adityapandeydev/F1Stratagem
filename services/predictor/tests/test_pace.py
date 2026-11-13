@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 
@@ -511,3 +512,92 @@ def test_history_noise_is_fitted_above_its_floor(tmp_path):
     start = Hyper(**GOLDEN_SETTINGS | NO_AFFINITY, noise={**Hyper().noise, "H": 1e-4})   # below the floor
     hyper = model.fit_hyper(view, model.sessions(view), start)
     assert "H" in model.last_fit["fitted"] and hyper.noise["H"] >= HISTORY_NOISE_FLOOR * (1 - 1e-9)
+
+
+def write_session_manifests(root, seasons):
+    for season in seasons:
+        for folder in (root / "sessions" / str(season)).glob("*"):
+            (folder / "manifest.json").write_text(json.dumps(
+                {"files": {"normalized/results.parquet": {"sha256": "a"}, "source/car_data/x.parquet": {"sha256": "b"}}}))
+
+
+@pytest.mark.parametrize("options", [dict(winter=True, weekend=True), dict(shared_from_qualifying=True),
+                                     dict(winter=True, weekend=True, affinity=True)])
+def test_a_cached_fit_forecasts_exactly_as_a_fresh_fit(tmp_path, monkeypatch, options):
+    from predictor import pace
+    from predictor.fitcache import FitCache
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)       # the fixture has two qualifying sessions
+    root = tmp_path / "archive"
+    write_circuit_archive(root)
+    write_session_manifests(root, (2021, 2022))
+    archive = Archive(root)
+    examples = [golden_example("2022-02", "pre_weekend", "2022-03-25 00:00"),
+                golden_example("2022-02", "pre_weekend", "2022-03-25 00:00")]
+    examples[1] = examples[1].__class__(**{**examples[1].__dict__, "season": 2023})   # a second season: the chain
+
+    def forecasts(cache):
+        model = PaceModel(ALL_SESSIONS, "pace:test", **options)
+        model.fit_cache = cache
+        out = []
+        for example in examples:
+            view = archive.view(example.cutoff_time)
+            model._ensure_hyper(view, example.season)
+            out.append((copy.deepcopy(model.hyper), copy.deepcopy(model._qualifying_hyper), model.fit_log[example.season],
+                        *model.distribution(view, example)))
+        return out
+
+    fresh = forecasts(None)
+    cache = FitCache(tmp_path / "fits")
+    first = forecasts(cache)                                      # fits and saves both seasons
+    assert len(list((tmp_path / "fits").rglob("*.json"))) == 2
+    monkeypatch.setattr(PaceModel, "fit_hyper", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refitted")))
+    second = forecasts(cache)                                     # reads both saved fits, fits nothing
+    for a, b, c in zip(fresh, first, second):
+        assert a[0] == b[0] == c[0] and a[1] == b[1] == c[1] and a[2] == b[2] == c[2]
+        for x, y, z in zip(a[3:], b[3:], c[3:]):
+            assert np.array_equal(x, y) and np.array_equal(x, z)
+
+
+def test_fit_cache_key_follows_model_start_and_data(tmp_path):
+    from predictor.fitcache import FitCache
+    root = tmp_path / "archive"
+    write_circuit_archive(root)
+    write_session_manifests(root, (2021, 2022))
+    reference = root / "reference" / "manifest.json"
+    reference.write_text(json.dumps({"built_at_utc": "now", "files": {"events": {"sha256": "e"}}}))
+    model = PaceModel(ALL_SESSIONS, "pace:test", winter=True, weekend=True)
+
+    def key(model=model, start=Hyper()):
+        return FitCache(tmp_path / "fits").key(model, 2022, start, None, root)
+
+    base = key()
+    assert key() == base
+    assert key(start=Hyper(car_drift=0.02)) != base                                   # another start
+    assert key(model=PaceModel(ALL_SESSIONS, "pace:test", winter=True)) != base      # other options
+    reference.write_text(json.dumps({"built_at_utc": "later", "files": {"events": {"sha256": "e"}}}))
+    assert key() == base                                                              # rebuild, same tables
+    reference.write_text(json.dumps({"built_at_utc": "later", "files": {"events": {"sha256": "f"}}}))
+    assert key() != base                                                              # other reference data
+    base = key()
+    later = next((root / "sessions" / "2022").glob("*/manifest.json"))
+    later.write_text(json.dumps({"files": {"normalized/results.parquet": {"sha256": "z"}}}))
+    assert key() == base                                    # a 2022 session cannot change a fit for 2022
+    earlier = next((root / "sessions" / "2021").glob("*/manifest.json"))
+    earlier.write_text(json.dumps({"files": {"normalized/results.parquet": {"sha256": "a"},
+                                             "source/car_data/x.parquet": {"sha256": "changed"}}}))
+    assert key() == base                                    # telemetry the fit does not read
+    earlier.write_text(json.dumps({"files": {"normalized/results.parquet": {"sha256": "changed"}}}))
+    assert key() != base                                    # an earlier session the fit reads
+
+
+def test_a_fit_is_not_saved_if_the_data_changed_while_it_ran(tmp_path):
+    from predictor.fitcache import FitCache
+    cache = FitCache(tmp_path / "fits")
+    path = tmp_path / "fits" / "m" / "2022-x.json"
+    with pytest.warns(UserWarning, match="not saved"):
+        entry, cached = cache.get_or_fit(path, lambda: {"hyper": 1}, still_valid=lambda: False)
+    assert entry == {"hyper": 1} and not cached and not path.exists()
+    entry, cached = cache.get_or_fit(path, lambda: {"hyper": 2})
+    assert entry == {"hyper": 2} and not cached and path.exists()
+    assert cache.get_or_fit(path, lambda: {"hyper": 3}) == ({"hyper": 2}, True)
+    assert not list(path.parent.glob("*.lock")) and not list(path.parent.glob("*.tmp"))

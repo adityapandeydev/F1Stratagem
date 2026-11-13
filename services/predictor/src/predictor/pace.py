@@ -90,6 +90,7 @@ QUALIFYING_ONLY = ("Q",)
 ALL_SESSIONS = ("Q", "SQ", "FP1", "FP2", "FP3", "T")
 HISTORY_FIRST_SEASON = 2006      # first season with low-fuel qualifying segments
 HISTORY_PREFIX = "history:"
+MIN_QUALIFYING_SESSIONS = 5   # fewer before a season: the settings keep their starting values
 HISTORY_MODES = ("shared", "noise", "state", "weighted")
 UNCOUNTED_HISTORY = ("state", "weighted")   # history updates the state, not the objective
 OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
@@ -260,6 +261,7 @@ class PaceModel:
         self.history = history
         self._circuits = None
         self.hyper = None
+        self.fit_cache = None        # a fitcache.FitCache: reuse fits across cutoffs and runs
         self.fitted_season = None
         self.fit_log = {}
         self._qualifying_hyper = None
@@ -446,29 +448,57 @@ class PaceModel:
     def fit(self, history, view_for):
         return self
 
+    def options(self):
+        """Everything besides the name that changes what this model fits."""
+        return {"session_types": list(self.session_types), "winter": self.winter, "objective": self.objective,
+                "weekend": self.weekend, "shared_from_qualifying": self.shared_from_qualifying,
+                "affinity": self.affinity, "history": self.history}
+
     def _ensure_hyper(self, view, season):
         if self.fitted_season == season:
             return
+        start = self.hyper or self._default_start()
+        if self.fit_cache is None:
+            self._fit_season(view, season, start)
+        else:
+            from dataclasses import asdict
+            key = self.fit_cache.key(self, season, start, self._qualifying_hyper, view.archive.root)
+
+            def fit():
+                self._fit_season(view, season, start)
+                return {"hyper": asdict(self.hyper), "fit": self.last_fit,
+                        "qualifying_hyper": None if self._qualifying_hyper is None else asdict(self._qualifying_hyper)}
+
+            entry, cached = self.fit_cache.get_or_fit(
+                self.fit_cache.path(self, season, key), fit,
+                still_valid=lambda: self.fit_cache.unchanged(view.archive.root, season))
+            if cached:
+                self.hyper, self.last_fit = Hyper(**entry["hyper"]), entry["fit"]
+                if entry["qualifying_hyper"] is not None:
+                    self._qualifying_hyper = Hyper(**entry["qualifying_hyper"])
+        self.fit_log[season] = self.last_fit
+        self.fitted_season = season
+
+    def _fit_season(self, view, season, start):
+        """Fit the settings on data before `season` (sets hyper and last_fit)."""
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
-        start = self.hyper or self._default_start()
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
         counted = sessions[~sessions.session_id.str.startswith(HISTORY_PREFIX)] \
             if self.history in UNCOUNTED_HISTORY else sessions
-        if (counted.session_type == "Q").sum() < 5:
+        if (counted.session_type == "Q").sum() < MIN_QUALIFYING_SESSIONS:
             self.hyper = start
         elif self.shared_from_qualifying:
             qualifying = PaceModel(QUALIFYING_ONLY)
             self._qualifying_hyper = qualifying.fit_hyper(earlier, qualifying.sessions(earlier),
                                                           self._qualifying_hyper or Hyper())
+            start = replace(start, noise=dict(start.noise))   # never edit the previous season's settings
             for name in Hyper.SHARED:
                 setattr(start, name, getattr(self._qualifying_hyper, name))
             start.noise["Q"] = self._qualifying_hyper.noise["Q"]
             self.hyper = self.fit_hyper(earlier, sessions, start, frozen=(*Hyper.SHARED, "noise:Q"))
         else:
             self.hyper = self.fit_hyper(earlier, sessions, start)
-        self.fit_log[season] = self.last_fit
-        self.fitted_season = season
 
     def distribution(self, view, example):
         """Mean and covariance of the entrants' qualifying pace at the example's cutoff."""
@@ -503,6 +533,6 @@ class PaceModel:
             positions=positions, season=example.season, session_type=example.session_type,
             event_key=example.event_key, cutoff_label=example.cutoff_label, cutoff_time=example.cutoff_time.isoformat(),
             driver_numbers=list(example.driver_numbers), driver_ids=list(example.driver_ids), model=self.name,
-            seed=seed, metadata={"hyper": {"noise": self.hyper.noise, **{k: getattr(self.hyper, k)
+            seed=seed, metadata={"hyper": {"noise": dict(self.hyper.noise), **{k: getattr(self.hyper, k)
                                                                          for k in Hyper.SCALARS},
                                            "fit": self.fit_log.get(example.season)}})
