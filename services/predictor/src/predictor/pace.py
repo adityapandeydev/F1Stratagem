@@ -113,12 +113,14 @@ class Hyper:
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
-    def fitted(types, winter=False, regulation=False, weekend=False, affinity=False):
+    def fitted(types, winter=False, regulation=False, weekend=False, affinity=False, new_cars=True, new_drivers=True):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
-        multiplier only if it crosses a season that began under new regulations."""
+        multiplier only if it crosses a season that began under new regulations; the
+        car and driver priors only if a lineage or a driver first appears in the data."""
         offsets = any(t not in REFERENCE_TYPES for t in types)
-        return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()), "car_prior", "driver_prior",
+        return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()),
+                *(("car_prior",) if new_cars else ()), *(("driver_prior",) if new_drivers else ()),
                 *(("offset_prior",) if offsets else ()), *(("car_winter", "driver_winter") if winter else ()),
                 *(("regulation_multiplier",) if winter and regulation else ()),
                 *(("weekend_prior",) if weekend else ()),
@@ -336,12 +338,23 @@ class PaceModel:
         types = [t for t in self.session_types if t in set(sessions.session_type)]
         for session in sessions.itertuples():
             self.observations(view, session)
-        seasons = sorted(set(sessions.scheduled_start_utc.dt.year))
+        # A setting is fitted only if the counted sessions identify it. Uncounted history
+        # (state mode) cannot: it adds seasons, regulation changes and the first sight of
+        # every lineage, but nothing in the objective depends on them directly.
+        history = sessions.session_id.str.startswith(HISTORY_PREFIX)
+        counted = sessions[~history] if self.history == "state" else sessions
+        seasons = sorted(set(counted.scheduled_start_utc.dt.year))
+        if self.history == "state":
+            old_cars, old_drivers = self._entrants(view, sessions[history])
+            cars, drivers = self._entrants(view, counted)
+            new_cars, new_drivers = bool(cars - old_cars), bool(drivers - old_drivers)
+        else:
+            new_cars = new_drivers = True
         winter = self.winter and len(seasons) > 1
         regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
         # affinity needs repeat visits: with a single season of data every circuit was seen once
         affinity = self.affinity and len(seasons) > 1
-        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity)
+        scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
         default = self._default_start()
@@ -388,6 +401,11 @@ class PaceModel:
                          "objective": -float(best[1]), "best_start": best[3], "starts": results,
                          "fitted": noise_types + scalars}
         return Hyper.from_vector(best[0], noise_types, scalars, start)
+
+    def _entrants(self, view, sessions):
+        """(car keys, driver keys) observed in `sessions`."""
+        groups = [group for session in sessions.itertuples() for group in self.observations(view, session)]
+        return {c for cars, _, _ in groups for c in cars}, {d for _, drivers, _ in groups for d in drivers}
 
     def _default_start(self):
         return Hyper(**({"car_winter": 0.5, "driver_winter": 0.05, "regulation_multiplier": 3.0}

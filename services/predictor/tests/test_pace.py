@@ -425,3 +425,16 @@ def test_history_modes_read_history_as_qualifying_without_an_offset(tmp_path, mo
     hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
     assert ("H" in model.last_fit["fitted"]) == (mode == "noise")
     assert np.isfinite(model.last_fit["objective"]) and hyper.noise["Q"] > 0
+
+
+def test_state_only_history_fits_only_what_the_counted_sessions_identify(tmp_path):
+    write_circuit_archive(tmp_path)
+    write_history(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2022-01-01", tz=UTC))   # counted data: 2021 only
+    for mode, identified in (("shared", True), ("state", False)):
+        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, history=mode)
+        model.fit_hyper(view, model.sessions(view), Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
+        fitted = set(model.last_fit["fitted"])
+        # history crosses a season start and shows every car and driver first; counted 2021 data does neither
+        for name in ("car_winter", "driver_winter", "car_prior", "driver_prior"):
+            assert (name in fitted) == identified, (mode, name)
