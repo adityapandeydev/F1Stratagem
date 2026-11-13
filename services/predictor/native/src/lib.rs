@@ -1,13 +1,16 @@
 //! Native Kalman filter for the pace model.
 //!
-//! Replays a program recorded by `predictor.program.record` (which states are
+//! Replays a program recorded by `predictor.program.Recorder` (which states are
 //! added, parked, reset and observed, in order) for one set of settings and
-//! returns the log-likelihood, the quantity the settings fit maximises. The
-//! arithmetic follows `predictor.pace.Filter`; design rows are used sparsely
-//! (each driver row touches a handful of states), so an update costs
+//! returns the log-likelihood (the quantity the settings fit maximises) and the
+//! final mean and covariance (what a forecast reads). Design rows are used
+//! sparsely (each driver row touches a handful of states), so an update costs
 //! O(m * n^2) for a group of m drivers and n states.
+//!
+//! Two tracks: 0 is the filter; 1 is a copy taken by SNAPSHOT at an event start,
+//! for the qualifying objective's before-the-weekend horizon.
 
-use numpy::PyReadonlyArray1;
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -16,6 +19,8 @@ const ADD: i64 = 1;
 const PARK: i64 = 2;
 const RESET: i64 = 3;
 const UPDATE: i64 = 4;
+const SNAPSHOT: i64 = 5;
+const TRACKS: usize = 2;
 const WEEKEND: usize = 3;
 const KINDS: usize = 5;
 
@@ -29,7 +34,7 @@ pub struct Settings<'a> {
 }
 
 pub struct Program<'a> {
-    pub ops: &'a [i64], // rows of 4
+    pub ops: &'a [i64], // rows of 5: code, track, a, b, c
     pub floats: &'a [f64],
     pub ints: &'a [i64],
     pub group_rows: &'a [i64], // rows of 3
@@ -39,15 +44,29 @@ pub struct Program<'a> {
     pub slots: usize,
 }
 
-struct State {
-    n: usize,
+#[derive(Clone)]
+pub struct State {
+    pub n: usize,
     cap: usize,
     kind: Vec<usize>,
-    mean: Vec<f64>,
+    pub mean: Vec<f64>,
     cov: Vec<f64>, // cap x cap, row-major; the leading n x n block is live
 }
 
 impl State {
+    fn new() -> Self {
+        State { n: 0, cap: 0, kind: Vec::new(), mean: Vec::new(), cov: Vec::new() }
+    }
+
+    /// The live n x n covariance, row-major.
+    pub fn covariance(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n * self.n);
+        for i in 0..self.n {
+            out.extend_from_slice(&self.cov[i * self.cap..i * self.cap + self.n]);
+        }
+        out
+    }
+
     fn grow(&mut self) {
         let cap = (self.cap * 2).max(16);
         let mut cov = vec![0.0; cap * cap];
@@ -137,16 +156,27 @@ fn cholesky_solve(l: &[f64], k: usize, b: &mut [f64]) {
     }
 }
 
-pub fn run(p: &Program, s: &Settings) -> Result<f64, String> {
-    let mut st = State { n: 0, cap: 0, kind: Vec::new(), mean: Vec::new(), cov: Vec::new() };
-    let mut parked = vec![(0.0f64, 0.0f64); p.slots];
-    let mut log_likelihood = 0.0;
+/// Replays the program: counted log-likelihood per track, and track 0's final state.
+pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), String> {
+    let mut states = [State::new(), State::new()];
+    let mut parkeds = [vec![(0.0f64, 0.0f64); p.slots], vec![(0.0f64, 0.0f64); p.slots]];
+    let mut likelihoods = [0.0; TRACKS];
     let log_two_pi = (2.0 * std::f64::consts::PI).ln();
     // scratch buffers reused across updates
     let (mut hp, mut sm, mut innovation): (Vec<f64>, Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new(), Vec::new());
 
-    for op in p.ops.chunks_exact(4) {
-        let (code, a, b, c) = (op[0], op[1], op[2], op[3]);
+    for op in p.ops.chunks_exact(5) {
+        let (code, track, a, b, c) = (op[0], op[1] as usize, op[2], op[3], op[4]);
+        if track >= TRACKS {
+            return Err(format!("unknown track {track}"));
+        }
+        if code == SNAPSHOT {
+            states[1] = states[0].clone();
+            parkeds[1] = parkeds[0].clone();
+            continue;
+        }
+        let st = &mut states[track];
+        let parked = &mut parkeds[track];
         match code {
             ADVANCE => {
                 let steps = p.floats[a as usize];
@@ -265,7 +295,9 @@ pub fn run(p: &Program, s: &Settings) -> Result<f64, String> {
                 }
                 let quadratic: f64 = solved.iter().map(|v| v * v).sum();
                 let log_det: f64 = (0..m).map(|i| sm[i * m + i].ln()).sum();
-                log_likelihood += -0.5 * quadratic - log_det - 0.5 * m as f64 * log_two_pi;
+                if b != 0 {
+                    likelihoods[track] += -0.5 * quadratic - log_det - 0.5 * m as f64 * log_two_pi;
+                }
                 // W = S^-1 HP (column by column), mean += HP^T S^-1 innovation, cov -= HP^T W
                 let mut weights = innovation.clone();
                 cholesky_solve(&sm, m, &mut weights);
@@ -299,29 +331,29 @@ pub fn run(p: &Program, s: &Settings) -> Result<f64, String> {
             _ => return Err(format!("unknown opcode {code}")),
         }
     }
-    Ok(log_likelihood)
+    let [first, _] = states;
+    Ok((likelihoods, first))
 }
 
-/// Log-likelihood of a recorded program under one set of settings.
-#[pyfunction]
+/// Borrows the numpy inputs as a program and settings, and replays it without the GIL.
 #[allow(clippy::too_many_arguments)]
-fn log_likelihood(
+fn replay(
     py: Python<'_>,
-    ops: PyReadonlyArray1<i64>,
-    floats: PyReadonlyArray1<f64>,
-    ints: PyReadonlyArray1<i64>,
-    group_rows: PyReadonlyArray1<i64>,
-    row_starts: PyReadonlyArray1<i64>,
-    entries: PyReadonlyArray1<i64>,
-    values: PyReadonlyArray1<f64>,
+    ops: &PyReadonlyArray1<i64>,
+    floats: &PyReadonlyArray1<f64>,
+    ints: &PyReadonlyArray1<i64>,
+    group_rows: &PyReadonlyArray1<i64>,
+    row_starts: &PyReadonlyArray1<i64>,
+    entries: &PyReadonlyArray1<i64>,
+    values: &PyReadonlyArray1<f64>,
     slots: usize,
-    priors: PyReadonlyArray1<f64>,
-    drifts: PyReadonlyArray1<f64>,
-    winters: PyReadonlyArray1<f64>,
-    multiplied: PyReadonlyArray1<f64>,
+    priors: &PyReadonlyArray1<f64>,
+    drifts: &PyReadonlyArray1<f64>,
+    winters: &PyReadonlyArray1<f64>,
+    multiplied: &PyReadonlyArray1<f64>,
     regulation_multiplier: f64,
-    noise: PyReadonlyArray1<f64>,
-) -> PyResult<f64> {
+    noise: &PyReadonlyArray1<f64>,
+) -> PyResult<([f64; TRACKS], State)> {
     let program = Program {
         ops: ops.as_slice()?,
         floats: floats.as_slice()?,
@@ -343,8 +375,61 @@ fn log_likelihood(
     py.allow_threads(|| run(&program, &settings)).map_err(PyValueError::new_err)
 }
 
+/// Counted log-likelihood of a recorded program under one set of settings.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn log_likelihood(
+    py: Python<'_>,
+    ops: PyReadonlyArray1<i64>,
+    floats: PyReadonlyArray1<f64>,
+    ints: PyReadonlyArray1<i64>,
+    group_rows: PyReadonlyArray1<i64>,
+    row_starts: PyReadonlyArray1<i64>,
+    entries: PyReadonlyArray1<i64>,
+    values: PyReadonlyArray1<f64>,
+    slots: usize,
+    priors: PyReadonlyArray1<f64>,
+    drifts: PyReadonlyArray1<f64>,
+    winters: PyReadonlyArray1<f64>,
+    multiplied: PyReadonlyArray1<f64>,
+    regulation_multiplier: f64,
+    noise: PyReadonlyArray1<f64>,
+) -> PyResult<f64> {
+    let (likelihoods, _) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &values, slots,
+                                  &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise)?;
+    Ok(likelihoods.iter().sum())
+}
+
+/// Counted log-likelihood per track, and track 0's final mean and covariance.
+#[pyfunction]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn filter_state<'py>(
+    py: Python<'py>,
+    ops: PyReadonlyArray1<i64>,
+    floats: PyReadonlyArray1<f64>,
+    ints: PyReadonlyArray1<i64>,
+    group_rows: PyReadonlyArray1<i64>,
+    row_starts: PyReadonlyArray1<i64>,
+    entries: PyReadonlyArray1<i64>,
+    values: PyReadonlyArray1<f64>,
+    slots: usize,
+    priors: PyReadonlyArray1<f64>,
+    drifts: PyReadonlyArray1<f64>,
+    winters: PyReadonlyArray1<f64>,
+    multiplied: PyReadonlyArray1<f64>,
+    regulation_multiplier: f64,
+    noise: PyReadonlyArray1<f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>)> {
+    let (likelihoods, state) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &values, slots,
+                                      &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise)?;
+    let n = state.n;
+    let cov = state.covariance().into_pyarray_bound(py).reshape([n, n])?;
+    Ok((likelihoods.to_vec().into_pyarray_bound(py), state.mean.clone().into_pyarray_bound(py), cov))
+}
+
 #[pymodule]
 fn predictor_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(log_likelihood, m)?)?;
+    m.add_function(wrap_pyfunction!(filter_state, m)?)?;
     Ok(())
 }

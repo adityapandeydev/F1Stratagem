@@ -33,6 +33,9 @@ weekend's practice. Practice then informs qualifying without its own noise
 patterns deciding how fast car pace may drift. The forecast draws all
 states jointly from the posterior, adds qualifying noise and ranks the draws.
 
+The filter itself is `program.Recorder` (bookkeeping, in Python) replayed by the
+native module `predictor_native` (the arithmetic, in Rust).
+
 Weekend term (v2w, v3w): each car also has a weekend effect shared by every
 session of one event (practice, sprint qualifying and qualifying alike) and reset
 to its prior at the next event. Track-specific swings, setup and conditions go
@@ -55,7 +58,6 @@ fitted on the full evidence.
 """
 
 from dataclasses import dataclass, field, replace
-import os
 import zlib
 
 import numpy as np
@@ -63,14 +65,13 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .forecast import Forecast
-from .program import record, settings as program_settings
+from .program import Recorder
 from .rules import REGULATION_CHANGES
 
 SEGMENTS = ("Q1", "Q2", "Q3")
 SEGMENTED = frozenset({"Q", "SQ"})
 SLOW_CUTOFF = 1.07
 DRAWS = 10000
-DAY_SCALE = 14.0  # drift variances are per 14 days
 QUALIFYING_ONLY = ("Q",)
 ALL_SESSIONS = ("Q", "SQ", "FP1", "FP2", "FP3", "T")
 
@@ -188,137 +189,6 @@ def session_observations(session_type, results, laps, entrants):
     return observations
 
 
-class Filter:
-    """Joint Gaussian state over car lineages, drivers and car x session-type offsets."""
-
-    def __init__(self, hyper):
-        self.hyper = hyper
-        self.index = {}
-        self.kind = []
-        self.mean = np.zeros(0)
-        self.cov = np.zeros((0, 0))
-        self.time = None
-        self.log_likelihood = 0.0
-        self.priors = {"car": hyper.car_prior, "driver": hyper.driver_prior, "offset": hyper.offset_prior,
-                       "weekend": hyper.weekend_prior, "affinity": hyper.affinity_prior}
-        self.drifts = {"car": hyper.car_drift, "driver": hyper.driver_drift, "offset": hyper.offset_drift,
-                       "weekend": 0.0, "affinity": hyper.affinity_drift}
-        self.weekend = hyper.weekend_prior > 0
-        self.affinity = hyper.affinity_prior > 0
-        self.event = None
-        self.circuit = None
-        self.parked = {}   # affinity key -> (mean, variance, time parked)
-
-    def column(self, key, kind):
-        if (kind, key) not in self.index:
-            mean, variance = 0.0, self.priors[kind] ** 2
-            if kind == "affinity" and key in self.parked:
-                mean, variance, since = self.parked.pop(key)
-                variance += self._accrued("affinity", since, self.time)
-            self.index[(kind, key)] = len(self.kind)
-            self.kind.append(kind)
-            self.mean = np.append(self.mean, mean)
-            size = len(self.kind)
-            cov = np.zeros((size, size))
-            cov[:-1, :-1] = self.cov
-            cov[-1, -1] = variance
-            self.cov = cov
-        return self.index[(kind, key)]
-
-    def _winter(self, kind, season):
-        multiplier = self.hyper.regulation_multiplier if season in REGULATION_CHANGES else 1
-        if kind == "car":
-            return self.hyper.car_winter * multiplier
-        if kind == "affinity":
-            return self.hyper.affinity_winter * multiplier
-        return self.hyper.driver_winter if kind == "driver" else 0.0
-
-    def _accrued(self, kind, start, end):
-        """Variance a state of `kind` gains between two times: drift plus season starts."""
-        if start is None or end is None or end <= start:
-            return 0.0
-        steps = (end - start).total_seconds() / 86400 / DAY_SCALE
-        return self.drifts[kind] * steps + sum(self._winter(kind, s) for s in range(start.year + 1, end.year + 1))
-
-    def _remove(self, indices):
-        keep = [i for i in range(len(self.kind)) if i not in set(indices)]
-        keys = sorted(self.index, key=self.index.get)
-        self.index = {key: position for position, key in enumerate(keys[i] for i in keep)}
-        self.kind = [self.kind[i] for i in keep]
-        self.mean = self.mean[keep]
-        self.cov = self.cov[np.ix_(keep, keep)]
-
-    def copy(self):
-        clone = Filter.__new__(Filter)
-        clone.__dict__.update(self.__dict__)
-        clone.index, clone.kind, clone.parked = dict(self.index), list(self.kind), dict(self.parked)
-        clone.mean, clone.cov = self.mean.copy(), self.cov.copy()
-        return clone
-
-    def start_event(self, event, circuit=None):
-        """A new event: weekend effects return to their prior, and affinities for other
-        circuits are parked until the next visit."""
-        self.event = event
-        if self.affinity:
-            active = [i for i, kind in enumerate(self.kind) if kind == "affinity"]
-            keys = sorted(self.index, key=self.index.get)
-            for i in active:
-                self.parked[keys[i][1]] = (float(self.mean[i]), float(self.cov[i, i]), self.time)
-            if active:
-                self._remove(active)
-            self.circuit = circuit
-        if not self.weekend:
-            return
-        for index, kind in enumerate(self.kind):
-            if kind == "weekend":
-                self.mean[index] = 0.0
-                self.cov[index, :] = 0.0
-                self.cov[:, index] = 0.0
-                self.cov[index, index] = self.hyper.weekend_prior ** 2
-
-    def advance(self, time):
-        if self.time is not None and time > self.time:
-            steps = (time - self.time).total_seconds() / 86400 / DAY_SCALE
-            added = np.array([self.drifts[k] * steps for k in self.kind])
-            for season in range(self.time.year + 1, time.year + 1):
-                added = added + np.array([self._winter(k, season) for k in self.kind])
-            self.cov = self.cov + np.diag(added)
-        self.time = time if self.time is None else max(self.time, time)
-
-    def design(self, cars, drivers, session_type="Q"):
-        columns = []
-        for car, driver in zip(cars, drivers):
-            row = [self.column(car, "car"), self.column(driver, "driver")]
-            if session_type != "Q":
-                row.append(self.column((car, session_type), "offset"))
-            if self.weekend:
-                row.append(self.column(car, "weekend"))
-            if self.affinity and self.circuit is not None:
-                row.append(self.column((car, self.circuit), "affinity"))
-            columns.append(row)
-        design = np.zeros((len(cars), len(self.kind)))
-        for row, indices in enumerate(columns):
-            design[row, indices] += 1
-        return design
-
-    def update(self, cars, drivers, values, session_type="Q"):
-        """Relative update: every driver against the first one in the group."""
-        design = self.design(cars, drivers, session_type)
-        h = design[1:] - design[0]
-        z = values[1:] - values[0]
-        n = len(z)
-        r = self.hyper.noise[session_type] ** 2 * (np.eye(n) + np.ones((n, n)))
-        innovation = z - h @ self.mean
-        s = h @ self.cov @ h.T + r
-        chol = np.linalg.cholesky(s)
-        solved = np.linalg.solve(chol, innovation)
-        self.log_likelihood += -0.5 * (solved @ solved) - np.log(np.diag(chol)).sum() - 0.5 * n * np.log(2 * np.pi)
-        gain = np.linalg.solve(s, h @ self.cov).T
-        self.mean = self.mean + gain @ innovation
-        self.cov = self.cov - gain @ h @ self.cov
-        self.cov = (self.cov + self.cov.T) / 2
-
-
 class PaceModel:
     """Model interface: fit(history, view_for) then predict(view, example). Qualifying only.
 
@@ -362,56 +232,39 @@ class PaceModel:
                 if "circuit_id" in events else {}
         return self._circuits.get(event)
 
-    def run(self, view, hyper, sessions):
-        """Filter every session. `state.objective` is the quantity the settings maximise."""
-        state = Filter(hyper)
-        objective, before_weekend, event = 0.0, None, None
-        horizons = {"before_weekend": 0.0, "after_practice": 0.0}
+    def record(self, view, sessions, weekend, affinity, objective=None):
+        """The filter run over `sessions`, recorded (see `program.Recorder`). With the
+        qualifying objective, track 1 is the filter as it stood before each weekend and
+        sees only that weekend's qualifying; only qualifying updates count."""
+        objective = objective or self.objective
+        recorder = Recorder(self.session_types, weekend, affinity)
+        event = None
         for session in sessions.itertuples():
-            state.advance(session.scheduled_start_utc)
+            recorder.advance(session.scheduled_start_utc)
             if session.event_key != event:
                 event = session.event_key
-                state.start_event(event, self.circuit(view, event))
-                before_weekend = state.copy()
+                recorder.start_event(event, self.circuit(view, event))
+                if objective == "qualifying":
+                    recorder.snapshot()
             groups = self.observations(view, session)
-            if self.objective == "qualifying" and session.session_type == "Q":
-                before_weekend.advance(session.scheduled_start_utc)
-                start_pre, start_post = before_weekend.log_likelihood, state.log_likelihood
+            if objective == "qualifying" and session.session_type == "Q":
+                recorder.advance(session.scheduled_start_utc, track=1)
                 for cars, drivers, values in groups:
-                    before_weekend.update(cars, drivers, values, "Q")
-                    state.update(cars, drivers, values, "Q")
-                horizons["before_weekend"] += before_weekend.log_likelihood - start_pre
-                horizons["after_practice"] += state.log_likelihood - start_post
-                objective += (before_weekend.log_likelihood - start_pre) + (state.log_likelihood - start_post)
+                    recorder.update(cars, drivers, values, "Q", track=1)
+                    recorder.update(cars, drivers, values, "Q")
                 continue
             for cars, drivers, values in groups:
-                state.update(cars, drivers, values, session.session_type)
-        state.objective = objective if self.objective == "qualifying" else state.log_likelihood
-        state.horizons = horizons
-        return state
+                recorder.update(cars, drivers, values, session.session_type, counted=objective == "all")
+        return recorder
+
+    def run(self, view, hyper, sessions):
+        """Filter every session. `state.objective` is the quantity the settings maximise."""
+        return self.record(view, sessions, hyper.weekend_prior > 0, hyper.affinity_prior > 0).replay(hyper)
 
     def objective_function(self, view, sessions, like):
         """hyper -> objective over `sessions`, for settings with the same weekend and
-        affinity switches as `like`. Uses the native filter when it is installed and
-        the model has the default objective (same quantity; rounding differs only),
-        else `run`. PREDICTOR_NATIVE=0 forces the Python filter."""
-        if self.objective == "all" and os.environ.get("PREDICTOR_NATIVE", "1") != "0":
-            try:
-                import predictor_native
-            except ImportError:
-                predictor_native = None
-            if predictor_native is not None:
-                weekend, affinity = like.weekend_prior > 0, like.affinity_prior > 0
-                p = record(self, view, sessions, weekend, affinity)
-                arrays = (p.ops.ravel(), p.floats, p.ints, p.group_rows.ravel(), p.row_starts, p.entries,
-                          p.values, p.slots)
-
-                def native(hyper):
-                    if (hyper.weekend_prior > 0, hyper.affinity_prior > 0) != (weekend, affinity):
-                        raise ValueError("settings switch a term the recorded program does not have")
-                    return predictor_native.log_likelihood(*arrays, *program_settings(hyper, p.noise_types))
-                return native
-        return lambda hyper: self.run(view, hyper, sessions).objective
+        affinity switches as `like`: recorded once, replayed for every candidate."""
+        return self.record(view, sessions, like.weekend_prior > 0, like.affinity_prior > 0).objective
 
     def fit_hyper(self, view, sessions, start, frozen=()):
         """Fit the settings that affect the objective, except those named in `frozen`."""
@@ -490,26 +343,35 @@ class PaceModel:
         self.fit_log[season] = self.last_fit
         self.fitted_season = season
 
+    def distribution(self, view, example):
+        """Mean and covariance of the entrants' qualifying pace at the example's cutoff."""
+        recorder = self.record(view, self.sessions(view), self.hyper.weekend_prior > 0,
+                               self.hyper.affinity_prior > 0, objective="all")
+        recorder.advance(example.cutoff_time)
+        if recorder.event != example.event_key:
+            # before the weekend: its weekend effect is unknown; this circuit's affinity resumes
+            recorder.start_event(example.event_key, self.circuit(view, example.event_key))
+        drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
+        cars = [c if pd.notna(c) else f"unknown:{n}" for c, n in zip(example.lineage_ids, example.driver_numbers)]
+        rows = recorder.columns(cars, drivers, "Q")
+        state = recorder.replay(self.hyper)
+        design = state.design(rows)
+        mean = design @ state.mean
+        cov = design @ state.cov @ design.T + self.hyper.noise["Q"] ** 2 * np.eye(len(cars))
+        return mean, cov
+
     def predict(self, view, example, draws=DRAWS):
         if example.session_type != "Q":
             return None
         self._ensure_hyper(view, example.season)
-        state = self.run(view, self.hyper, self.sessions(view))
-        state.advance(example.cutoff_time)
-        if state.event != example.event_key:
-            # before the weekend: its weekend effect is unknown; this circuit's affinity resumes
-            state.start_event(example.event_key, self.circuit(view, example.event_key))
-        drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
-        cars = [c if pd.notna(c) else f"unknown:{n}" for c, n in zip(example.lineage_ids, example.driver_numbers)]
-        design = state.design(cars, drivers, "Q")
-        mean = design @ state.mean
-        cov = design @ state.cov @ design.T + self.hyper.noise["Q"] ** 2 * np.eye(len(cars))
+        mean, cov = self.distribution(view, example)
+        size = len(mean)
         seed = zlib.crc32(f"{self.name}|{example.event_key}|{example.session_type}|{example.cutoff_label}".encode())
         rng = np.random.default_rng(seed)
-        samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(len(cars)), size=draws, method="cholesky")
+        samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
         order = np.argsort(samples, axis=1)
         positions = np.empty_like(order)
-        positions[np.arange(draws)[:, None], order] = np.arange(1, len(cars) + 1)
+        positions[np.arange(draws)[:, None], order] = np.arange(1, size + 1)
         return Forecast.from_draws(
             positions=positions, season=example.season, session_type=example.session_type,
             event_key=example.event_key, cutoff_label=example.cutoff_label, cutoff_time=example.cutoff_time.isoformat(),

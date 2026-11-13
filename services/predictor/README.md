@@ -13,7 +13,9 @@ Implemented: the evaluation foundation and the qualifying pace model.
 | `forecast.py` | The forecast object every model produces, built from joint simulation draws and checked for consistency. |
 | `simulate.py` | Plackett-Luce ranking draws and likelihood. |
 | `baselines.py` | Reference models: uniform, championship order, persistence, practice pace, qualifying order. |
-| `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinity and winter reset. |
+| `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinity and winter reset; settings fit; forecasts. |
+| `program.py` | The filter's bookkeeping: records a run (which states exist, when they are added, parked, reset, observed) as a flat program. |
+| `native/` | The filter's arithmetic in Rust (`predictor_native`, built with maturin): replays a program for given settings and returns the log-likelihood and final state. |
 | `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons. |
 
 Models (`predictor evaluate --models ...`):
@@ -37,7 +39,7 @@ after the session; backtests built on them are retrospective (`archive_proxy`).
 ## Evaluation
 
 ```powershell
-uv pip install -e "services/predictor[dev]"
+make predictor-install                        # the package, then the native module (needs a Rust toolchain)
 f1data reference build                        # canonical IDs, once per archive update
 predictor evaluate --session Q --cutoff pre_weekend --reference pace:v3w --models pace3w pace3wa
 predictor evaluate --session Q --cutoff last --reference pace:v3w --models pace3w pace3wa

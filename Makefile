@@ -31,7 +31,9 @@ archive-verify:
 # --- Prediction engine ---
 predictor-install:
 	uv pip install -e "services/predictor[dev]"
+	$(MAKE) predictor-native
 
+# the pace filter's arithmetic (Rust); rebuild after changing services/predictor/native
 predictor-native:
 	cd services/predictor/native && maturin develop --release
 

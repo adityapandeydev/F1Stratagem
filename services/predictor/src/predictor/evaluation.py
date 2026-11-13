@@ -211,6 +211,7 @@ def git_revision():
 def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdout=False, archive=None, out=None,
         reference="uniform"):
     archive = archive or Archive()
+    revision = git_revision()   # the code the run starts with; the tree may change while it runs
     if set(seasons) & HOLDOUT_SEASONS and not allow_holdout:
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
     train = prepare(archive, session_type, cutoff_label, warmup, allow_holdout=False)
@@ -220,7 +221,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     comparison = compare(scores, reference)
     manifest = {
         "session_type": session_type, "cutoff": cutoff_label, "seasons": list(seasons), "warmup": list(warmup),
-        "models": list(models), "events": len(examples), "git_revision": git_revision(),
+        "models": list(models), "events": len(examples), "git_revision": revision,
         "reference_manifest": json.loads((archive.root / "reference" / "manifest.json").read_text(encoding="utf-8"))
         .get("built_at_utc"), "allow_holdout": allow_holdout,
     }

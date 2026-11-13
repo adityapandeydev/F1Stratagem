@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -6,7 +7,9 @@ import pandas as pd
 
 from predictor.archive import Archive
 from predictor.baselines import Example
-from predictor.pace import Filter, Hyper, PaceModel
+from predictor.pace import ALL_SESSIONS, Hyper, PaceModel
+from predictor import program
+from predictor.program import Recorder
 
 UTC = "UTC"
 CARS = {"fast": -1.0, "mid": 0.0, "slow": 1.0}
@@ -14,16 +17,24 @@ DRIVERS = {"a": -0.2, "b": 0.2, "c": -0.1, "d": 0.1, "e": 0.0, "f": 0.3}
 LINEUP = [("a", "fast"), ("b", "fast"), ("c", "mid"), ("d", "mid"), ("e", "slow"), ("f", "slow")]
 
 
+def estimate(recorder, hyper, cars, drivers, session_type="Q"):
+    """Mean pace of each (car, driver) under `hyper` at the recorder's current point."""
+    rows = recorder.columns(cars, drivers, session_type)
+    state = recorder.replay(hyper)
+    return state.design(rows) @ state.mean, state
+
+
 def test_filter_recovers_car_and_driver_pace_from_qualifying_segments():
     rng = np.random.default_rng(1)
-    state = Filter(Hyper(noise={"Q": 0.1}, car_drift=1e-4, driver_drift=1e-4, car_prior=2.0, driver_prior=0.5))
+    hyper = Hyper(noise={"Q": 0.1}, car_drift=1e-4, driver_drift=1e-4, car_prior=2.0, driver_prior=0.5)
+    state = Recorder(("Q",))
     start = pd.Timestamp("2023-01-01", tz=UTC)
     for week in range(30):
         state.advance(start + pd.Timedelta(weeks=week))
         truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
         state.update([c for _, c in LINEUP], [d for d, _ in LINEUP], truth + rng.normal(0, 0.1, len(LINEUP)))
-    estimate = state.design([c for _, c in LINEUP], [d for d, _ in LINEUP]) @ state.mean
-    relative = estimate - estimate.mean()
+    pace, _ = estimate(state, hyper, [c for _, c in LINEUP], [d for d, _ in LINEUP])
+    relative = pace - pace.mean()
     truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
     assert np.allclose(relative, truth - truth.mean(), atol=0.06)
 
@@ -82,8 +93,9 @@ def test_team_session_offset_absorbs_practice_flattering():
     modes). The offset learns it, so the qualifying estimate is not fooled."""
     rng = np.random.default_rng(2)
     noise = {"Q": 0.1, "FP2": 0.15}
-    state = Filter(Hyper(noise=noise, car_drift=1e-4, driver_drift=1e-4, offset_drift=1e-5,
-                         car_prior=2.0, driver_prior=0.5, offset_prior=1.0))
+    hyper = Hyper(noise=noise, car_drift=1e-4, driver_drift=1e-4, offset_drift=1e-5,
+                  car_prior=2.0, driver_prior=0.5, offset_prior=1.0)
+    state = Recorder(("Q", "FP2"))
     cars, drivers = [c for _, c in LINEUP], [d for d, _ in LINEUP]
     truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
     flatter = np.array([-0.6 if c == "fast" else 0.0 for _, c in LINEUP])
@@ -92,36 +104,36 @@ def test_team_session_offset_absorbs_practice_flattering():
         state.advance(start + pd.Timedelta(weeks=week))
         state.update(cars, drivers, truth + flatter + rng.normal(0, 0.15, 6), "FP2")
         state.update(cars, drivers, truth + rng.normal(0, 0.1, 6), "Q")
-    offsets = {c: state.mean[state.index[("offset", (c, "FP2"))]] for c in CARS}
+    pace, result = estimate(state, hyper, cars, drivers)
+    offsets = {c: result.mean[result.index[("offset", (c, "FP2"))]] for c in CARS}
     assert offsets["fast"] - np.mean([offsets["mid"], offsets["slow"]]) == pytest.approx(-0.6, abs=0.1)
-    estimate = state.design(cars, drivers, "Q") @ state.mean
-    assert np.allclose(estimate - estimate.mean(), truth - truth.mean(), atol=0.08)
+    assert np.allclose(pace - pace.mean(), truth - truth.mean(), atol=0.08)
 
 
 def test_winter_inflation_is_larger_at_regulation_changes():
     def car_variance_after(year_from, year_to):
-        state = Filter(Hyper(car_drift=0.0, driver_drift=0.0, car_prior=1.0, driver_prior=1.0,
-                             car_winter=0.5, driver_winter=0.05, regulation_multiplier=3.0))
+        hyper = Hyper(car_drift=0.0, driver_drift=0.0, car_prior=1.0, driver_prior=1.0,
+                      car_winter=0.5, driver_winter=0.05, regulation_multiplier=3.0)
+        state = Recorder(("Q",))
         state.column("fast", "car")
         state.advance(pd.Timestamp(f"{year_from}-11-01", tz=UTC))
         state.advance(pd.Timestamp(f"{year_to}-03-01", tz=UTC))
-        return state.cov[0, 0]
+        return state.replay(hyper).cov[0, 0]
     assert car_variance_after(2020, 2021) == pytest.approx(1.0 + 0.5)       # ordinary winter
     assert car_variance_after(2021, 2022) == pytest.approx(1.0 + 1.5)       # new regulations
     assert car_variance_after(2021, 2021) == pytest.approx(1.0)             # no season boundary
 
 
 def test_qualifying_objective_counts_only_qualifying_likelihood(tmp_path):
-    from predictor.pace import ALL_SESSIONS
     write_archive(tmp_path, later_time_q1=90.0)
     archive = Archive(tmp_path)
     view = archive.view(pd.Timestamp("2023-04-01", tz=UTC))
     sessions = view.sessions[view.sessions.session_type == "Q"].sort_values("scheduled_start_utc")
     everything = PaceModel(ALL_SESSIONS, "all").run(view, Hyper(), sessions)
     qualifying = PaceModel(ALL_SESSIONS, "q", objective="qualifying").run(view, Hyper(), sessions)
-    assert everything.objective == pytest.approx(everything.log_likelihood)
     # Two horizons for qualifying: before the weekend and after its practice (here identical).
-    assert qualifying.objective == pytest.approx(2 * everything.log_likelihood)
+    assert qualifying.horizons["before_weekend"] == pytest.approx(everything.objective)
+    assert qualifying.objective == pytest.approx(2 * everything.objective)
     assert np.allclose(qualifying.mean, everything.mean)
 
 
@@ -132,7 +144,7 @@ def test_weekend_effect_informs_that_weekend_only():
     rng = np.random.default_rng(3)
     hyper = Hyper(noise={"Q": 0.05, "FP2": 0.05}, car_drift=1e-4, driver_drift=1e-5, offset_drift=1e-6,
                   car_prior=2.0, driver_prior=0.5, offset_prior=0.01, weekend_prior=0.5)
-    state = Filter(hyper)
+    state = Recorder(("Q", "FP2"), weekend=True)
     cars, drivers = [c for _, c in LINEUP], [d for d, _ in LINEUP]
     truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
     start = pd.Timestamp("2023-01-01", tz=UTC)
@@ -143,16 +155,16 @@ def test_weekend_effect_informs_that_weekend_only():
         state.start_event(event)
         state.update(cars, drivers, truth + weekend + rng.normal(0, 0.05, 6), "FP2")
         if event == 29:
-            after_practice = state.design(cars, drivers, "Q") @ state.mean
+            after_practice, _ = estimate(state, hyper, cars, drivers)
             assert np.allclose(after_practice - after_practice.mean(),
                                (truth + weekend) - (truth + weekend).mean(), atol=0.15)
         state.update(cars, drivers, truth + weekend + rng.normal(0, 0.05, 6), "Q")
     state.start_event(30)
-    long_run = state.design(cars, drivers, "Q") @ state.mean
+    long_run, result = estimate(state, hyper, cars, drivers)
     assert np.allclose(long_run - long_run.mean(), truth - truth.mean(), atol=0.25)
-    weekend_columns = [i for i, kind in enumerate(state.kind) if kind == "weekend"]
-    assert np.allclose(state.mean[weekend_columns], 0) and np.allclose(
-        np.diag(state.cov)[weekend_columns], hyper.weekend_prior ** 2)
+    weekend_columns = [i for i, kind in enumerate(result.kind) if kind == "weekend"]
+    assert np.allclose(result.mean[weekend_columns], 0) and np.allclose(
+        np.diag(result.cov)[weekend_columns], hyper.weekend_prior ** 2)
 
 
 def affinity_hyper(**overrides):
@@ -167,7 +179,8 @@ def test_affinity_persists_between_visits_and_shapes_the_next_forecast():
     """The fast car is always 0.8% slower at 'marina_bay' than elsewhere. Visits alternate
     with another circuit; before the next Marina Bay weekend the forecast expects it."""
     rng = np.random.default_rng(4)
-    state = Filter(affinity_hyper())
+    hyper = affinity_hyper()
+    state = Recorder(("Q",), weekend=True, affinity=True)
     cars, drivers = [c for _, c in LINEUP], [d for d, _ in LINEUP]
     truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
     penalty = np.array([0.8 if c == "fast" else 0.0 for _, c in LINEUP])
@@ -180,28 +193,32 @@ def test_affinity_persists_between_visits_and_shapes_the_next_forecast():
         state.update(cars, drivers, truth + (penalty if circuit == "marina_bay" else 0) + rng.normal(0, 0.05, 6), "Q")
     state.advance(time + pd.Timedelta(weeks=8))
     state.start_event(99, "marina_bay")
-    at_marina = state.design(cars, drivers, "Q") @ state.mean
+    at_marina, _ = estimate(state, hyper, cars, drivers)
     state.start_event(100, "monza")
-    at_monza = state.design(cars, drivers, "Q") @ state.mean
+    at_monza, _ = estimate(state, hyper, cars, drivers)
     gap = lambda x: x[0] - x[2]                   # fast car's lead driver vs the mid car's
     assert gap(at_marina) - gap(at_monza) == pytest.approx(0.8, abs=0.15)
 
 
 def test_regulation_change_inflates_parked_affinity_but_keeps_its_value():
-    state = Filter(affinity_hyper(affinity_drift=0.0))
+    hyper = affinity_hyper(affinity_drift=0.0)
+    key = ("affinity", ("fast", "marina_bay"))
+    state = Recorder(("Q",), weekend=True, affinity=True)
     state.advance(pd.Timestamp("2021-09-01", tz=UTC))
     state.start_event(1, "marina_bay")
-    state.design(["fast"], ["a"], "Q")
-    index = state.index[("affinity", ("fast", "marina_bay"))]
-    state.mean[index], state.cov[index, index] = 0.7, 0.04
+    state.update(["fast", "mid"], ["a", "c"], np.array([90.0, 90.9]))
+    visited = state.replay(hyper)
+    value, variance = visited.mean[visited.index[key]], visited.cov[visited.index[key]][visited.index[key]]
+    assert value != 0
     state.advance(pd.Timestamp("2021-10-01", tz=UTC))
     state.start_event(2, "monza")                  # parked
     state.advance(pd.Timestamp("2022-09-01", tz=UTC))
     state.start_event(3, "marina_bay")
-    state.design(["fast"], ["a"], "Q")
-    index = state.index[("affinity", ("fast", "marina_bay"))]
-    assert state.mean[index] == pytest.approx(0.7)                       # value kept
-    assert state.cov[index, index] == pytest.approx(0.04 + 0.01 * 3.0)   # 2022 winter x regulation multiplier
+    state.columns(["fast"], ["a"], "Q")
+    resumed = state.replay(hyper)
+    index = resumed.index[key]
+    assert resumed.mean[index] == pytest.approx(value)                              # value kept
+    assert resumed.cov[index, index] == pytest.approx(variance + 0.01 * 3.0)        # 2022 winter x regulation multiplier
 
 
 def test_optimiser_reaches_the_minimum_of_a_curved_valley():
@@ -217,7 +234,7 @@ def test_optimiser_reaches_the_minimum_of_a_curved_valley():
 
 
 def write_circuit_archive(root):
-    """Three weekends (circuits A, B, A) across a regulation change, with practice."""
+    """Three weekends (circuits A, B, A) across a regulation change, with practice; a fourth (B) ahead."""
     reference = root / "reference"
     reference.mkdir(parents=True, exist_ok=True)
     events = [("2021-01", "A", "2021-07-02"), ("2021-02", "B", "2021-07-16"), ("2022-01", "A", "2022-03-18")]
@@ -248,30 +265,82 @@ def write_circuit_archive(root):
                               "PitOutTime": pd.Series([pd.NaT] * 6, dtype="timedelta64[ns]"),
                               "Deleted": [False] * 6}).to_parquet(folder / "laps.parquet")
     pd.DataFrame(sessions).to_parquet(reference / "sessions.parquet")
-    pd.DataFrame({"event_key": [e for e, _, _ in events], "season": [int(e[:4]) for e, _, _ in events],
-                  "is_testing": False, "round": [1, 2, 1], "circuit_id": [c for _, c, _ in events]}).to_parquet(
-        reference / "events.parquet")
+    # a fourth weekend at B with no sessions yet: forecast before it, B's parked affinity resumes
+    pd.DataFrame({"event_key": [e for e, _, _ in events] + ["2022-02"], "season": [2021, 2021, 2022, 2022],
+                  "is_testing": False, "round": [1, 2, 1, 2], "circuit_id": [c for _, c, _ in events] + ["B"]}
+                 ).to_parquet(reference / "events.parquet")
     pd.DataFrame(entrants).to_parquet(reference / "entrants.parquet")
     (reference / "manifest.json").write_text(json.dumps({"built_at_utc": "now"}))
 
 
-def test_native_filter_matches_the_python_filter(tmp_path, monkeypatch):
-    native = pytest.importorskip("predictor_native")
-    from predictor.pace import ALL_SESSIONS
-    from predictor import program
+GOLDEN = json.loads((Path(__file__).parent / "data" / "pace_golden.json").read_text(encoding="utf-8"))
+GOLDEN_SETTINGS = dict(car_winter=0.3, driver_winter=0.04, regulation_multiplier=2.5, weekend_prior=0.3,
+                       affinity_prior=0.25, affinity_drift=0.002, affinity_winter=0.05, car_drift=0.01)
+NO_AFFINITY = dict(affinity_prior=0.0, affinity_drift=0.0, affinity_winter=0.0)
+GOLDEN_CASES = {
+    "pace3wa": (dict(winter=True, weekend=True, affinity=True), GOLDEN_SETTINGS),
+    "pace3w": (dict(winter=True, weekend=True), {**GOLDEN_SETTINGS, **NO_AFFINITY}),
+    "pace3q": (dict(winter=True, objective="qualifying"), {**GOLDEN_SETTINGS, **NO_AFFINITY, "weekend_prior": 0.0}),
+}
+GOLDEN_EXAMPLES = {  # event, cutoff label, cutoff time
+    "before_B": ("2022-02", "pre_weekend", "2022-03-25 00:00"),
+    "after_FP1_A": ("2022-01", "after_FP1", "2022-03-18 12:00"),
+}
+
+
+def golden_example(event, label, cutoff):
+    cutoff = pd.Timestamp(cutoff, tz=UTC)
+    drivers = [d for d, _ in LINEUP] + [None, "g"]          # an unknown driver, a new driver in an unknown car
+    cars = [c for _, c in LINEUP] + ["mid", None]
+    return Example(event_key=event, season=int(event[:4]), session_type="Q", cutoff_label=label, cutoff_time=cutoff,
+                   target_available_at=cutoff + pd.Timedelta(days=1), driver_numbers=[str(i) for i in range(8)],
+                   driver_ids=drivers, positions=np.arange(1, 9), outcomes=[None] * 8,
+                   excluded=np.zeros(8, dtype=bool), band_rank=np.arange(1, 9, dtype=float), lineage_ids=cars)
+
+
+@pytest.mark.parametrize("name", sorted(GOLDEN_CASES))
+def test_native_filter_reproduces_the_python_filter(tmp_path, name):
+    """Reference values written by the Python filter before it was replaced by the
+    native one (tests/data/pace_golden.json): log-likelihood, final state and
+    forecast distributions, across parking, resuming, weekend resets, a regulation
+    winter, unknown entrants and the qualifying objective's two tracks."""
+    expected = GOLDEN[name]
+    write_circuit_archive(tmp_path)
+    archive = Archive(tmp_path)
+    options, settings = GOLDEN_CASES[name]
+    model, hyper = PaceModel(ALL_SESSIONS, name, **options), Hyper(**settings)
+    view = archive.view(pd.Timestamp("2023-01-01", tz=UTC))
+    sessions = model.sessions(view)
+    state = model.run(view, hyper, sessions)
+    assert state.objective == pytest.approx(expected["objective"], rel=1e-12)
+    assert model.objective_function(view, sessions, hyper)(hyper) == pytest.approx(expected["objective"], rel=1e-12)
+    if options.get("objective") == "qualifying":
+        for horizon, value in expected["horizons"].items():
+            assert state.horizons[horizon] == pytest.approx(value, rel=1e-12)
+    assert [repr(k) for k in state.keys] == expected["keys"]
+    assert np.allclose(state.mean, expected["mean"], rtol=0, atol=1e-9)
+    assert np.allclose(state.cov, expected["cov"], rtol=0, atol=1e-9)
+    model.hyper = hyper
+    for label, args in GOLDEN_EXAMPLES.items():
+        example = golden_example(*args)
+        mean, cov = model.distribution(archive.view(example.cutoff_time), example)
+        assert np.allclose(mean, expected["forecasts"][label]["mean"], rtol=0, atol=1e-9)
+        assert np.allclose(cov, expected["forecasts"][label]["cov"], rtol=0, atol=1e-9)
+
+
+def test_recorded_program_exercises_every_operation(tmp_path):
     write_circuit_archive(tmp_path)
     view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
-    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True)
-    sessions = model.sessions(view)
-    hyper = Hyper(car_winter=0.3, driver_winter=0.04, regulation_multiplier=2.5, weekend_prior=0.3,
-                  affinity_prior=0.25, affinity_drift=0.002, affinity_winter=0.05, car_drift=0.01)
-    p = program.record(model, view, sessions, True, True)
-    assert {program.PARK, program.RESET, program.ADVANCE} <= set(p.ops[:, 0])
-    assert (p.ops[:, 0] == program.ADD)[(p.ops[:, 2] >= 0)].any()          # a parked affinity resumed
-    expected = model.run(view, hyper, sessions).objective
-    got = native.log_likelihood(p.ops.ravel(), p.floats, p.ints, p.group_rows.ravel(), p.row_starts, p.entries,
-                                p.values, p.slots, *program.settings(hyper, p.noise_types))
-    assert got == pytest.approx(expected, rel=1e-12, abs=1e-9)
-    assert model.objective_function(view, sessions, hyper)(hyper) == pytest.approx(expected, rel=1e-12, abs=1e-9)
-    monkeypatch.setenv("PREDICTOR_NATIVE", "0")
-    assert model.objective_function(view, sessions, hyper)(hyper) == expected
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True, objective="qualifying")
+    p = model.record(view, model.sessions(view), True, True).program()
+    assert {program.ADVANCE, program.ADD, program.PARK, program.RESET, program.UPDATE, program.SNAPSHOT} \
+        <= set(p.ops[:, 0])
+    assert ((p.ops[:, 0] == program.ADD) & (p.ops[:, 3] >= 0)).any()      # a parked affinity resumed
+    assert ((p.ops[:, 0] == program.ADD) & (p.ops[:, 1] == 1)).any()      # the before-weekend track adds states
+
+
+def test_settings_that_switch_a_recorded_term_are_rejected():
+    state = Recorder(("Q",), weekend=True)
+    state.update(["fast", "mid"], ["a", "c"], np.array([90.0, 90.5]))
+    with pytest.raises(ValueError):
+        state.replay(Hyper())
