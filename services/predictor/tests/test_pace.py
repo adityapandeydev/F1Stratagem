@@ -403,7 +403,7 @@ def write_history(root):
     pd.DataFrame(rows).to_parquet(root / "reference" / "qualifying_history.parquet")
 
 
-@pytest.mark.parametrize("mode", ["shared", "noise", "state"])
+@pytest.mark.parametrize("mode", ["shared", "noise", "state", "weighted"])
 def test_history_modes_read_history_as_qualifying_without_an_offset(tmp_path, mode):
     write_circuit_archive(tmp_path)
     write_history(tmp_path)
@@ -411,19 +411,19 @@ def test_history_modes_read_history_as_qualifying_without_an_offset(tmp_path, mo
     model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, history=mode)
     sessions = model.sessions(view)
     history = sessions[sessions.session_id.str.startswith("history:")]
-    assert len(history) == 2 and set(history.session_type) == {"H" if mode == "noise" else "Q"}
+    assert len(history) == 2 and set(history.session_type) == {"H" if mode in ("noise", "weighted") else "Q"}
     recorder = model.record(view, sessions, True, False)
     assert not any(kind == "offset" and key[1] in ("Q", "H") for kind, key in recorder.keys)
-    if mode == "noise":   # historical rows read car and driver only
+    if mode in ("noise", "weighted"):   # historical rows read car and driver only
         assert all(len(recorder.entries[a:b]) == 2 for a, b in zip(recorder.row_starts[:36], recorder.row_starts[1:37]))
     updates = recorder.program().ops
     updates = updates[updates[:, 0] == program.UPDATE]
     counted = updates[:, 3]
     groups = 2 * 3                                     # two sessions, three segments each
-    assert list(counted[:groups]) == [0 if mode == "state" else 1] * groups
+    assert list(counted[:groups]) == [0 if mode in ("state", "weighted") else 1] * groups
     assert counted[groups:].all()
     hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
-    assert ("H" in model.last_fit["fitted"]) == (mode == "noise")
+    assert ("H" in model.last_fit["fitted"]) == (mode in ("noise", "weighted"))
     assert np.isfinite(model.last_fit["objective"]) and hyper.noise["Q"] > 0
 
 
@@ -465,3 +465,49 @@ def test_state_only_history_keeps_affinity_identified_by_modern_repeat_visits(tm
     model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True, history="state")
     model.fit_hyper(view, model.sessions(view), Hyper(**GOLDEN_SETTINGS))
     assert "affinity_prior" in model.last_fit["fitted"]
+
+
+def test_weighted_history_noise_reaches_the_objective_only_through_the_state(tmp_path):
+    """The history noise reaches the counted objective only through the state: with
+    trusted history the history's content moves the objective; with a huge history
+    noise it barely does (history then only leaves vaguer states entering 2018+)."""
+    write_circuit_archive(tmp_path)
+    write_history(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    settings = Hyper(**GOLDEN_SETTINGS | NO_AFFINITY)
+
+    def objective(shuffled):
+        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, history="weighted")
+        sessions = model.sessions(view)
+        if shuffled:   # history with its times reversed within each group: different content
+            for session in sessions[sessions.session_id.str.startswith("history:")].itertuples():
+                model._observations[session.session_id] = [(c, d, v[::-1]) for c, d, v in
+                                                            model.observations(view, session)]
+        return model.objective_function(view, sessions, settings)
+
+    original, shuffled = objective(False), objective(True)
+    trust = {h: Hyper(**GOLDEN_SETTINGS | NO_AFFINITY, noise={**Hyper().noise, "H": h}) for h in (0.3, 50.0)}
+    assert abs(original(trust[0.3]) - shuffled(trust[0.3])) > 0.5
+    assert abs(original(trust[50.0]) - shuffled(trust[50.0])) < 0.05
+
+
+def test_stage_comparison_reports_each_stage_of_the_season():
+    from predictor import evaluation
+    rows = [{"event_key": f"2021-{r:02d}", "season": 2021, "model": m,
+             "rps": 0.1 + (0.01 if m == "b" and r >= 15 else 0) + 0.001 * (r % 3)}
+            for r in range(1, 23) for m in ("a", "b")]
+    stages = evaluation.stage_comparison(pd.DataFrame(rows), "a")
+    assert list(stages.stage) == ["4-8", "9-14", "15+"]          # rounds 1-3: fewer than five events
+    late = stages[stages.stage == "15+"].iloc[0]
+    assert late.worse_beyond_noise and late.events == 8
+
+
+def test_history_noise_is_fitted_above_its_floor(tmp_path):
+    from predictor.pace import HISTORY_NOISE_FLOOR
+    write_circuit_archive(tmp_path)
+    write_history(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, history="weighted")
+    start = Hyper(**GOLDEN_SETTINGS | NO_AFFINITY, noise={**Hyper().noise, "H": 1e-4})   # below the floor
+    hyper = model.fit_hyper(view, model.sessions(view), start)
+    assert "H" in model.last_fit["fitted"] and hyper.noise["H"] >= HISTORY_NOISE_FLOOR * (1 - 1e-9)

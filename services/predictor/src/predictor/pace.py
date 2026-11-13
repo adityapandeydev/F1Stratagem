@@ -60,7 +60,11 @@ car x circuit affinity repeat visits to learn from and drivers a longer record.
 "noise" as its own session type H, with its own noise, no offset and no weekend
 effect (its only session would make the weekend effect absorb noise) (v3whn);
 "state" as qualifying that updates the state but not the objective, so the
-settings are fitted on the FastF1 era alone (v3whs).
+settings are fitted on the FastF1 era alone (v3whs); "weighted" as state, read as
+type H whose noise is fitted on the FastF1 era alone (v3whw): how far history is
+trusted is learned from how well it predicts 2018 on, so it can act as an
+educated first guess that current-season evidence overrides (no offset or
+weekend effect for H, as for "noise").
 
 Frozen shared settings (v2s): car and driver drift, priors and qualifying noise
 are fitted on qualifying alone, then frozen; only practice noise and offsets are
@@ -86,7 +90,9 @@ QUALIFYING_ONLY = ("Q",)
 ALL_SESSIONS = ("Q", "SQ", "FP1", "FP2", "FP3", "T")
 HISTORY_FIRST_SEASON = 2006      # first season with low-fuel qualifying segments
 HISTORY_PREFIX = "history:"
-HISTORY_MODES = ("shared", "noise", "state")
+HISTORY_MODES = ("shared", "noise", "state", "weighted")
+UNCOUNTED_HISTORY = ("state", "weighted")   # history updates the state, not the objective
+OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
 
 
 @dataclass
@@ -141,11 +147,14 @@ class Hyper:
 
 NESTED_AFFINITY = {"affinity_prior": 1e-3, "affinity_drift": 1e-8, "affinity_winter": 1e-8}
 LOG_BOUNDS = (-20.0, 4.0)   # settings are fitted as logs: about 2e-9 to 55
+# Historical qualifying cannot be more precise than this (modern qualifying noise is
+# about 0.45): below it the 2019 fit had a second optimum treating history as exact.
+HISTORY_NOISE_FLOOR = 0.05
 FIT_TOLERANCE = 0.01        # stop once a full round improves the log-likelihood by less than this
 FIT_ROUNDS = 10
 
 
-def _optimise(negative, x0):
+def _optimise(negative, x0, lower=None):
     """Minimise `negative` thoroughly; fit quality matters more than run time.
 
     Each round runs Powell, then L-BFGS-B (finite differences) and adaptive
@@ -153,9 +162,12 @@ def _optimise(negative, x0):
     objective by less than FIT_TOLERANCE. Methods differ in where they stall, so
     alternating them escapes points that a single method takes for an optimum.
     `negative` returns +inf for candidates it rejects; only finite results are
-    adopted. Returns (best point, best value, converged)."""
-    bounds = [LOG_BOUNDS] * len(x0)
-    x = np.clip(np.asarray(x0, dtype=float), *LOG_BOUNDS)
+    adopted. `lower` optionally raises the lower log bound per setting. Returns
+    (best point, best value, converged)."""
+    lower = np.full(len(x0), LOG_BOUNDS[0]) if lower is None else np.asarray(lower, dtype=float)
+    upper = np.full(len(x0), LOG_BOUNDS[1])
+    bounds = list(zip(lower, upper))
+    x = np.clip(np.asarray(x0, dtype=float), lower, upper)
     value = negative(x)
     for _ in range(FIT_ROUNDS):
         round_start = value
@@ -165,7 +177,7 @@ def _optimise(negative, x0):
                                                  "adaptive": True})):
             result = minimize(negative, x, method=method, bounds=bounds, options=options)
             if np.isfinite(result.fun) and np.all(np.isfinite(result.x)) and result.fun < value:
-                x, value = np.clip(result.x, *LOG_BOUNDS), float(result.fun)
+                x, value = np.clip(result.x, lower, upper), float(result.fun)
         if not np.isfinite(value):
             return x, value, False     # nothing finite found from this start
         if np.isfinite(round_start) and round_start - value < FIT_TOLERANCE:
@@ -238,7 +250,7 @@ class PaceModel:
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
-        self.session_types = tuple(session_types) + (("H",) if history == "noise" else ())
+        self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
         self.name = name
         self.winter = winter
         self.objective = objective
@@ -268,7 +280,7 @@ class PaceModel:
         events = history.groupby("event_key").agg(season=("season", "first"), scheduled_start_utc=("start_utc", "first"),
                                                   available_at_utc=("available_at_utc", "first")).reset_index()
         return events.assign(session_id=HISTORY_PREFIX + events.event_key,
-                             session_type="H" if self.history == "noise" else "Q")
+                             session_type="H" if self.history in OWN_TYPE_HISTORY else "Q")
 
     def observations(self, view, session):
         """Cached per session; the view still decides whether the session may be read."""
@@ -310,7 +322,7 @@ class PaceModel:
                 if objective == "qualifying":
                     recorder.snapshot()
             groups = self.observations(view, session)
-            if self.history == "state" and session.session_id.startswith(HISTORY_PREFIX):
+            if self.history in UNCOUNTED_HISTORY and session.session_id.startswith(HISTORY_PREFIX):
                 for cars, drivers, values in groups:
                     recorder.update(cars, drivers, values, session.session_type, counted=False)
                 continue
@@ -350,7 +362,7 @@ class PaceModel:
         # fit sets it, and with it the history's changes and the affinity winter), the
         # priors once a car or driver first appears in them.
         history = sessions.session_id.str.startswith(HISTORY_PREFIX)
-        state = self.history == "state"
+        state = self.history in UNCOUNTED_HISTORY
         counted = sessions[~history] if state else sessions
         seasons = sorted(set(counted.scheduled_start_utc.dt.year))
         crossed = seasons[1:]                          # season starts inside the counted sessions
@@ -376,6 +388,8 @@ class PaceModel:
         start = replace(start, **({"affinity_prior": 0.0} if self.affinity and not affinity else {}),
                         **{s: getattr(default, s) for s in scalars if getattr(start, s) <= 0})
 
+        lower = [np.log(HISTORY_NOISE_FLOOR) if t == "H" else LOG_BOUNDS[0] for t in noise_types] \
+            + [LOG_BOUNDS[0]] * len(scalars)
         evaluations, rejected = [0], [0]
         objective = self.objective_function(view, sessions, start)
 
@@ -402,11 +416,12 @@ class PaceModel:
             base = [s for s in scalars if s not in extra]
             assert scalars == base + extra
             off = np.log([NESTED_AFFINITY[s] for s in extra])
-            x, _, _ = _optimise(lambda v: negative(np.concatenate([v, off])), start.vector(noise_types, base))
+            x, _, _ = _optimise(lambda v: negative(np.concatenate([v, off])), start.vector(noise_types, base),
+                                lower[:len(noise_types) + len(base)])
             starts["nested"] = Hyper.from_vector(np.concatenate([x, off]), noise_types, scalars, start)
         best, results = None, {}
         for label, initial in starts.items():
-            x, value, converged = _optimise(negative, initial.vector(noise_types, scalars))
+            x, value, converged = _optimise(negative, initial.vector(noise_types, scalars), lower)
             results[label] = -float(value)
             if best is None or value < best[1]:
                 best = (x, value, converged, label)
@@ -438,7 +453,8 @@ class PaceModel:
         sessions = self.sessions(earlier)
         start = self.hyper or self._default_start()
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
-        counted = sessions[~sessions.session_id.str.startswith(HISTORY_PREFIX)] if self.history == "state" else sessions
+        counted = sessions[~sessions.session_id.str.startswith(HISTORY_PREFIX)] \
+            if self.history in UNCOUNTED_HISTORY else sessions
         if (counted.session_type == "Q").sum() < 5:
             self.hyper = start
         elif self.shared_from_qualifying:

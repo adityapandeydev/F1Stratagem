@@ -78,7 +78,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
         + ("a" if affinity else "") + ("h" if history else "") \
-        + {"noise": "n", "state": "s"}.get(history, "")
+        + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "")
     return PaceModel(ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history)
 
@@ -94,7 +94,8 @@ def model_registry():
             "pace3wah": lambda: _pace_model(3, weekend=True, affinity=True, history=True),
             "pace3whn": lambda: _pace_model(3, weekend=True, history="noise"),
             "pace3whs": lambda: _pace_model(3, weekend=True, history="state"),
-            "pace3wahs": lambda: _pace_model(3, weekend=True, affinity=True, history="state")}
+            "pace3wahs": lambda: _pace_model(3, weekend=True, affinity=True, history="state"),
+            "pace3whw": lambda: _pace_model(3, weekend=True, history="weighted")}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):
@@ -203,6 +204,25 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
     return pd.DataFrame(rows)
 
 
+SEASON_STAGES = ((1, 3), (4, 8), (9, 14), (15, 99))   # rounds; the last stage is checked on its own
+LATE_STAGE = "15+"
+
+
+def stage_comparison(scores, reference):
+    """`compare` within each stage of the season (by round). A model must not be worse
+    beyond noise in the late stage at either cutoff, where the season's evidence is
+    fullest. Stages are small (15-34 events): this guards against harm; it is not
+    evidence of a gain."""
+    rounds = scores.event_key.str[-2:].astype(int)
+    tables = []
+    for first, last in SEASON_STAGES:
+        part = scores[(rounds >= first) & (rounds <= last)]
+        if part.event_key.nunique() >= 5:
+            label = f"{first}+" if last == 99 else f"{first}-{last}"
+            tables.append(compare(part, reference).assign(stage=label))
+    return pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+
+
 def git_revision():
     """HEAD, and whether tracked files had uncommitted changes when the run started."""
     try:
@@ -225,6 +245,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     scores = walk_forward(examples, models, archive, train)
     overall, by_season = summarise(scores)
     comparison = compare(scores, reference)
+    stages = stage_comparison(scores, reference)
     manifest = {
         "session_type": session_type, "cutoff": cutoff_label, "seasons": list(seasons), "warmup": list(warmup),
         "models": list(models), "events": len(examples), "git_revision": revision,
@@ -237,6 +258,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         overall.to_csv(out / "overall.csv")
         by_season.to_csv(out / "by_season.csv")
         comparison.to_csv(out / "comparison.csv", index=False)
+        stages.to_csv(out / "stages.csv", index=False)
         (out / "settings.json").write_text(json.dumps(scores.attrs.get("settings", {}), indent=2, default=float),
                                            encoding="utf-8")
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")

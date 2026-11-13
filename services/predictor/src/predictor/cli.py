@@ -40,11 +40,13 @@ def main(argv=None):
         print()
         print(f"Paired RPS difference vs {args.reference} (negative = better), 90% bootstrap interval:")
         print(comparison.drop(columns=["reference", "metric"]).to_string(index=False))
-        early = scores[scores.event_key.str[-2:].astype(int) <= 3]
-        if early.event_key.nunique() >= 5:
+        stages = evaluation.stage_comparison(scores, args.reference)
+        if not stages.empty:
             print()
-            print(f"First three rounds of each season only ({early.event_key.nunique()} events):")
-            print(evaluation.compare(early, args.reference).drop(columns=["reference", "metric"]).to_string(index=False))
+            print(f"By stage of the season (rounds); a model must not be worse beyond noise in "
+                  f"{evaluation.LATE_STAGE} at either cutoff:")
+            print(stages[["stage", "model", "events", "mean_difference", "interval_90_low", "interval_90_high",
+                          "better_beyond_noise", "worse_beyond_noise"]].to_string(index=False))
         print()
         print("RPS by season:")
         print(evaluation.common_events(scores).pivot_table(index="season", columns="model", values="rps").round(4))
