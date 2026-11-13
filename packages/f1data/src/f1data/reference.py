@@ -11,6 +11,9 @@ database: drivers (`max_verstappen`), constructors (`red_bull`) and circuits
       drivers.parquet     Jolpica driver records (2018+ entrants)
       teams.parquet       constructor ID, name and lineage per season (1996+)
       circuits.parquet    Jolpica circuit records
+      qualifying_history.parquet
+                          Jolpica qualifying times before 2018 (1996+), one row per
+                          driver per event, with lineage and circuit
       manifest.json       SHA-256 per table, resolution report
 
 FastF1 leaves driver and team IDs blank for some sessions (most testing, some
@@ -193,6 +196,53 @@ def lineage_table(constructors, config_path=LINEAGE_CONFIG, last_season=None):
     return table
 
 
+def _seconds(times):
+    """'1:23.456' (or '83.456') -> seconds; anything else -> NaN."""
+    def parse(value):
+        if pd.isna(value) or not str(value).strip():
+            return float("nan")
+        minutes, _, seconds = str(value).strip().rpartition(":")
+        try:
+            return int(minutes or 0) * 60 + float(seconds)
+        except ValueError:
+            return float("nan")
+    return times.map(parse).astype(float)
+
+
+def qualifying_history(root, races, lineage):
+    """Qualifying times from Jolpica for the seasons before the FastF1 archive.
+
+    One row per driver per event: Q1-Q3 best times in seconds (only Q1 before the
+    knockout format), the constructor and its lineage, the circuit, and an estimated
+    session start (qualifying date, else the day before the race, at the race's start
+    time of day, else 12:00 UTC); Jolpica has no qualifying start times before 2018.
+    Seasons the source covers only partly (1996-2002) are kept as they are; the
+    model decides which seasons and segments it uses."""
+    path = root / "external" / "jolpica" / "tables" / "qualifying.parquet"
+    frame = pd.read_parquet(path)
+    frame["season"], frame["round"] = frame.season.astype(int), frame["round"].astype(int)
+    frame = frame[(frame.season >= LINEAGE_FIRST_SEASON) & (frame.season < FIRST_SEASON)]
+    schedule = races[(races.season >= LINEAGE_FIRST_SEASON) & (races.season < FIRST_SEASON)]
+    race_day = pd.to_datetime(schedule.date)
+    day = pd.to_datetime(schedule.Qualifying_date).fillna(race_day - pd.Timedelta(days=1))
+    time_of_day = pd.to_timedelta(schedule.time.fillna("12:00:00Z").str.rstrip("Z"))
+    starts = schedule.assign(start_utc=(day + time_of_day).dt.tz_localize("UTC"))[["season", "round", "start_utc"]]
+    history = pd.DataFrame({
+        "event_key": [f"{s}-{r:02d}" for s, r in zip(frame.season, frame["round"])],
+        "season": frame.season, "round": frame["round"], "circuit_id": frame.circuit_id,
+        "driver_id": frame.Driver_driverId, "constructor_id": frame.Constructor_constructorId,
+        "number": frame.number, "position": pd.to_numeric(frame.position, errors="coerce").astype("Int64"),
+        "q1_seconds": _seconds(frame.Q1),
+        "q2_seconds": _seconds(frame.Q2) if "Q2" in frame else float("nan"),
+        "q3_seconds": _seconds(frame.Q3) if "Q3" in frame else float("nan"),
+    })
+    history = history.merge(starts, on=["season", "round"], how="left")
+    history = history.merge(lineage, on=["season", "constructor_id"], how="left")
+    if history.lineage_id.isna().any() or history.start_utc.isna().any():
+        raise ValueError("qualifying history rows without a lineage or a session start")
+    return history.sort_values(["season", "round", "position"]).reset_index(drop=True)
+
+
 def jolpica_tables(root):
     base = root / "external" / "jolpica" / "tables"
 
@@ -257,9 +307,11 @@ def build(root):
                      .rename(columns={"circuitId": "circuit_id", "circuitName": "circuit_name",
                                       "Location_country": "country", "Location_locality": "locality",
                                       "Location_lat": "latitude", "Location_long": "longitude"}))
+    history = qualifying_history(root, races, lineage)
     files = {}
     for name, frame in (("events", events), ("sessions", sessions), ("entrants", entrants),
-                        ("drivers", driver_table), ("teams", team_table), ("circuits", circuit_table)):
+                        ("drivers", driver_table), ("teams", team_table), ("circuits", circuit_table),
+                        ("qualifying_history", history)):
         files[name] = write_table(frame, out / f"{name}.parquet", {})
     gaps = unresolved(entrants)
     manifest = {
@@ -272,6 +324,8 @@ def build(root):
             "unresolved": gaps,
         },
         "lineages": int(team_table.lineage_id.nunique()),
+        "qualifying_history": {"rows": len(history),
+                               "events_per_season": history.groupby("season").event_key.nunique().rename(str).to_dict()},
         "note": "Unresolved entrants keep empty IDs.",
     }
     atomic_json(out / "manifest.json", manifest)
