@@ -93,7 +93,8 @@ def model_registry():
             "pace3wh": lambda: _pace_model(3, weekend=True, history=True),
             "pace3wah": lambda: _pace_model(3, weekend=True, affinity=True, history=True),
             "pace3whn": lambda: _pace_model(3, weekend=True, history="noise"),
-            "pace3whs": lambda: _pace_model(3, weekend=True, history="state")}
+            "pace3whs": lambda: _pace_model(3, weekend=True, history="state"),
+            "pace3wahs": lambda: _pace_model(3, weekend=True, affinity=True, history="state")}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):

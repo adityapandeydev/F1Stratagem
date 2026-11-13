@@ -438,3 +438,17 @@ def test_state_only_history_fits_only_what_the_counted_sessions_identify(tmp_pat
         # history crosses a season start and shows every car and driver first; counted 2021 data does neither
         for name in ("car_winter", "driver_winter", "car_prior", "driver_prior"):
             assert (name in fitted) == identified, (mode, name)
+
+
+def test_state_only_history_identifies_the_affinity_from_the_first_counted_season(tmp_path):
+    write_circuit_archive(tmp_path)
+    write_history(tmp_path)                                              # 2017 at circuits A and B
+    view = Archive(tmp_path).view(pd.Timestamp("2022-01-01", tz=UTC))   # counted data: 2021 at A and B
+    fitted = {}
+    for mode in (False, "state"):
+        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True, history=mode)
+        model.fit_hyper(view, model.sessions(view), Hyper(**GOLDEN_SETTINGS))
+        fitted[mode] = set(model.last_fit["fitted"])
+    assert "affinity_prior" not in fitted[False]         # one season, every circuit seen once
+    assert {"affinity_prior", "affinity_drift"} <= fitted["state"]
+    assert "affinity_winter" not in fitted["state"]      # counted data crosses no season start

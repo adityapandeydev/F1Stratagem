@@ -354,6 +354,11 @@ class PaceModel:
         regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
         # affinity needs repeat visits: with a single season of data every circuit was seen once
         affinity = self.affinity and len(seasons) > 1
+        if self.affinity and self.history == "state":
+            # with history in the state, a counted session at a circuit history visited is a
+            # repeat visit, so the affinity is identified from the first counted season
+            visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
+            affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
