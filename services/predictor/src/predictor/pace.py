@@ -338,25 +338,35 @@ class PaceModel:
         types = [t for t in self.session_types if t in set(sessions.session_type)]
         for session in sessions.itertuples():
             self.observations(view, session)
-        # A setting is fitted only if the counted sessions identify it. Uncounted history
-        # (state mode) cannot: it adds seasons, regulation changes and the first sight of
-        # every lineage, but nothing in the objective depends on them directly.
+        # A setting is fitted only if the counted sessions identify it well. Uncounted
+        # history (state mode) still shapes the state entering the counted sessions, so
+        # terms acting inside it (winter terms at the 2017-2018 crossing, the regulation
+        # multiplier at 2009-2017 changes, the car prior at a lineage's first sight in
+        # 2006) do move the counted objective, but weakly: fitted, they ran to their
+        # bounds (winter terms from the single crossing too). As a regularisation choice,
+        # each is held at its starting value until the counted sessions themselves
+        # identify it, as for a model without history: winter terms once they cross a
+        # season start, the multiplier once they cross a regulation change (so the 2023
+        # fit sets it, and with it the history's changes and the affinity winter), the
+        # priors once a car or driver first appears in them.
         history = sessions.session_id.str.startswith(HISTORY_PREFIX)
-        counted = sessions[~history] if self.history == "state" else sessions
+        state = self.history == "state"
+        counted = sessions[~history] if state else sessions
         seasons = sorted(set(counted.scheduled_start_utc.dt.year))
-        if self.history == "state":
+        crossed = seasons[1:]                          # season starts inside the counted sessions
+        if state:
             old_cars, old_drivers = self._entrants(view, sessions[history])
             cars, drivers = self._entrants(view, counted)
             new_cars, new_drivers = bool(cars - old_cars), bool(drivers - old_drivers)
         else:
             new_cars = new_drivers = True
-        winter = self.winter and len(seasons) > 1
-        regulation = winter and any(s in REGULATION_CHANGES for s in seasons[1:])
+        winter = self.winter and bool(crossed)
+        regulation = winter and any(s in REGULATION_CHANGES for s in crossed)
         # affinity needs repeat visits: with a single season of data every circuit was seen once
         affinity = self.affinity and len(seasons) > 1
-        if self.affinity and self.history == "state":
-            # with history in the state, a counted session at a circuit history visited is a
-            # repeat visit, so the affinity is identified from the first counted season
+        if self.affinity and state and not affinity:
+            # with history in the state, a counted session at a circuit history visited is
+            # also a repeat visit, so the affinity can be identified from the first counted season
             visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
             affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers)
@@ -428,7 +438,8 @@ class PaceModel:
         sessions = self.sessions(earlier)
         start = self.hyper or self._default_start()
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
-        if (sessions.session_type == "Q").sum() < 5:
+        counted = sessions[~sessions.session_id.str.startswith(HISTORY_PREFIX)] if self.history == "state" else sessions
+        if (counted.session_type == "Q").sum() < 5:
             self.hyper = start
         elif self.shared_from_qualifying:
             qualifying = PaceModel(QUALIFYING_ONLY)

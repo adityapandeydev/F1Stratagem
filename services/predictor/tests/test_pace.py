@@ -429,26 +429,39 @@ def test_history_modes_read_history_as_qualifying_without_an_offset(tmp_path, mo
 
 def test_state_only_history_fits_only_what_the_counted_sessions_identify(tmp_path):
     write_circuit_archive(tmp_path)
-    write_history(tmp_path)
-    view = Archive(tmp_path).view(pd.Timestamp("2022-01-01", tz=UTC))   # counted data: 2021 only
-    for mode, identified in (("shared", True), ("state", False)):
-        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, history=mode)
-        model.fit_hyper(view, model.sessions(view), Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
-        fitted = set(model.last_fit["fitted"])
-        # history crosses a season start and shows every car and driver first; counted 2021 data does neither
-        for name in ("car_winter", "driver_winter", "car_prior", "driver_prior"):
-            assert (name in fitted) == identified, (mode, name)
-
-
-def test_state_only_history_identifies_the_affinity_from_the_first_counted_season(tmp_path):
-    write_circuit_archive(tmp_path)
     write_history(tmp_path)                                              # 2017 at circuits A and B
     view = Archive(tmp_path).view(pd.Timestamp("2022-01-01", tz=UTC))   # counted data: 2021 at A and B
     fitted = {}
-    for mode in (False, "state"):
+    for mode in (False, "shared", "state"):
         model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True, history=mode)
         model.fit_hyper(view, model.sessions(view), Hyper(**GOLDEN_SETTINGS))
         fitted[mode] = set(model.last_fit["fitted"])
-    assert "affinity_prior" not in fitted[False]         # one season, every circuit seen once
+    # without history: one season, no season start crossed, every circuit seen once
+    assert not fitted[False] & {"car_winter", "driver_winter", "affinity_prior"}
+    # shared history is counted: it identifies everything, its own first sights included
+    assert {"car_winter", "driver_winter", "car_prior", "driver_prior", "affinity_prior"} <= fitted["shared"]
+    # state-only history: the 2021 sessions revisit history's circuits, so the affinity is
+    # fitted; they cross no season start and show no new car or driver, so winter terms and
+    # priors keep their starting values (regularisation: from history alone they are weak)
     assert {"affinity_prior", "affinity_drift"} <= fitted["state"]
-    assert "affinity_winter" not in fitted["state"]      # counted data crosses no season start
+    assert not fitted["state"] & {"car_winter", "driver_winter", "affinity_winter", "car_prior", "driver_prior",
+                                  "regulation_multiplier"}
+
+
+def write_history_at(root, circuits):
+    rows = []
+    for i, circuit in enumerate(circuits):
+        for d, c in LINEUP:
+            rows.append({"event_key": f"2017-{i + 1:02d}", "season": 2017, "circuit_id": circuit, "driver_id": d,
+                         "lineage_id": c, "q1_seconds": 90 * (1 + (CARS[c] + DRIVERS[d]) / 100), "q2_seconds": np.nan,
+                         "q3_seconds": np.nan, "start_utc": pd.Timestamp(f"2017-0{i + 4}-01 06:00", tz=UTC)})
+    pd.DataFrame(rows).to_parquet(root / "reference" / "qualifying_history.parquet")
+
+
+def test_state_only_history_keeps_affinity_identified_by_modern_repeat_visits(tmp_path):
+    write_circuit_archive(tmp_path)                    # modern: A (2021), B (2021), A (2022)
+    write_history_at(tmp_path, ["C", "D"])             # history at other circuits only
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, affinity=True, history="state")
+    model.fit_hyper(view, model.sessions(view), Hyper(**GOLDEN_SETTINGS))
+    assert "affinity_prior" in model.last_fit["fitted"]
