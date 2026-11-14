@@ -878,3 +878,18 @@ def test_skills_are_off_until_a_layout_is_revisited(tmp_path, monkeypatch):
         hyper = model.fit_hyper(view, model.sessions(view), model._default_start())
         assert ("skill_prior" in model.last_fit["fitted"]) == revisit
         assert (hyper.skill_prior > 0) == revisit
+
+
+def test_a_lock_left_by_a_dead_process_is_taken_over(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from predictor import fitcache
+    finished = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+    dead = int(finished.stdout.strip())
+    assert fitcache.process_alive(os.getpid()) and not fitcache.process_alive(dead)
+    path = tmp_path / "fits" / "m" / "2022-x.json"
+    path.parent.mkdir(parents=True)
+    path.with_suffix(".lock").write_text(f"{dead}-0")
+    entry, cached = fitcache.FitCache(tmp_path / "fits").get_or_fit(path, lambda: {"hyper": 1})
+    assert entry == {"hyper": 1} and not cached and path.exists() and not path.with_suffix(".lock").exists()

@@ -75,6 +75,39 @@ def data_fingerprint(root, season):
     return _sha(json.dumps(parts).encode())
 
 
+def process_alive(pid):
+    """Whether a process with this id is running (a lock's owner)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259   # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lock_owner_gone(lock):
+    """A lock whose owner (the pid written in it) is no longer running."""
+    try:
+        pid = int(lock.read_text().split("-")[0])
+    except (OSError, ValueError):
+        return False                  # unreadable or being written: not provably stale
+    return not process_alive(pid)
+
+
 def hyper_dict(hyper):
     return None if hyper is None else asdict(hyper)
 
@@ -154,8 +187,8 @@ class FitCache:
             if entry is not None:
                 return entry, True
             try:
-                if time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
-                    lock.unlink()
+                if lock_owner_gone(lock) or time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
+                    lock.unlink()             # left by a process that was killed mid-fit
                     continue
             except FileNotFoundError:
                 continue                                  # released just now: try again
