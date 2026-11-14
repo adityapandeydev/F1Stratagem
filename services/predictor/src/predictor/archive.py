@@ -112,6 +112,15 @@ class ArchiveView:
         self._check(session_id)
         return self.archive._table(session_id, "results").copy()
 
+    def telemetry(self, session_id, driver_number, kind="car_data"):
+        """One driver's raw telemetry of a session: kind "car_data" (speed, throttle,
+        brake, gear, DRS) or "pos_data" (X, Y, Z); None if the archive has none."""
+        self._check(session_id)
+        if kind not in ("car_data", "pos_data"):
+            raise ValueError(kind)
+        path = self.archive.root / "sessions" / session_id[:4] / session_id / "source" / kind / f"driver-{driver_number}.parquet"
+        return pd.read_parquet(path) if path.exists() else None
+
     def entrants(self, session_id):
         self._check(session_id)
         return self.archive.entrants[self.archive.entrants.session_id == session_id].copy()
