@@ -55,3 +55,15 @@ def test_block_bootstrap_is_wider_for_correlated_differences_and_margin_is_repor
     result = evaluation.compare(pd.DataFrame(rows), "a").iloc[0]
     assert result.block_90_high - result.block_90_low > result.interval_90_high - result.interval_90_low
     assert result.within_margin == (result.block_90_high < evaluation.DEGRADATION_MARGIN)
+
+
+def test_a_repeated_position_is_repaired_without_misaligned_rows():
+    """Rows out of position order with a repeated position: the repair re-ranks by the
+    published position, then the best time, aligned row by row."""
+    import pandas as pd
+    from predictor.targets import classify
+    results = pd.DataFrame({"DriverNumber": ["1", "2", "3", "4"], "Position": [3.0, 1.0, 2.0, 2.0],
+                            "Status": "Finished", "ClassifiedPosition": ["3", "1", "2", "2"],
+                            "Q1": pd.to_timedelta([92.0, 90.0, 91.2, 91.0], unit="s")})
+    frame = classify(results, 2024, "Q").set_index("driver_number")
+    assert frame.position.to_dict() == {"1": 4, "2": 1, "3": 3, "4": 2}

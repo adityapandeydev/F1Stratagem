@@ -93,7 +93,7 @@ def classify(results, season, session_type):
         keys = pd.concat([frame.position, tiebreak], axis=1)
         order = keys.sort_values(list(keys.columns), na_position="last").index
         first = int(frame.position.min())
-        repaired = pd.Series(range(first, first + len(frame)), index=order)
+        repaired = pd.Series(range(first, first + len(frame)), index=order).reindex(frame.index)
         frame["position_repaired"] = repaired != frame.position
         frame["position"] = repaired
     frame["position"] = frame.position.astype(int)
