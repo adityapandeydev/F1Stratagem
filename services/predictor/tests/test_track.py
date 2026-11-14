@@ -152,9 +152,12 @@ def test_layout_profile_is_the_median_of_sessions():
 
 
 def test_every_event_from_2018_to_2024_has_one_layout():
-    archive = Archive()
-    if not (archive.root / "reference" / "events.parquet").exists():
-        pytest.skip("no archive")
+    """Integration test: needs the local data archive; skipped without it."""
+    from f1data.paths import default_data_root
+    root = default_data_root()
+    if not all((root / "reference" / f"{name}.parquet").exists() for name in ("events", "sessions", "entrants")):
+        pytest.skip("no local archive")
+    archive = Archive(root)
     events = archive.events[(archive.events.season >= 2018) & (archive.events.season <= 2024) & ~archive.events.is_testing]
     table = track.layouts()
     missing = [e.event_key for e in events.itertuples() if track.layout_of(e.circuit_id, e.season, e.event_key, table) is None]
@@ -217,3 +220,14 @@ def test_band_times_split_the_lap_and_a_lap_matches_itself():
     assert all(times[b] == again[b] for b in track.BANDS)
     slower = traces[0].assign(time=traces[0].time * 1.01)            # 1% slower everywhere
     assert all(track.band_times(slower, reference, table)[b] > times[b] for b in track.BANDS if times[b] > 0)
+
+
+def test_layout_lookup_without_the_archive():
+    """Portable: the layout table alone, no archive needed."""
+    table = track.layouts()
+    assert track.layout_of("bahrain", 2020, "2020-15", table) == "bahrain/grand_prix"
+    assert track.layout_of("bahrain", 2020, "2020-16", table) == "bahrain/outer"
+    assert track.layout_of("catalunya", 2021, "2021-04", table) == "catalunya/with_chicane_2021"
+    assert track.layout_of("catalunya", 2023, "2023-07", table) == "catalunya/no_chicane"
+    assert track.layout_of("nowhere", 2021, "2021-01", table) is None
+    assert (table.layout_from <= table.layout_to).all() and table.turns.gt(0).all()
