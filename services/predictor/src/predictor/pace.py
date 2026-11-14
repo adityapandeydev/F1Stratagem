@@ -113,6 +113,7 @@ class Hyper:
     car_winter: float = 0.0     # variances added at each season start (stage 3)
     driver_winter: float = 0.0
     regulation_multiplier: float = 1.0   # car winter variance multiplier at new regulations
+    estimate_scale: float = 0.0  # scales a race's pace estimation covariance into its noise; 0: not used
     weekend_prior: float = 0.0  # spread of a car's weekend effect; 0 disables it
     affinity_prior: float = 0.0  # spread of a car x circuit affinity; 0 disables it
     affinity_drift: float = 0.0  # affinity variance added per 14 days
@@ -125,12 +126,12 @@ class Hyper:
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
                "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior",
                "affinity_prior", "affinity_drift", "affinity_winter", "form_prior", "skill_prior", "skill_drift",
-               "season_skill_prior")
+               "season_skill_prior", "estimate_scale")
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
     def fitted(types, winter=False, regulation=False, weekend=False, affinity=False, new_cars=True, new_drivers=True,
-               form=False, skills=False, season_skills=False):
+               form=False, skills=False, season_skills=False, estimates=False):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations; the
@@ -143,7 +144,8 @@ class Hyper:
                 *(("weekend_prior",) if weekend else ()),
                 *(("affinity_prior", "affinity_drift", *(("affinity_winter",) if winter else ())) if affinity else ()),
                 *(("form_prior",) if form else ()),
-                *(("skill_prior", "skill_drift") if skills else ()), *(("season_skill_prior",) if season_skills else ()))
+                *(("skill_prior", "skill_drift") if skills else ()), *(("season_skill_prior",) if season_skills else ()),
+                *(("estimate_scale",) if estimates else ()))
 
     def vector(self, noise_types, scalars):
         return np.log([self.noise[t] for t in noise_types] + [getattr(self, name) for name in scalars])
@@ -266,10 +268,21 @@ def _pace_group(pace, entrants, slow_cutoff=None):
              pace.pace.to_numpy(dtype=float)[keep])]
 
 
-def race_observations(laps, entrants):
+def race_observations(laps, entrants, with_covariance=False):
     """One group from a race: each driver's corrected race pace (`laps.race_pace`:
-    tyres, tyre age and fuel taken out lap by lap); none for a wet race."""
-    return _pace_group(race_pace(laps), entrants)
+    tyres, tyre age and fuel taken out lap by lap); none for a wet race. With
+    `with_covariance`, also [the estimation covariance of the group's values]."""
+    pace = race_pace(laps)
+    groups = _pace_group(pace, entrants)
+    if not with_covariance:
+        return groups
+    if not groups:
+        return groups, []
+    ids = entrants.set_index("driver_number")
+    keep = [pd.notna(ids.lineage_id.get(n) if "lineage_id" in ids else None) and pd.notna(ids.driver_id.get(n))
+            for n in pace.driver_number]
+    covariance = np.asarray(pace.attrs["covariance"])[np.ix_(keep, keep)]
+    return groups, [covariance]
 
 
 def history_observations(rows):
@@ -292,7 +305,8 @@ class PaceModel:
 
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
-                 skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False):
+                 skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
+                 race_estimates=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -310,6 +324,10 @@ class PaceModel:
         # practice_push "own": push-pace observations are their own session types (FP1P..),
         # with their own noise and per-team offset, apart from sessions read as best laps
         self.practice_push, self.long_runs = practice_push, long_runs
+        # each race's pace estimation covariance enters its observation noise, scaled by a
+        # fitted estimate_scale (laps within a stint are correlated, so the raw errors are small)
+        self.race_estimates = race_estimates
+        self._covariances = {}
         if long_runs and "L" not in self.session_types:
             self.session_types = self.session_types + ("L",)
         if practice_push == "own":
@@ -384,8 +402,10 @@ class PaceModel:
             return self._observations[session.session_id]
         if session.session_type == "R":
             if session.session_id not in self._observations:
-                self._observations[session.session_id] = race_observations(
-                    view.laps(session.session_id), view.entrants(session.session_id))
+                groups, covariances = race_observations(view.laps(session.session_id),
+                                                        view.entrants(session.session_id), with_covariance=True)
+                self._observations[session.session_id] = groups
+                self._covariances[session.session_id] = covariances
             return self._observations[session.session_id]
         if session.session_id not in self._observations:
             laps = view.laps(session.session_id) if session.session_type not in SEGMENTED else None
@@ -488,8 +508,10 @@ class PaceModel:
                     recorder.update(cars, drivers, values, "Q", track=1)
                     recorder.update(cars, drivers, values, "Q")
                 continue
-            for cars, drivers, values in groups:
-                recorder.update(cars, drivers, values, session.session_type, counted=objective == "all")
+            covariances = self._covariances.get(session.session_id, []) if self.race_estimates else []
+            for index, (cars, drivers, values) in enumerate(groups):
+                recorder.update(cars, drivers, values, session.session_type, counted=objective == "all",
+                                covariance=covariances[index] if index < len(covariances) else None)
         return recorder
 
     def run(self, view, hyper, sessions):
@@ -554,7 +576,7 @@ class PaceModel:
             visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
             affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers,
-                                           form, skills, season_skills)
+                                           form, skills, season_skills, self.race_estimates and "R" in types)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
         default = self._default_start()
@@ -667,7 +689,8 @@ class PaceModel:
                      **({"affinity_prior": 0.2, "affinity_drift": 0.001, "affinity_winter": 0.02}
                         if self.affinity else {}), **({"form_prior": 0.1} if self.form else {}),
                      **({"skill_prior": 0.3, "skill_drift": 0.001} if self.skills else {}),
-                     **({"season_skill_prior": 0.2} if self.season_skills else {}))
+                     **({"season_skill_prior": 0.2} if self.season_skills else {}),
+                     **({"estimate_scale": 1.0} if self.race_estimates else {}))
 
     def fit(self, history, view_for):
         return self
@@ -679,7 +702,7 @@ class PaceModel:
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
-                "long_runs": self.long_runs,
+                "long_runs": self.long_runs, "race_estimates": self.race_estimates,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 

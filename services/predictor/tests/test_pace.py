@@ -953,3 +953,31 @@ def test_every_model_draws_the_same_random_numbers_for_an_example():
     assert seed_for(example) == seed_for(example)
     import inspect
     assert "seed = seed_for(example)" in inspect.getsource(PaceModel.predict)
+
+
+def test_a_groups_estimation_covariance_enters_its_noise():
+    """A group carrying the estimation covariance C of its values: the innovation
+    covariance gains scale x cov(v_i - v_0, v_k - v_0), checked against numpy."""
+    covariance = np.array([[0.04, 0.01, 0.0], [0.01, 0.09, 0.02], [0.0, 0.02, 0.16]])
+    hyper = Hyper(estimate_scale=1.7)
+    recorder = Recorder(("Q",))
+    recorder.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    recorder.update(["c", "c", "d"], ["a", "b", "e"], [0.0, 0.6, 1.1], covariance=covariance)
+    state = recorder.replay(hyper)
+    index = {key: i for i, key in enumerate(state.keys)}
+    prior = np.diag([hyper.car_prior ** 2 if kind == "car" else hyper.driver_prior ** 2 for kind, _ in state.keys])
+    rows = np.zeros((3, len(index)))
+    for i, (car, driver) in enumerate(zip(["c", "c", "d"], ["a", "b", "e"])):
+        rows[i, index[("car", car)]] = rows[i, index[("driver", driver)]] = 1
+    h = rows[1:] - rows[0]
+    difference = np.array([[-1, 1, 0], [-1, 0, 1]], dtype=float)
+    s = h @ prior @ h.T + hyper.noise["Q"] ** 2 * (np.eye(2) + 1) + 1.7 * difference @ covariance @ difference.T
+    innovation = np.array([0.6, 1.1])
+    gain = prior @ h.T @ np.linalg.inv(s)
+    assert np.allclose(state.mean, gain @ innovation, atol=1e-12)
+    assert state.objective == pytest.approx(-0.5 * innovation @ np.linalg.solve(s, innovation)
+                                            - 0.5 * np.log(np.linalg.det(s)) - np.log(2 * np.pi), rel=1e-12)
+    plain = Recorder(("Q",))
+    plain.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    plain.update(["c", "c", "d"], ["a", "b", "e"], [0.0, 0.6, 1.1], covariance=covariance)
+    assert plain.replay(Hyper()).objective == recorder.replay(Hyper(estimate_scale=0.0)).objective   # scale 0: unused

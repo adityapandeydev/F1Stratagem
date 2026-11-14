@@ -42,7 +42,8 @@ class Program:
     ops: np.ndarray            # (n, 5) int64
     floats: np.ndarray         # steps for ADVANCE and accruals
     ints: np.ndarray           # index lists for PARK, RESET and accrual records
-    group_rows: np.ndarray     # per group: first driver row, number of drivers, noise type index
+    group_rows: np.ndarray     # per group: first driver row, number of drivers, noise type index,
+                               # offset of its estimation covariance in `floats` (-1: none)
     row_starts: np.ndarray     # per driver row: start in `entries` (rows of a group are consecutive), plus the end
     entries: np.ndarray        # state indices of every design row
     weights: np.ndarray        # one per entry: how much of that state the pace reads (1 unless weighted)
@@ -97,7 +98,7 @@ def settings(hyper, noise_types):
     noise = [hyper.noise.get(t, 0.0) for t in noise_types]
     return (np.array(priors, dtype=np.float64), np.array(drifts, dtype=np.float64),
             np.array(winters, dtype=np.float64), np.array(multiplied, dtype=np.float64),
-            float(hyper.regulation_multiplier), np.array(noise, dtype=np.float64))
+            float(hyper.regulation_multiplier), np.array(noise, dtype=np.float64), float(hyper.estimate_scale))
 
 
 class _Track:
@@ -243,7 +244,7 @@ class Recorder:
             rows.append(row)
         return rows
 
-    def update(self, cars, drivers, values, session_type="Q", track=0, counted=True):
+    def update(self, cars, drivers, values, session_type="Q", track=0, counted=True, covariance=None):
         """Relative update: every driver against the first one in the group."""
         first_row = len(self.row_starts)
         for row in self.columns(cars, drivers, session_type, track):
@@ -253,7 +254,11 @@ class Recorder:
                 self.weights.append(float(weight))
         self.values += [float(v) for v in values]
         self._op(UPDATE, track, len(self.groups), int(counted), 0)
-        self.groups.append((first_row, len(cars), self.noise_types.index(session_type)))
+        offset = -1
+        if covariance is not None:          # estimation covariance of `values` (pace fitted from laps)
+            offset = len(self.floats)
+            self.floats += [float(v) for v in np.asarray(covariance, dtype=float).ravel()]
+        self.groups.append((first_row, len(cars), self.noise_types.index(session_type), offset))
 
     @property
     def keys(self):
@@ -264,7 +269,7 @@ class Recorder:
         if self._program is None:
             self._program = Program(
                 ops=np.array(self.ops, dtype=np.int64).reshape(-1, 5), floats=np.array(self.floats, dtype=np.float64),
-                ints=np.array(self.ints, dtype=np.int64), group_rows=np.array(self.groups, dtype=np.int64).reshape(-1, 3),
+                ints=np.array(self.ints, dtype=np.int64), group_rows=np.array(self.groups, dtype=np.int64).reshape(-1, 4),
                 row_starts=np.array(self.row_starts + [len(self.entries)], dtype=np.int64),
                 entries=np.array(self.entries, dtype=np.int64), weights=np.array(self.weights, dtype=np.float64),
                 values=np.array(self.values, dtype=np.float64),

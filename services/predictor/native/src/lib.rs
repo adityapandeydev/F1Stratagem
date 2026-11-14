@@ -30,13 +30,14 @@ pub struct Settings<'a> {
     pub multiplied: &'a [f64],
     pub regulation_multiplier: f64,
     pub noise: &'a [f64],
+    pub estimate_scale: f64, // multiplies a group's estimation covariance (laps fitted together)
 }
 
 pub struct Program<'a> {
     pub ops: &'a [i64], // rows of 5: code, track, a, b, c
     pub floats: &'a [f64],
     pub ints: &'a [i64],
-    pub group_rows: &'a [i64], // rows of 3
+    pub group_rows: &'a [i64], // rows of 4: first row, drivers, noise type, covariance offset in floats or -1
     pub row_starts: &'a [i64],
     pub entries: &'a [i64],
     pub weights: &'a [f64], // one per entry: how much of that state the driver's pace reads
@@ -259,8 +260,9 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                 }
             }
             UPDATE => {
-                let g = &p.group_rows[3 * a as usize..3 * a as usize + 3];
+                let g = &p.group_rows[4 * a as usize..4 * a as usize + 4];
                 let (first, drivers, noise_type) = (g[0] as usize, g[1] as usize, g[2] as usize);
+                let estimate = g[3];
                 let m = drivers - 1;
                 let (n, cap) = (st.n, st.cap);
                 let row = |r: usize| -> std::iter::Zip<std::slice::Iter<'_, i64>, std::slice::Iter<'_, f64>> {
@@ -304,6 +306,18 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                     for k in 0..m {
                         let part: f64 = row(k + 1).map(|(&j, &w)| w * hp_row[j as usize]).sum();
                         sm[i * m + k] = part - base_part + variance * (if i == k { 2.0 } else { 1.0 });
+                    }
+                }
+                if estimate >= 0 && s.estimate_scale > 0.0 {
+                    // estimation covariance C of the group's values (drivers fitted together):
+                    // cov(v_{i+1} - v_0, v_{k+1} - v_0) = C[i+1,k+1] - C[i+1,0] - C[0,k+1] + C[0,0]
+                    let d = drivers;
+                    let c = &p.floats[estimate as usize..estimate as usize + d * d];
+                    for i in 0..m {
+                        for k in 0..m {
+                            sm[i * m + k] += s.estimate_scale
+                                * (c[(i + 1) * d + k + 1] - c[(i + 1) * d] - c[k + 1] + c[0]);
+                        }
                     }
                 }
                 for i in 0..m {
@@ -386,6 +400,7 @@ fn replay(
     multiplied: &PyReadonlyArray1<f64>,
     regulation_multiplier: f64,
     noise: &PyReadonlyArray1<f64>,
+    estimate_scale: f64,
 ) -> PyResult<([f64; TRACKS], State)> {
     let program = Program {
         ops: ops.as_slice()?,
@@ -405,6 +420,7 @@ fn replay(
         multiplied: multiplied.as_slice()?,
         regulation_multiplier,
         noise: noise.as_slice()?,
+        estimate_scale,
     };
     py.allow_threads(|| run(&program, &settings)).map_err(PyErr::from)
 }
@@ -429,9 +445,10 @@ fn log_likelihood(
     multiplied: PyReadonlyArray1<f64>,
     regulation_multiplier: f64,
     noise: PyReadonlyArray1<f64>,
+    estimate_scale: f64,
 ) -> PyResult<f64> {
     let (likelihoods, _) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &weights, &values, slots,
-                                  &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise)?;
+                                  &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise, estimate_scale)?;
     Ok(likelihoods.iter().sum())
 }
 
@@ -455,9 +472,10 @@ fn filter_state<'py>(
     multiplied: PyReadonlyArray1<f64>,
     regulation_multiplier: f64,
     noise: PyReadonlyArray1<f64>,
+    estimate_scale: f64,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>)> {
     let (likelihoods, state) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &weights, &values, slots,
-                                      &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise)?;
+                                      &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise, estimate_scale)?;
     let n = state.n;
     let cov = state.covariance().into_pyarray_bound(py).reshape([n, n])?;
     Ok((likelihoods.to_vec().into_pyarray_bound(py), state.mean.clone().into_pyarray_bound(py), cov))

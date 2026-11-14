@@ -117,7 +117,8 @@ def race_pace(laps):
                            "se": np.sqrt(np.diag(centre @ cov[:n, :n] @ centre.T)),
                            "laps": [int((keep & (frame.driver_number == d).to_numpy()).sum()) for d in drivers]})
     result.attrs = {"corrections": dict(zip(names[n:], beta[n:].tolist())), "noise": sigma,
-                    "laps_used": int(keep.sum()), "laps_clean": len(frame)}
+                    "laps_used": int(keep.sum()), "laps_clean": len(frame),
+                    "covariance": centre @ cov[:n, :n] @ centre.T}     # of the paces, drivers fitted together
     return result
 
 
