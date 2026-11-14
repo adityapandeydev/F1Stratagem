@@ -11,8 +11,13 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Data archive (FastF1, Jolpica, Open-Meteo, FIA documents), see [data-archive.md](data-archive.md) | Implemented |
 | Cutoff-gated archive access, targets, forecast object, baselines, walk-forward evaluation | Implemented |
 | Pace model for qualifying: car, driver, team × session offsets, weekend effect, winter reset | Implemented (v3w) |
-| Native Kalman filter (Rust, PyO3) for fits and forecasts | Implemented |
-| Car × circuit affinity | Tested, not adopted (v3wa); retest with 1996–2017 history planned |
+| Corrected race pace as evidence (tyres, tyre age, fuel lap by lap) | Implemented, current model at both cutoffs (v3wr) |
+| Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance | Implemented |
+| Fit cache (fits reused across cutoffs and runs) and quick screens | Implemented |
+| Track profiles from telemetry, circuit layout table | Implemented |
+| Practice run classification (push laps, long runs) | Implemented; push pace with its own noise (v3wrpn) is the last-cutoff challenger |
+| Race pace estimation uncertainty in the filter (v3wru) | In evaluation |
+| Qualifying history 1996–2017, driver season form, car × circuit affinity, driver corner skills | Tested, not adopted (see Training and evaluation) |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
 | Pace model for races, circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
@@ -624,6 +629,7 @@ lower is better):
 | v2: + practice, testing, team × session offsets | 0.112 | 0.102 |
 | v3w: + weekend effect, winter reset (current) | 0.104 | 0.099 |
 | v3wa: v3w + car × circuit affinity (not adopted) | 0.104 | 0.099 |
+| v3wr: v3w + corrected race pace (current, both cutoffs) | 0.1035 | 0.0984 |
 
 v3w's pole log loss is 1.61 at the last cutoff against 2.08 for championship
 order. Its 80% intervals contain the result 89–91% of the time against an
@@ -642,6 +648,63 @@ flowchart TB
     promo -->|"yes"| promote["Promote"]
     promo -->|"no"| stay["Current version stays"]
 ```
+
+### Results since the native filter (2026-11-13 to 2026-11-15)
+
+Promotion now follows **per-horizon champions**: each forecast moment (before the
+weekend, last cutoff) has its own model, replaced only by a candidate that is
+better beyond noise at that cutoff (block bootstrap over 4 consecutive events)
+and not worse beyond noise in rounds 15+. Promotions are confirmed on 2024, a
+validation season no model was selected on; 2025–2026 stay sealed for one final
+check of the frozen policy. Forecasts of different models share their random
+draws, and the forecast roster is the entry list known at the cutoff (the
+target's entrants stand in for it, with substitutions counted once visible).
+
+| Change | Result (development 2019–2023, RPS difference) | Decision |
+|---|---|---|
+| Qualifying history 1996–2017 read as qualifying (v3wh) | worse beyond noise at both cutoffs: the old era pulled the shared settings | not adopted |
+| History with its own noise (v3whn) | worse beyond noise | not adopted |
+| History in the state only (v3whs) | level overall; better in rounds 1–3, worse in rounds 15+ | not adopted |
+| History with a learned trust (v3whw) | level; worse in rounds 15+ before the weekend | not adopted |
+| Car × circuit affinity with history (v3wahs) | within noise, slightly worse | not adopted |
+| Driver season form (v3wf) | level; fitted spread 0.004–0.034 against a driver prior near 0.3 | not adopted |
+| Driver fast-corner skill from telemetry (v3wk) | level (the specialty is real and persists across seasons, but tracks differ too little for it to move qualifying order) | not adopted; kept for the race model |
+| Corrected race pace as evidence (v3wr) | −0.00031 before the weekend, −0.00052 at the last cutoff, both better beyond noise; better in rounds 15+; 2024: −0.00126 and −0.00075, both better beyond noise | **adopted at both cutoffs** |
+| Practice push pace, compound-corrected (v3wrp) | within noise | not adopted |
+| Practice long runs as evidence (v3wrl) | worse beyond noise at the last cutoff (team fuel loads vary by session) | not adopted; kept for the race model |
+| Push pace with its own noise (v3wrpn) | last cutoff −0.00204 better beyond noise; 2024: +0.00055 | not promoted; last-cutoff challenger |
+
+Lessons:
+
+- New information helps; re-reading the same qualifying times does not.
+  Corrected race pace was the first adoption: race noise fits at 0.37–0.40,
+  below practice noise (0.49–0.56).
+- History pulls shared settings towards the old era; kept out of the fit it
+  helps early rounds and hurts late ones. Settings are fitted by one-step
+  likelihood over all sessions, which favours early-season gains; tuning against
+  ranking is planned.
+- A promising development result can fail on a new season (v3wrpn): promotions
+  are confirmed on 2024 before they count.
+- Errors concentrate in wet and mixed qualifying (12 of 104 sessions): ranking
+  error about 50% higher and intervals too narrow (78% coverage against 87%
+  predicted), while dry sessions are slightly underconfident (91% against 87%).
+  A global spread change would therefore be wrong; condition-aware evidence is
+  planned.
+
+**Track profiles.** Corners are found on each session's reference lap (the
+median line of its clean dry laps) from the racing line's curvature and banded
+softly by minimum speed (slow under about 120 km/h, medium, fast over 200 km/h);
+a track profile is the share of lap time on straights and in each band, the
+full-throttle share and hairpins, chicanes and heavy braking zones per km. A
+share varies about six times more between layouts than between years of one
+layout. `circuit_layouts.csv` lists every layout from 2018 (official turn counts
+and sources), including layout changes.
+
+**Corrected race pace.** Each dry race's clean laps are fitted together: driver
+pace, compound offsets and wear per compound, with fuel burn a fixed constant
+(a race alone cannot separate fuel from wear). Drying races, drivers with fewer
+than 20 clean laps and unseparable fits are left out. Corrected teammate gaps
+correlate 0.48 with qualifying teammate gaps, against 0.39 for raw laps.
 
 ## Known constraints
 

@@ -16,7 +16,10 @@ Implemented: the evaluation foundation and the qualifying pace model.
 | `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinity and winter reset; settings fit; forecasts. |
 | `program.py` | The filter's bookkeeping: records a run (which states exist, when they are added, parked, reset, observed) as a flat program. |
 | `native/` | The filter's arithmetic in Rust (`predictor_native`, built with maturin): replays a program for given settings and returns the log-likelihood and final state. |
-| `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons. |
+| `laps.py` | Lap-level corrections: corrected race pace (tyres, tyre age, fuel) with its estimation covariance; practice push laps and long runs. |
+| `track.py` | Corners and track profiles from telemetry; the circuit layout table (`circuit_layouts.csv`). |
+| `fitcache.py` | Fitted settings saved per model and season under a key covering model, start, code and data; reused across cutoffs and runs. |
+| `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons (event and block bootstrap), results by stage of the season, quick screens. |
 
 Models (`predictor evaluate --models ...`):
 
@@ -25,7 +28,10 @@ Models (`predictor evaluate --models ...`):
 | `uniform`, `championship`, `persistence`, `practice`, `qualifying` | Baselines |
 | `pace` | v1: qualifying evidence only |
 | `pace2` | v2: + practice, sprint qualifying, testing, team × session offsets |
-| `pace3w` | v3w: + weekend effect and winter reset (current) |
+| `pace3w` | v3w: + weekend effect and winter reset |
+| `pace3wr` | v3wr: v3w + corrected race pace (current at both cutoffs) |
+| `pace3wrpn` | v3wr + practice push pace with its own noise (last-cutoff challenger) |
+| `pace3wru` | v3wr + race pace estimation covariance (in evaluation) |
 | `pace3wa` | v3wa: v3w + car × circuit affinity (tested, not adopted) |
 | `pace3`, `pace2q`, `pace3q`, `pace2w`, `pace2s` | Development variants kept for comparison |
 
