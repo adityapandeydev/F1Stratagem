@@ -182,7 +182,9 @@ class RankBaseline:
         usable = [(e, self.ranks(view_for(e), e)) for e in history]
         usable = [(e, r) for e, r in usable if r is not None]
         if self.ranker != "uniform" and usable:
-            scores = [sum(log_likelihood(-beta * (r - 1), e.positions) for e, r in usable) for beta in BETA_GRID]
+            # excluded drivers (withdrawn, not classified) take no part in the ranking likelihood
+            scores = [sum(log_likelihood(-beta * (r[~e.excluded] - 1), e.positions[~e.excluded]) for e, r in usable)
+                      for beta in BETA_GRID]
             self.beta = float(BETA_GRID[int(np.argmax(scores))])
         self.retirements.fit(history)
         return self

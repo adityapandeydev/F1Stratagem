@@ -40,16 +40,17 @@ def score(forecast, example):
     actual = example.positions[keep]
     p = forecast.position_probs[keep]
     n = forecast.position_probs.shape[1]
-    winner = int(np.flatnonzero(example.positions == 1)[0])
+    winners = np.flatnonzero((example.positions == 1) & ~example.excluded)
+    winner = int(winners[0]) if len(winners) else None     # None: the winner was not forecast (late substitute)
     cdf = np.cumsum(p, axis=1)
-    observed = (np.arange(1, n + 1)[None, :] >= actual[:, None]).astype(float)
+    observed = (np.arange(1, n + 1)[None, :] >= np.minimum(actual, n)[:, None]).astype(float)
     lower, upper = forecast.interval()
     lower, upper = lower[keep], upper[keep]
     inside = (np.arange(1, n + 1)[None, :] >= lower[:, None]) & (np.arange(1, n + 1)[None, :] <= upper[:, None])
     expected = forecast.expected_position[keep]
     band_rank = example.band_rank[keep]
     row = {
-        "winner_log_loss": -np.log(max(forecast.position_probs[winner, 0], EPS)),
+        "winner_log_loss": -np.log(max(forecast.position_probs[winner, 0], EPS)) if winner is not None else np.nan,
         "rps": float(np.mean(np.sum((cdf - observed) ** 2, axis=1) / (n - 1))),
         "brier_top3": float(np.mean((forecast.top(3)[keep] - (actual <= 3)) ** 2)),
         "brier_top10": float(np.mean((forecast.top(10)[keep] - (actual <= 10)) ** 2)),
@@ -151,39 +152,63 @@ def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
 
 def _roster_at_cutoff(archive, event_key, cutoff_time, target):
     """The drivers a forecast is made for, as known at the cutoff, aligned with their
-    actual results for scoring.
+    actual results.
 
-    Once a session of the event has run, the roster is its entrants: a driver who
-    then withdraws stays in the forecast and is excluded from scoring, and a late
-    substitute nobody could name at the cutoff is not forecast. Before any session of
-    the event (pre-weekend cutoffs) the published entry list is the roster; the
-    archive has no entry lists, so the target's own entrants stand in for it (an
-    archive proxy: the entry list names the race drivers before the weekend). Actual
-    positions are re-ranked among the forecast drivers who were classified."""
+    The roster is the event's entry list; the archive has none, so the target's own
+    entrants stand in for it (an archive proxy: the published entry list names the
+    drivers before the weekend). A substitution counts only once it is visible at the
+    cutoff: when a car's entered driver has not run any session of the event yet and
+    the car's regular driver (who drove it at the previous event) ran its latest
+    session instead, the regular driver is the one known at the cutoff (Stroll at the
+    2020 Eifel GP, before Hulkenberg was called in). Practice-only stand-ins never
+    replace the entered driver, and a driver who missed practice stays entered.
+
+    Actual classification positions are kept as they are (absolute positions are what
+    a forecast is scored against); a roster driver without a classification is
+    excluded from scoring."""
+    target = target.assign(driver_number=target.driver_number.astype(str))
     sessions = archive.sessions
     run = sessions[(sessions.event_key == event_key) & (sessions.available_at_utc <= cutoff_time)]
-    if run.empty:
+    if run.empty or "lineage_id" not in target:
         return target
+    entrants = archive.entrants
+    ran = set(entrants[entrants.session_id.isin(run.session_id)].driver_id.dropna())
     latest = run.sort_values("available_at_utc").iloc[-1]
-    entrants = archive.entrants[archive.entrants.session_id == latest.session_id]
-    if entrants.empty:
-        return target
-    known = set(entrants.driver_number.astype(str))
-    target = target.assign(driver_number=target.driver_number.astype(str))
-    kept = target[target.driver_number.isin(known)]
-    missing = entrants[~entrants.driver_number.astype(str).isin(set(target.driver_number))]
-    withdrawn = pd.DataFrame({
-        "driver_number": missing.driver_number.astype(str), "driver_id": missing.driver_id,
-        "team_id": missing.team_id if "team_id" in missing else None,
-        "lineage_id": missing.lineage_id if "lineage_id" in missing else None,
-        "position": np.nan, "outcome": None, "excluded": True, "session_id": target.session_id.iloc[0]})
-    roster = pd.concat([kept, withdrawn[[c for c in kept.columns if c in withdrawn]]], ignore_index=True)
+    in_latest = entrants[entrants.session_id == latest.session_id]
+    previous = _previous_event_drivers(archive, event_key)
+    rows = []
+    for row in target.itertuples(index=False):
+        replacement = None
+        if row.driver_id not in ran and pd.notna(row.lineage_id):
+            stand = in_latest[(in_latest.lineage_id == row.lineage_id) & ~in_latest.driver_id.isin(set(target.driver_id))]
+            regular = stand[stand.driver_id.isin(previous.get(row.lineage_id, set()))]
+            if not regular.empty:
+                replacement = regular.iloc[0]
+        if replacement is None:
+            rows.append(row._asdict())
+        else:
+            rows.append({**row._asdict(), "driver_number": str(replacement.driver_number),
+                         "driver_id": replacement.driver_id, "position": np.nan, "outcome": None, "excluded": True})
+    roster = pd.DataFrame(rows)
     roster = roster.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
-    classified = roster.position.notna() & ~roster.excluded.astype(bool)
-    ranks = roster.position.where(classified).rank(method="first")
-    roster["position"] = ranks.fillna(0).astype(int)        # 0: not scored (excluded)
-    roster["excluded"] = ~classified
+    roster["excluded"] = roster.excluded.astype(bool) | roster.position.isna()
+    roster["position"] = roster.position.fillna(0).astype(int)        # 0: not scored (excluded)
     return roster
+
+
+def _previous_event_drivers(archive, event_key):
+    """lineage -> drivers who drove it at the previous championship event of the season."""
+    events = archive.events[~archive.events.is_testing].sort_values(["season", "round"]).reset_index(drop=True)
+    keys = list(events.event_key)
+    if event_key not in keys or keys.index(event_key) == 0:
+        return {}
+    here = keys.index(event_key)
+    if events.season.iloc[here - 1] != events.season.iloc[here]:
+        return {}                                 # a season's first event: no previous regulars
+    before = keys[here - 1]
+    sessions = archive.sessions[archive.sessions.event_key == before].session_id
+    entrants = archive.entrants[archive.entrants.session_id.isin(sessions)]
+    return entrants.groupby("lineage_id").driver_id.apply(lambda d: set(d.dropna())).to_dict()
 
 
 def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, screen_base=None):
