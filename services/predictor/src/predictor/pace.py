@@ -102,7 +102,8 @@ OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
 @dataclass
 class Hyper:
     noise: dict = field(default_factory=lambda: {"Q": 0.3, "SQ": 0.35, "FP1": 0.8, "FP2": 0.7, "FP3": 0.6,
-                                                 "T": 1.2, "H": 0.3, "R": 0.5, "L": 0.5})
+                                                 "T": 1.2, "H": 0.3, "R": 0.5, "L": 0.5,
+                                                 "FP1P": 0.5, "FP2P": 0.5, "FP3P": 0.5})
     car_drift: float = 0.05     # variances added per 14 days
     driver_drift: float = 0.01
     offset_drift: float = 0.005
@@ -244,6 +245,7 @@ def session_observations(session_type, results, laps, entrants):
 
 PRACTICE = ("FP1", "FP2", "FP3")
 LONG_RUN_PREFIX = "long:"
+PUSH_TYPES = ("FP1P", "FP2P", "FP3P")
 
 
 def _pace_group(pace, entrants, slow_cutoff=None):
@@ -305,10 +307,14 @@ class PaceModel:
         self.driver_offsets = tuple(driver_offsets)
         # practice read as low-fuel push pace (compound-corrected) instead of each best lap,
         # and practice long runs as their own evidence (session type L)
+        # practice_push "own": push-pace observations are their own session types (FP1P..),
+        # with their own noise and per-team offset, apart from sessions read as best laps
         self.practice_push, self.long_runs = practice_push, long_runs
         if long_runs and "L" not in self.session_types:
             self.session_types = self.session_types + ("L",)
-        self._profiles, self._shares = {}, {}
+        if practice_push == "own":
+            self.session_types = self.session_types + tuple(f"{t}P" for t in PRACTICE if t in self.session_types)
+        self._profiles, self._shares, self._push = {}, {}, {}
         self._layout_index = self._event_start = self._layout_sessions = None
         self.history = history
         self._circuits = None
@@ -324,6 +330,12 @@ class PaceModel:
         sessions = view.sessions[view.sessions.session_type.isin(self.session_types)]
         if self.history:
             sessions = pd.concat([self._history_sessions(view), sessions], ignore_index=True)
+        if self.practice_push == "own":
+            sessions = sessions.copy()
+            practice = sessions.session_type.isin(PRACTICE)
+            sessions.loc[practice, "session_type"] = [
+                f"{row.session_type}P" if self._push_covers(view, row) else row.session_type
+                for row in sessions[practice].itertuples()]
         if self.long_runs:
             practice = sessions[sessions.session_type.isin(PRACTICE)]
             long = practice.assign(session_id=LONG_RUN_PREFIX + practice.session_id, session_type="L")
@@ -355,7 +367,10 @@ class PaceModel:
                 self._observations[session.session_id] = _pace_group(
                     long_run_pace(view.laps(practice)), view.entrants(practice), SLOW_CUTOFF)
             return self._observations[session.session_id]
-        if self.practice_push and session.session_type in PRACTICE:
+        if session.session_type in PUSH_TYPES:
+            self._push_covers(view, session)
+            return self._observations[session.session_id]
+        if self.practice_push is True and session.session_type in PRACTICE:
             if session.session_id not in self._observations:
                 laps = view.laps(session.session_id)
                 entrants = view.entrants(session.session_id)
@@ -375,6 +390,21 @@ class PaceModel:
             self._observations[session.session_id] = session_observations(
                 session.session_type, view.results(session.session_id), laps, view.entrants(session.session_id))
         return self._observations[session.session_id]
+
+    def _push_covers(self, view, session):
+        """Whether a practice session's push pace covers at least half the drivers of its
+        best-lap group; caches the push group as its observations when it does."""
+        if session.session_id not in self._push:
+            laps = view.laps(session.session_id)
+            entrants = view.entrants(session.session_id)
+            base = session.session_type[:-1] if session.session_type in PUSH_TYPES else session.session_type
+            raw = session_observations(base, view.results(session.session_id), laps, entrants)
+            push = _pace_group(push_pace(laps), entrants, SLOW_CUTOFF)
+            covered = bool(push and raw and len(push[0][0]) >= len(raw[0][0]) / 2)
+            self._push[session.session_id] = covered
+            if covered:
+                self._observations[session.session_id] = push
+        return self._push[session.session_id]
 
     def circuit(self, view, event):
         """Circuit ID of an event (reference data); None for testing or unknown."""

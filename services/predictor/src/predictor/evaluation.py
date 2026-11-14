@@ -80,7 +80,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
         + ("a" if affinity else "") + ("h" if history else "") \
         + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "") + ("k" if skills else "") + ("b" if season_skills else "") \
-        + ("r" if races else "") + ("d" if driver_race else "") + ("p" if push else "") \
+        + ("r" if races else "") + ("d" if driver_race else "") + ("p" if push else "") + ("n" if push == "own" else "") \
         + ("l" if long_runs else "")
     return PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
@@ -107,6 +107,7 @@ def model_registry():
             "pace3wr": lambda: _pace_model(3, weekend=True, races=True),
             "pace3wrd": lambda: _pace_model(3, weekend=True, races=True, driver_race=True),
             "pace3wrp": lambda: _pace_model(3, weekend=True, races=True, push=True),
+            "pace3wrpn": lambda: _pace_model(3, weekend=True, races=True, push="own"),
             "pace3wrl": lambda: _pace_model(3, weekend=True, races=True, long_runs=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
