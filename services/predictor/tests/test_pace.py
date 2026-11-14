@@ -518,7 +518,7 @@ def write_session_manifests(root, seasons):
     for season in seasons:
         for folder in (root / "sessions" / str(season)).glob("*"):
             (folder / "manifest.json").write_text(json.dumps(
-                {"files": {"normalized/results.parquet": {"sha256": "a"}, "source/car_data/x.parquet": {"sha256": "b"}}}))
+                {"files": {"normalized/results.parquet": {"sha256": "a"}, "source/weather.parquet": {"sha256": "b"}}}))
 
 
 @pytest.mark.parametrize("options", [dict(winter=True, weekend=True), dict(shared_from_qualifying=True),
@@ -584,8 +584,13 @@ def test_fit_cache_key_follows_model_start_and_data(tmp_path):
     assert key() == base                                    # a 2022 session cannot change a fit for 2022
     earlier = next((root / "sessions" / "2021").glob("*/manifest.json"))
     earlier.write_text(json.dumps({"files": {"normalized/results.parquet": {"sha256": "a"},
-                                             "source/car_data/x.parquet": {"sha256": "changed"}}}))
-    assert key() == base                                    # telemetry the fit does not read
+                                             "source/weather.parquet": {"sha256": "changed"}}}))
+    assert key() == base                                    # a file the fit does not read
+    earlier.write_text(json.dumps({"files": {"normalized/results.parquet": {"sha256": "a"},
+                                             "source/weather.parquet": {"sha256": "b"},
+                                             "source/car_data/driver-1.parquet": {"sha256": "c"}}}))
+    assert key() != base                                    # telemetry (track profiles)
+    base = key()
     earlier.write_text(json.dumps({"files": {"normalized/results.parquet": {"sha256": "changed"}}}))
     assert key() != base                                    # an earlier session the fit reads
 
@@ -799,3 +804,39 @@ def test_the_native_filter_rejects_mismatched_weights():
     program.weights = program.weights[:-1]
     with pytest.raises(ValueError, match="weights"):
         recorder.objective(Hyper())
+
+
+def test_skills_read_centred_shares_of_earlier_visits_only(tmp_path, monkeypatch):
+    """Each driver's pace reads skill states weighted by how the track differs from
+    the reference; shares are fixed per event and come from earlier visits only."""
+    from predictor import track
+    write_circuit_archive(tmp_path)
+    profiles = {"2021-01-2": {**dict.fromkeys(track.FEATURES, 0.0), "share_straight": 0.3, "share_slow": 0.4,
+                              "share_medium": 0.2, "share_fast": 0.1}}
+    monkeypatch.setattr(track, "session_profile", lambda view, session_id, count=5: profiles.get(session_id))
+    monkeypatch.setattr(track, "layout_of", lambda circuit, season, event_key, table=None: circuit and f"{circuit}/gp")
+    archive = Archive(tmp_path)
+    view = archive.view(pd.Timestamp("2023-01-01", tz=UTC))
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, skills=("fast",),
+                      season_skills=("straight", "slow", "medium", "fast"))
+    assert model.shares(view, "2021-01") == {f"share_{b}": 0.0 for b in track.BANDS}       # first visit to A
+    revisit = model.shares(view, "2022-01")                                               # A again, after 2021-01
+    assert revisit["share_slow"] == pytest.approx(0.4 - track.REFERENCE_SHARES["slow"])
+    assert sum(revisit.values()) == pytest.approx(0.0)
+    hyper = Hyper(**GOLDEN_SETTINGS | NO_AFFINITY, skill_prior=0.3, skill_drift=0.001, season_skill_prior=0.2)
+    recorder = model.record(view, model.sessions(view), True, False, skills=True, season_skills=True)
+    keys = recorder.keys
+    assert ("skill", ("a", "fast")) in keys and ("season_skill", ("a", "slow")) in keys
+    assert np.isfinite(recorder.objective(hyper))
+    # equal season skills in every band cancel: a season-wide level is not a skill
+    rows = Recorder.columns(recorder, ["fast"], ["a"], "Q")
+    weights = [w for entry in rows[0] if isinstance(entry, tuple) for _, w in [entry]]
+    assert sum(weights[1:]) == pytest.approx(0.0)
+
+
+def test_screens_need_the_base_skills():
+    base = PaceModel(ALL_SESSIONS, "pace:base", winter=True, skills=("fast",))
+    other = PaceModel(ALL_SESSIONS, "pace:other", winter=True, skills=("slow",))
+    with pytest.raises(ValueError, match="skills"):
+        other._check_extends(base)
+    PaceModel(ALL_SESSIONS, "pace:more", winter=True, skills=("fast", "slow"))._check_extends(base)

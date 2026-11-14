@@ -398,3 +398,14 @@ def session_band_times(view, session_id, count=5):
     rows = [{"driver_number": number, "lap_time": lap.LapTime.total_seconds(), **band_times(trace, reference, table)}
             for number, (lap, trace) in traces.items()]
     return pd.DataFrame(rows)
+
+
+# A typical track (round numbers, fixed: not estimated from data, so they cannot leak).
+REFERENCE_SHARES = {"straight": 0.40, "slow": 0.20, "medium": 0.20, "fast": 0.20}
+
+
+def centred_shares(layout_profile_):
+    """Band shares minus REFERENCE_SHARES ("share_<band>" keys); zeros without a profile."""
+    if layout_profile_ is None:
+        return {f"share_{band}": 0.0 for band in BANDS}
+    return {f"share_{band}": float(layout_profile_[f"share_{band}"]) - REFERENCE_SHARES[band] for band in BANDS}

@@ -119,8 +119,12 @@ class Recorder:
     update), then `replay(hyper)` for the state under any settings with the same
     weekend / affinity switches. `columns` adds the states a forecast reads."""
 
-    def __init__(self, noise_types, weekend=False, affinity=False, form=False):
+    def __init__(self, noise_types, weekend=False, affinity=False, form=False, skills=(), season_skills=()):
         self.weekend, self.affinity, self.form = weekend, affinity, form
+        # parts of the track (track.BANDS) with a driver skill, persistent or per season; an
+        # observation reads each weighted by its track's share (`shares`, set per session)
+        self.skills, self.season_skills = tuple(skills), tuple(season_skills)
+        self.shares = None
         self.noise_types = list(noise_types)
         self.tracks = [_Track()]
         self.slot_of = {}
@@ -169,6 +173,8 @@ class Recorder:
             self._op(ADVANCE, track, self._float(steps), ordinary, regulation)
             if self.form and ordinary + regulation:     # a new season: season form returns to its prior
                 self._reset("form", track)
+            if self.season_skills and ordinary + regulation:
+                self._reset("season_skill", track)
         t.time = time if t.time is None else max(t.time, time)
 
     def start_event(self, event, circuit=None):
@@ -223,6 +229,11 @@ class Recorder:
                 row.append(self.column(driver, "form", track))
             if self.affinity and self.circuit is not None:
                 row.append(self.column((car, self.circuit), "affinity", track))
+            if self.shares is not None and session_type != "H":
+                for band in self.skills:
+                    row.append((self.column((driver, band), "skill", track), self.shares[f"share_{band}"]))
+                for band in self.season_skills:
+                    row.append((self.column((driver, band), "season_skill", track), self.shares[f"share_{band}"]))
             rows.append(row)
         return rows
 
@@ -255,8 +266,9 @@ class Recorder:
         return self._program
 
     def _check(self, hyper):
-        if (hyper.weekend_prior > 0, hyper.affinity_prior > 0, hyper.form_prior > 0) != \
-                (self.weekend, self.affinity, self.form):
+        if (hyper.weekend_prior > 0, hyper.affinity_prior > 0, hyper.form_prior > 0, hyper.skill_prior > 0,
+                hyper.season_skill_prior > 0) != (self.weekend, self.affinity, self.form, bool(self.skills),
+                                                  bool(self.season_skills)):
             raise ValueError("settings switch a term the recorded program does not have")
 
     def objective(self, hyper):

@@ -72,15 +72,17 @@ def score(forecast, example):
     return row
 
 
-def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False, form=False):
+def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False, form=False,
+                skills=(), season_skills=()):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
         + ("a" if affinity else "") + ("h" if history else "") \
-        + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "")
+        + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "") + ("k" if skills else "") + ("b" if season_skills else "")
     return PaceModel(ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
-                     weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form)
+                     weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
+                     skills=skills, season_skills=season_skills)
 
 
 def model_registry():
@@ -97,7 +99,10 @@ def model_registry():
             "pace3wahs": lambda: _pace_model(3, weekend=True, affinity=True, history="state"),
             "pace3whw": lambda: _pace_model(3, weekend=True, history="weighted"),
             "pace3wf": lambda: _pace_model(3, weekend=True, form=True),
-            "pace3whsf": lambda: _pace_model(3, weekend=True, history="state", form=True)}
+            "pace3whsf": lambda: _pace_model(3, weekend=True, history="state", form=True),
+            "pace3wk": lambda: _pace_model(3, weekend=True, skills=("fast",)),
+            "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
+                                            season_skills=("straight", "slow", "medium", "fast"))}
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):

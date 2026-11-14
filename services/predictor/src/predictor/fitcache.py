@@ -34,6 +34,7 @@ from pathlib import Path
 
 CODE_MODULES = ("pace.py", "program.py", "rules.py", "archive.py", "fitcache.py", "track.py", "circuit_layouts.csv")
 REFERENCE_TABLES = ("events", "sessions", "entrants", "qualifying_history")
+READ_FILES = ("normalized/", "source/car_data/", "source/pos_data/")   # session files a fit can read
 LOCK_WAIT_SECONDS = 5.0
 STALE_LOCK_SECONDS = 24 * 3600
 WRITE_ATTEMPTS = 10
@@ -69,7 +70,7 @@ def data_fingerprint(root, season):
             for manifest in sorted(folder.glob("*/manifest.json")):
                 files = json.loads(manifest.read_text(encoding="utf-8")).get("files", {})
                 parts.append((manifest.parent.name, sorted((name, entry.get("sha256")) for name, entry in files.items()
-                                                           if name.startswith("normalized/"))))
+                                                           if name.startswith(READ_FILES))))
     return _sha(json.dumps(parts).encode())
 
 
