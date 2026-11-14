@@ -134,6 +134,7 @@ def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
         if cutoff is None:
             continue
         target = target.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
+        target = _roster_at_cutoff(archive, event_key, cutoff.time, target)
         example = Example(
             event_key=event_key, season=int(event_key[:4]), session_type=session_type, cutoff_label=cutoff_label,
             cutoff_time=cutoff.time, target_available_at=target_session.available_at_utc,
@@ -146,6 +147,43 @@ def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
         example.band_rank = dense_ranks(rank_championship(archive.view(cutoff), example))
         examples.append(example)
     return examples
+
+
+def _roster_at_cutoff(archive, event_key, cutoff_time, target):
+    """The drivers a forecast is made for, as known at the cutoff, aligned with their
+    actual results for scoring.
+
+    Once a session of the event has run, the roster is its entrants: a driver who
+    then withdraws stays in the forecast and is excluded from scoring, and a late
+    substitute nobody could name at the cutoff is not forecast. Before any session of
+    the event (pre-weekend cutoffs) the published entry list is the roster; the
+    archive has no entry lists, so the target's own entrants stand in for it (an
+    archive proxy: the entry list names the race drivers before the weekend). Actual
+    positions are re-ranked among the forecast drivers who were classified."""
+    sessions = archive.sessions
+    run = sessions[(sessions.event_key == event_key) & (sessions.available_at_utc <= cutoff_time)]
+    if run.empty:
+        return target
+    latest = run.sort_values("available_at_utc").iloc[-1]
+    entrants = archive.entrants[archive.entrants.session_id == latest.session_id]
+    if entrants.empty:
+        return target
+    known = set(entrants.driver_number.astype(str))
+    target = target.assign(driver_number=target.driver_number.astype(str))
+    kept = target[target.driver_number.isin(known)]
+    missing = entrants[~entrants.driver_number.astype(str).isin(set(target.driver_number))]
+    withdrawn = pd.DataFrame({
+        "driver_number": missing.driver_number.astype(str), "driver_id": missing.driver_id,
+        "team_id": missing.team_id if "team_id" in missing else None,
+        "lineage_id": missing.lineage_id if "lineage_id" in missing else None,
+        "position": np.nan, "outcome": None, "excluded": True, "session_id": target.session_id.iloc[0]})
+    roster = pd.concat([kept, withdrawn[[c for c in kept.columns if c in withdrawn]]], ignore_index=True)
+    roster = roster.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
+    classified = roster.position.notna() & ~roster.excluded.astype(bool)
+    ranks = roster.position.where(classified).rank(method="first")
+    roster["position"] = ranks.fillna(0).astype(int)        # 0: not scored (excluded)
+    roster["excluded"] = ~classified
+    return roster
 
 
 def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, screen_base=None):
@@ -207,15 +245,31 @@ def summarise(scores):
     return overall, by_season
 
 
+BLOCK_EVENTS = 4             # consecutive events resampled together (shared team form and model state)
+DEGRADATION_MARGIN = 3e-4    # RPS: a model is "not acceptably worse" if its 90% upper bound is below this
+
+
+def _block_means(diff, resamples, rng, block):
+    """Bootstrap means resampling blocks of `block` consecutive events (circular)."""
+    n = diff.size
+    starts = rng.integers(0, n, size=(resamples, -(-n // block)))
+    index = (starts[:, :, None] + np.arange(block)[None, None, :]) % n
+    return diff[index.reshape(resamples, -1)[:, :n]].mean(axis=1)
+
+
 def compare(scores, reference, metric="rps", lower_is_better=True, resamples=2000, seed=0):
     """Paired per-event difference of each model against `reference` on common events,
-    with a bootstrap 90% interval. A component is better beyond noise when the
-    whole interval is on the improving side of zero, and fails the "no worse" gate when
-    the whole interval is on the worsening side."""
+    in event order, with 90% intervals from an event bootstrap and from a block
+    bootstrap (BLOCK_EVENTS consecutive events: neighbouring races share team form and
+    model state, so single-event resampling overstates certainty).
+
+    Verdicts use the block interval: better beyond noise when it lies below zero,
+    worse beyond noise when it lies above zero, and within the degradation margin when
+    its upper end is below DEGRADATION_MARGIN ("not significantly worse" alone does not
+    show that a loss is small)."""
     common = common_events(scores)
-    table = common.pivot_table(index="event_key", columns="model", values=metric)
+    table = common.pivot_table(index="event_key", columns="model", values=metric).sort_index()
     base = f"baseline:{reference}" if f"baseline:{reference}" in table else reference
-    rng = np.random.default_rng(seed)
     rows = []
     for model in table.columns:
         if model == base:
@@ -223,11 +277,16 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
         diff = (table[model] - table[base]).dropna().to_numpy()
         if not lower_is_better:
             diff = -diff
-        samples = rng.choice(diff, size=(resamples, diff.size)).mean(axis=1)
-        low, high = np.quantile(samples, [0.05, 0.95])
+        rng = np.random.default_rng(seed)
+        events = rng.choice(diff, size=(resamples, diff.size)).mean(axis=1)
+        low, high = np.quantile(events, [0.05, 0.95])
+        blocks = _block_means(diff, resamples, np.random.default_rng(seed), min(BLOCK_EVENTS, diff.size))
+        block_low, block_high = np.quantile(blocks, [0.05, 0.95])
         rows.append({"model": model, "reference": base, "metric": metric, "events": diff.size,
                      "mean_difference": diff.mean(), "interval_90_low": low, "interval_90_high": high,
-                     "better_beyond_noise": bool(high < 0), "worse_beyond_noise": bool(low > 0),
+                     "block_90_low": block_low, "block_90_high": block_high,
+                     "better_beyond_noise": bool(block_high < 0), "worse_beyond_noise": bool(block_low > 0),
+                     "within_margin": bool(block_high < DEGRADATION_MARGIN),
                      "share_of_events_better": float(np.mean(diff < 0))})
     return pd.DataFrame(rows)
 

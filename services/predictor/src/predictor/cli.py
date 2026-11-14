@@ -49,14 +49,15 @@ def main(argv=None):
         print(overall.T)
         print()
         if not comparison.empty:
-            print(f"Paired RPS difference vs {args.reference} (negative = better), 90% bootstrap interval:")
+            print(f"Paired RPS difference vs {args.reference} (negative = better), 90% intervals (event and "
+                  f"block bootstrap; verdicts use the block interval; margin {evaluation.DEGRADATION_MARGIN}):")
             print(comparison.drop(columns=["reference", "metric"]).to_string(index=False))
         stages = evaluation.stage_comparison(scores, args.reference)
         if not stages.empty and "model" in stages:
             print()
             print(f"By stage of the season (rounds); a model must not be worse beyond noise in "
                   f"{evaluation.LATE_STAGE} at either cutoff:")
-            print(stages[["stage", "model", "events", "mean_difference", "interval_90_low", "interval_90_high",
+            print(stages[["stage", "model", "events", "mean_difference", "block_90_low", "block_90_high",
                           "better_beyond_noise", "worse_beyond_noise"]].to_string(index=False))
         print()
         print("RPS by season:")
