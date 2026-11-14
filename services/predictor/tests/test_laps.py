@@ -84,3 +84,41 @@ def test_a_race_that_cannot_tell_drivers_apart_gives_no_pace():
         {"HARD": "MEDIUM"})
     # driver 4 alone on hards: its pace and the hard offset are the same column
     assert L.race_pace(race).empty
+
+
+def synthetic_practice(seed=0):
+    """Each driver: an out lap, two push laps on fresh softs with a cool-down between,
+    then a 10-lap long run on mediums on race fuel; driver 4 pushes on mediums only."""
+    rng = np.random.default_rng(seed)
+    rows, start = [], 90.0
+    for driver, pace in PACE.items():
+        push_compound = "MEDIUM" if driver == "4" else "SOFT"
+        laps = [("out", "SOFT", 1, 1), ("push", push_compound, 2, 1), ("cool", push_compound, 3, 1),
+                ("push", push_compound, 4, 1)] + [("long", "MEDIUM", age, 2) for age in range(2, 12)]
+        for kind, compound, age, stint in laps:
+            base = 100 * np.log(start) + pace + OFFSET[compound]
+            log_time = {"out": base + 30, "cool": base + 25, "push": base,
+                        "long": base + 2.0 + WEAR["MEDIUM"] * age}[kind] + rng.normal(0, 0.03)
+            rows.append({"DriverNumber": driver, "Stint": float(stint), "Compound": compound, "TyreLife": float(age),
+                         "LapTime": pd.to_timedelta(np.exp(log_time / 100), unit="s"), "PitInTime": pd.NaT,
+                         "PitOutTime": pd.NaT, "TrackStatus": "1", "IsAccurate": True, "Deleted": False})
+    return pd.DataFrame(rows)
+
+
+def test_practice_laps_are_classified_and_paced():
+    frame = L.practice_laps(synthetic_practice())
+    assert set(frame.run.dropna()) == {"push", "long"}
+    assert (frame[frame.run == "long"].groupby("driver_number").size() == 10).all()
+    push = L.push_pace(synthetic_practice()).set_index("driver_number").pace
+    assert "4" not in push.index                # alone on mediums: not comparable, the soft pushers are compared
+    for driver in ("2", "3"):
+        assert push[driver] - push["1"] == pytest.approx(PACE[driver], abs=0.05)
+    both = synthetic_practice()
+    extra = both[(both.DriverNumber == "4") & (both.Stint == 1)].assign(DriverNumber="1")
+    extra["LapTime"] = extra.LapTime * np.exp((PACE["1"] - PACE["4"]) / 100)     # driver 1 also pushes on mediums
+    push = L.push_pace(pd.concat([both, extra])).set_index("driver_number").pace
+    for driver, truth in PACE.items():          # driver 4 now corrected by the medium offset
+        assert push[driver] - push["1"] == pytest.approx(truth, abs=0.08)
+    long = L.long_run_pace(synthetic_practice()).set_index("driver_number").pace
+    for driver, truth in PACE.items():
+        assert long[driver] - long["1"] == pytest.approx(truth, abs=0.05)

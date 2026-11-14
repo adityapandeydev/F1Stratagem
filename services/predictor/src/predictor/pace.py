@@ -80,7 +80,7 @@ from scipy.optimize import minimize
 
 from .forecast import Forecast
 from . import track
-from .laps import race_pace
+from .laps import long_run_pace, push_pace, race_pace
 from .program import REFERENCE_TYPES, Recorder
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
@@ -102,7 +102,7 @@ OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
 @dataclass
 class Hyper:
     noise: dict = field(default_factory=lambda: {"Q": 0.3, "SQ": 0.35, "FP1": 0.8, "FP2": 0.7, "FP3": 0.6,
-                                                 "T": 1.2, "H": 0.3, "R": 0.5})
+                                                 "T": 1.2, "H": 0.3, "R": 0.5, "L": 0.5})
     car_drift: float = 0.05     # variances added per 14 days
     driver_drift: float = 0.01
     offset_drift: float = 0.005
@@ -242,12 +242,18 @@ def session_observations(session_type, results, laps, entrants):
     return observations
 
 
-def race_observations(laps, entrants):
-    """One group from a race: each driver's corrected race pace (`laps.race_pace`:
-    tyres, tyre age and fuel taken out lap by lap); none for a wet race."""
-    pace = race_pace(laps)
+PRACTICE = ("FP1", "FP2", "FP3")
+LONG_RUN_PREFIX = "long:"
+
+
+def _pace_group(pace, entrants, slow_cutoff=None):
+    """One observation group from a per-driver pace table (`laps` module), or [].
+    With `slow_cutoff`, drivers slower than that ratio of the group's best are left
+    out (practice: a driver who ran only on high fuel)."""
     if pace.empty:
         return []
+    if slow_cutoff is not None:
+        pace = pace[pace.pace <= pace.pace.min() + 100 * np.log(slow_cutoff)]
     ids = entrants.set_index("driver_number")
     cars = [ids.lineage_id.get(n) if "lineage_id" in ids else None for n in pace.driver_number]
     drivers = [ids.driver_id.get(n) for n in pace.driver_number]
@@ -255,7 +261,13 @@ def race_observations(laps, entrants):
     if sum(keep) < 2:
         return []
     return [([c for c, k in zip(cars, keep) if k], [d for d, k in zip(drivers, keep) if k],
-             pace.pace.to_numpy()[keep])]
+             pace.pace.to_numpy(dtype=float)[keep])]
+
+
+def race_observations(laps, entrants):
+    """One group from a race: each driver's corrected race pace (`laps.race_pace`:
+    tyres, tyre age and fuel taken out lap by lap); none for a wet race."""
+    return _pace_group(race_pace(laps), entrants)
 
 
 def history_observations(rows):
@@ -278,7 +290,7 @@ class PaceModel:
 
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
-                 skills=(), season_skills=(), driver_offsets=()):
+                 skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -291,6 +303,11 @@ class PaceModel:
         self.form = form
         self.skills, self.season_skills = tuple(skills), tuple(season_skills)
         self.driver_offsets = tuple(driver_offsets)
+        # practice read as low-fuel push pace (compound-corrected) instead of each best lap,
+        # and practice long runs as their own evidence (session type L)
+        self.practice_push, self.long_runs = practice_push, long_runs
+        if long_runs and "L" not in self.session_types:
+            self.session_types = self.session_types + ("L",)
         self._profiles, self._shares = {}, {}
         self._layout_index = self._event_start = self._layout_sessions = None
         self.history = history
@@ -307,6 +324,10 @@ class PaceModel:
         sessions = view.sessions[view.sessions.session_type.isin(self.session_types)]
         if self.history:
             sessions = pd.concat([self._history_sessions(view), sessions], ignore_index=True)
+        if self.long_runs:
+            practice = sessions[sessions.session_type.isin(PRACTICE)]
+            long = practice.assign(session_id=LONG_RUN_PREFIX + practice.session_id, session_type="L")
+            sessions = pd.concat([sessions, long], ignore_index=True)
         if before is not None:
             sessions = sessions[sessions.available_at_utc < before]
         return sessions.sort_values("scheduled_start_utc", kind="stable")
@@ -327,6 +348,22 @@ class PaceModel:
                 history = view.qualifying_history()
                 self._observations[session.session_id] = history_observations(
                     history[history.event_key == session.event_key])
+            return self._observations[session.session_id]
+        if session.session_type == "L":
+            if session.session_id not in self._observations:
+                practice = session.session_id[len(LONG_RUN_PREFIX):]
+                self._observations[session.session_id] = _pace_group(
+                    long_run_pace(view.laps(practice)), view.entrants(practice), SLOW_CUTOFF)
+            return self._observations[session.session_id]
+        if self.practice_push and session.session_type in PRACTICE:
+            if session.session_id not in self._observations:
+                laps = view.laps(session.session_id)
+                entrants = view.entrants(session.session_id)
+                raw = session_observations(session.session_type, view.results(session.session_id), laps, entrants)
+                push = _pace_group(push_pace(laps), entrants, SLOW_CUTOFF)
+                # push pace replaces the best laps only when it covers at least half the drivers
+                covered = push and raw and len(push[0][0]) >= len(raw[0][0]) / 2
+                self._observations[session.session_id] = push if covered else raw
             return self._observations[session.session_id]
         if session.session_type == "R":
             if session.session_id not in self._observations:
@@ -609,7 +646,8 @@ class PaceModel:
                 "weekend": self.weekend, "shared_from_qualifying": self.shared_from_qualifying,
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
-                "driver_offsets": list(self.driver_offsets),
+                "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
+                "long_runs": self.long_runs,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 

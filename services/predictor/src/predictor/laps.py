@@ -94,11 +94,11 @@ def race_pace(laps):
         residual = y - _design(frame, drivers, names)[0] @ beta
         scale = 1.4826 * float(np.median(np.abs(residual[keep] - np.median(residual[keep]))))
         trimmed = np.abs(residual) <= TRIM_SIGMA * scale
-        if (trimmed == keep).all():
+        if (trimmed == keep).all() or trimmed.sum() <= len(names):
             break
         keep = trimmed
     x, names = _design(frame[keep], drivers)                    # the final fit, on the final lap set
-    if np.linalg.matrix_rank(x) < x.shape[1]:
+    if keep.sum() <= x.shape[1] or np.linalg.matrix_rank(x) < x.shape[1]:
         return empty                                            # drivers or tyres not separable
     beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
     residual = y[keep] - x @ beta
@@ -139,3 +139,127 @@ def _design(frame, drivers, names=None):
         else:
             columns.append((compound == value) * age)
     return (np.column_stack(columns) if len(frame) else np.zeros((0, len(names)))), names
+
+
+# Practice: teams alternate low-fuel push runs (qualifying practice) and long runs on
+# race fuel; fuel loads are not published. Laps are classified within each stint:
+REPRESENTATIVE = 1.03          # within 3% of the stint's best: not an out, in or cool-down lap
+LONG_RUN_LAPS = 5              # a stint with this many representative laps is a long run
+PUSH_TYRE_AGE = 4              # a push lap is on tyres at most this old
+PUSH_SHARE = 1.01              # a push lap is within 1% of the driver's best on its compound
+PUSH_FUEL = 1.02               # ... and within 2% of the driver's best of the session
+MIN_LONG_RUN_LAPS = 5          # a driver needs this many long-run laps for a long-run pace
+
+
+def practice_laps(laps):
+    """A practice session's clean dry laps, each classified "push" (low-fuel run),
+    "long" (long run) or None (neither)."""
+    frame = laps[laps.LapTime.notna() & laps.PitInTime.isna() & laps.PitOutTime.isna()]
+    if "TrackStatus" in frame:
+        frame = frame[frame.TrackStatus.fillna("").astype(str) == "1"]
+    if "IsAccurate" in frame:
+        frame = frame[frame.IsAccurate.fillna(False).astype(bool)]
+    if "Deleted" in frame:
+        frame = frame[~frame.Deleted.fillna(False).astype(bool)]
+    compound = frame.Compound.fillna("").astype(str).str.upper()
+    frame = frame[compound.isin(DRY) & frame.TyreLife.notna() & frame.Stint.notna()].copy()
+    if frame.empty:
+        return frame.assign(seconds=pd.Series(dtype=float), driver_number=pd.Series(dtype=str),
+                            compound=pd.Series(dtype=str), run=pd.Series(dtype=object))
+    frame["seconds"] = frame.LapTime.dt.total_seconds()
+    frame["driver_number"] = frame.DriverNumber.astype(str)
+    frame["compound"] = frame.Compound.astype(str).str.upper()
+    stint = frame.groupby(["driver_number", "Stint"]).seconds
+    frame = frame[frame.seconds <= stint.transform("min") * REPRESENTATIVE].copy()
+    # a push lap: fresh tyres, within PUSH_SHARE of the driver's best on that compound
+    # (often the start of a stint that becomes a long run); labelled first
+    best = frame.groupby(["driver_number", "compound"]).seconds.transform("min")
+    overall = frame.groupby("driver_number").seconds.transform("min")
+    # ... and within PUSH_FUEL of the driver's best overall: race fuel costs 2-4%, a
+    # compound 0.5-1%, so the first laps of a long run do not pass as push laps
+    push = (frame.TyreLife <= PUSH_TYRE_AGE) & (frame.seconds <= best * PUSH_SHARE)         & (frame.seconds <= overall * PUSH_FUEL)
+    frame["run"] = np.where(push, "push", None)
+    # a long run: a stint with LONG_RUN_LAPS representative laps besides its push laps
+    rest = (~push).groupby([frame.driver_number, frame.Stint]).transform("sum")
+    frame.loc[~push & (rest >= LONG_RUN_LAPS), "run"] = "long"
+    return frame
+
+
+def push_pace(laps):
+    """Low-fuel pace per driver from a practice session: each driver's best push lap
+    on each compound, fitted as driver pace + compound offset, so a best lap on
+    mediums counts like one on softs. Same columns as `race_pace`."""
+    frame = practice_laps(laps)
+    frame = frame[frame.run == "push"]
+    if frame.empty:
+        return pd.DataFrame(columns=EMPTY)
+    best = frame.groupby(["driver_number", "compound"]).seconds.min().reset_index()
+    # no trimming: most drivers have one row per compound, and trimming a driver's only
+    # row removes the driver
+    fitted = _fit(best, 100 * np.log(best.seconds.to_numpy()), wear=False, trim=False)
+    if not fitted.empty:
+        return fitted
+    # compounds cannot be told from drivers (no driver pushed on two of them): compare
+    # the drivers who pushed on the session's most used compound, as they are
+    common = best.compound.value_counts().index[0]
+    same = best[best.compound == common]
+    if len(same) < 2:
+        return pd.DataFrame(columns=EMPTY)
+    pace = 100 * np.log(same.seconds.to_numpy())
+    return pd.DataFrame({"driver_number": same.driver_number.to_numpy(), "pace": pace - pace.mean(),
+                         "se": np.nan, "laps": 1})
+
+
+def long_run_pace(laps):
+    """Race-fuel pace per driver from a practice session's long runs: driver pace +
+    compound offset + wear x tyre age (fuel burn within the run is in the wear
+    term; each team's unknown fuel load is left to the model's per-team offset).
+    Same columns as `race_pace`."""
+    frame = practice_laps(laps)
+    frame = frame[frame.run == "long"]
+    counts = frame.driver_number.value_counts()
+    frame = frame[frame.driver_number.isin(counts[counts >= MIN_LONG_RUN_LAPS].index)]
+    # a compound only one driver ran cannot be told from that driver: leave it out
+    shared = frame.groupby("compound").driver_number.nunique()
+    frame = frame[frame.compound.isin(shared[shared >= 2].index)]
+    if frame.empty:
+        return pd.DataFrame(columns=EMPTY)
+    return _fit(frame, 100 * np.log(frame.seconds.to_numpy()), wear=True)
+
+
+def _fit(frame, y, wear, trim=True):
+    """Least squares of `y` on driver + compound (+ wear) with robust trimming; the
+    columns are fixed from the full set of laps. Pace per driver, se relative to the
+    field mean."""
+    drivers = sorted(frame.driver_number.unique())
+    if len(drivers) < 2:
+        return pd.DataFrame(columns=EMPTY)
+    if "TyreLife" not in frame:
+        frame = frame.assign(TyreLife=0.0)
+    names = _design(frame, drivers)[1]
+    if not wear:
+        names = [n for n in names if not n.startswith("wear:")]
+    x_all = _design(frame, drivers, names)[0]
+    keep = np.ones(len(frame), dtype=bool)
+    for _ in range(TRIM_ROUNDS if trim else 0):
+        beta, *_ = np.linalg.lstsq(x_all[keep], y[keep], rcond=None)
+        residual = y - x_all @ beta
+        scale = 1.4826 * float(np.median(np.abs(residual[keep] - np.median(residual[keep]))))
+        trimmed = np.abs(residual) <= TRIM_SIGMA * scale if scale > 0 else keep
+        if (trimmed == keep).all() or trimmed.sum() < x_all.shape[1]:
+            break
+        keep = trimmed
+    x = x_all[keep]
+    if keep.sum() < x.shape[1] or np.linalg.matrix_rank(x) < x.shape[1]:
+        return pd.DataFrame(columns=EMPTY)
+    beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
+    residual = y[keep] - x @ beta
+    sigma = float(np.sqrt(residual @ residual / max(len(residual) - x.shape[1], 1)))
+    n = len(drivers)
+    cov = sigma ** 2 * np.linalg.pinv(x.T @ x)
+    centre = np.eye(n) - np.ones((n, n)) / n
+    result = pd.DataFrame({"driver_number": drivers, "pace": beta[:n],
+                           "se": np.sqrt(np.clip(np.diag(centre @ cov[:n, :n] @ centre.T), 0, None)),
+                           "laps": [int((keep & (frame.driver_number == d).to_numpy()).sum()) for d in drivers]})
+    result.attrs = {"corrections": dict(zip(names[n:], beta[n:].tolist())), "noise": sigma, "laps_used": int(keep.sum())}
+    return result
