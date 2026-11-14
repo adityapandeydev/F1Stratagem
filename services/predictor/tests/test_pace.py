@@ -903,3 +903,29 @@ def test_a_driver_race_offset_is_read_only_in_races():
     keys = recorder.keys
     assert ("offset", ("a", "R")) in keys and ("offset", ("c", "R")) in keys
     assert len(race) == len(qualifying) + 2          # car and driver race offsets
+
+
+def test_a_failed_owner_write_leaves_no_lock(tmp_path, monkeypatch):
+    from predictor import fitcache
+    path = tmp_path / "fits" / "m" / "2022-x.json"
+
+    def full(handle, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(fitcache.os, "write", full)
+    with pytest.warns(UserWarning, match="unavailable"):
+        entry, cached = fitcache.FitCache(tmp_path / "fits").get_or_fit(path, lambda: {"hyper": 1})
+    assert entry == {"hyper": 1} and not cached
+    assert not path.with_suffix(".lock").exists()
+
+
+def test_an_ownerless_lock_goes_stale_after_a_grace_period(tmp_path):
+    import os
+    import time
+    from predictor import fitcache
+    lock = tmp_path / "x.lock"
+    lock.write_text("")
+    assert not fitcache.lock_owner_gone(lock)                     # just created: its owner may be writing
+    old = time.time() - 2 * fitcache.EMPTY_LOCK_GRACE_S
+    os.utime(lock, (old, old))
+    assert fitcache.lock_owner_gone(lock)

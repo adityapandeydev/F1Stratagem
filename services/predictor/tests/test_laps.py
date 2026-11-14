@@ -122,3 +122,15 @@ def test_practice_laps_are_classified_and_paced():
     long = L.long_run_pace(synthetic_practice()).set_index("driver_number").pace
     for driver, truth in PACE.items():
         assert long[driver] - long["1"] == pytest.approx(truth, abs=0.05)
+
+
+def test_a_driver_trimmed_below_the_minimum_is_dropped_and_the_rest_refitted():
+    race = synthetic_race()
+    driver = race[race.DriverNumber == "4"].index
+    # driver 4 keeps exactly MIN_LAPS clean laps, most of them wildly off the fit
+    race = race.drop(driver[L.MIN_LAPS + 1:])
+    bad = race[race.DriverNumber == "4"].index[1:-5]
+    race.loc[bad, "LapTime"] = race.loc[bad, "LapTime"] * 1.05
+    pace = L.race_pace(race)
+    assert "4" not in set(pace.driver_number)
+    assert (pace.laps >= L.MIN_LAPS).all()

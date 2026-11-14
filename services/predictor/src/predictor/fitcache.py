@@ -39,6 +39,7 @@ READ_FILES = ("normalized/", "source/car_data/", "source/pos_data/")   # session
 LOCK_WAIT_SECONDS = 5.0
 STALE_LOCK_SECONDS = 24 * 3600
 WRITE_ATTEMPTS = 10
+EMPTY_LOCK_GRACE_S = 60.0       # an owner is written right after the lock is created
 REFUSALS_BEFORE_GIVING_UP = 3   # lock creation refused with no lock present
 
 
@@ -101,11 +102,19 @@ def process_alive(pid):
 
 
 def lock_owner_gone(lock):
-    """A lock whose owner (the pid written in it) is no longer running."""
+    """A lock whose owner (the pid written in it) is no longer running; a lock with no
+    readable owner after EMPTY_LOCK_GRACE_S (its writer failed or died while writing)."""
     try:
-        pid = int(lock.read_text().split("-")[0])
-    except (OSError, ValueError):
-        return False                  # unreadable or being written: not provably stale
+        text = lock.read_text()
+    except OSError:
+        return False                  # not readable right now (another process has it open): not stale
+    try:
+        pid = int(text.split("-")[0])
+    except ValueError:                # empty or garbled: its writer failed or died while writing
+        try:
+            return time.time() - lock.stat().st_mtime > EMPTY_LOCK_GRACE_S
+        except OSError:
+            return False
     return not process_alive(pid)
 
 
@@ -165,9 +174,6 @@ class FitCache:
         while True:
             try:
                 handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(handle, owner.encode())
-                os.close(handle)
-                break
             except FileExistsError:
                 pass                                      # held by another process: wait below
             except OSError as error:
@@ -184,6 +190,27 @@ class FitCache:
                         continue
                     warnings.warn(f"fit cache unavailable ({error}); fitting without it")
                     return fit(), False
+            else:
+                written = False
+                try:
+                    data = owner.encode()
+                    written = os.write(handle, data) == len(data)      # a short write is a failed one
+                    if not written:
+                        warnings.warn("fit cache unavailable (short write); fitting without it")
+                except OSError as error:
+                    warnings.warn(f"fit cache unavailable ({error}); fitting without it")
+                finally:
+                    try:
+                        os.close(handle)
+                    except OSError:
+                        written = False
+                if written:
+                    break
+                try:
+                    lock.unlink()                 # never leave a lock without an owner
+                except OSError:
+                    pass
+                return fit(), False
             entry = self.load(path)
             if entry is not None:
                 return entry, True

@@ -81,22 +81,29 @@ def race_pace(laps):
     frame = clean_race_laps(laps)
     if len(frame) < CLEAN_SHARE * laps.LapTime.notna().sum():
         return empty
-    counts = frame.driver_number.value_counts()
-    frame = frame[frame.driver_number.isin(counts[counts >= MIN_LAPS].index)]
-    drivers = sorted(frame.driver_number.unique())
-    if len(drivers) < 2:
-        return empty
-    y = 100 * np.log(frame.seconds.to_numpy()) - FUEL * frame.LapNumber.to_numpy(dtype=float)
-    keep = np.ones(len(frame), dtype=bool)
-    for _ in range(TRIM_ROUNDS):
-        x, names = _design(frame[keep], drivers)
-        beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
-        residual = y - _design(frame, drivers, names)[0] @ beta
-        scale = 1.4826 * float(np.median(np.abs(residual[keep] - np.median(residual[keep]))))
-        trimmed = np.abs(residual) <= TRIM_SIGMA * scale
-        if (trimmed == keep).all() or trimmed.sum() <= len(names):
+    # trim, then drop drivers left with fewer than MIN_LAPS laps and refit the rest,
+    # until every driver in the fit keeps MIN_LAPS laps
+    while True:
+        counts = frame.driver_number.value_counts()
+        frame = frame[frame.driver_number.isin(counts[counts >= MIN_LAPS].index)]
+        drivers = sorted(frame.driver_number.unique())
+        if len(drivers) < 2:
+            return empty
+        y = 100 * np.log(frame.seconds.to_numpy()) - FUEL * frame.LapNumber.to_numpy(dtype=float)
+        keep = np.ones(len(frame), dtype=bool)
+        for _ in range(TRIM_ROUNDS):
+            x, names = _design(frame[keep], drivers)
+            beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
+            residual = y - _design(frame, drivers, names)[0] @ beta
+            scale = 1.4826 * float(np.median(np.abs(residual[keep] - np.median(residual[keep]))))
+            trimmed = np.abs(residual) <= TRIM_SIGMA * scale
+            if (trimmed == keep).all() or trimmed.sum() <= len(names):
+                break
+            keep = trimmed
+        kept = pd.Series(keep).groupby(frame.driver_number.to_numpy()).sum()
+        if (kept >= MIN_LAPS).all():
             break
-        keep = trimmed
+        frame = frame[frame.driver_number.isin(kept[kept >= MIN_LAPS].index)]
     x, names = _design(frame[keep], drivers)                    # the final fit, on the final lap set
     if keep.sum() <= x.shape[1] or np.linalg.matrix_rank(x) < x.shape[1]:
         return empty                                            # drivers or tyres not separable
