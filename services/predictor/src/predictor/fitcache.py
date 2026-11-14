@@ -38,6 +38,7 @@ READ_FILES = ("normalized/", "source/car_data/", "source/pos_data/")   # session
 LOCK_WAIT_SECONDS = 5.0
 STALE_LOCK_SECONDS = 24 * 3600
 WRITE_ATTEMPTS = 10
+REFUSALS_BEFORE_GIVING_UP = 3   # lock creation refused with no lock present
 
 
 def _sha(data):
@@ -118,30 +119,53 @@ class FitCache:
         entry = self.load(path)
         if entry is not None:
             return entry, True
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            warnings.warn(f"fit cache unavailable ({error}); fitting without it")
+            return fit(), False
         lock = path.with_suffix(".lock")
         owner = f"{os.getpid()}-{time.time()}"
         announced = False
+        refusals = 0
         while True:
             try:
                 handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(handle, owner.encode())
                 os.close(handle)
                 break
-            except (FileExistsError, PermissionError):    # held, or being deleted (Windows)
+            except FileExistsError:
+                pass                                      # held by another process: wait below
+            except OSError as error:
+                # Windows refuses to create a lock that is being deleted (just released:
+                # its entry is probably written); anything that persists means the cache
+                # cannot be used here (no permission, read-only, disk full)
                 entry = self.load(path)
                 if entry is not None:
                     return entry, True
-                try:
-                    if time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
-                        lock.unlink()
+                if not os.path.exists(lock):
+                    refusals += 1
+                    if refusals < REFUSALS_BEFORE_GIVING_UP:
+                        time.sleep(0.2)
                         continue
-                except OSError:
+                    warnings.warn(f"fit cache unavailable ({error}); fitting without it")
+                    return fit(), False
+            entry = self.load(path)
+            if entry is not None:
+                return entry, True
+            try:
+                if time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
+                    lock.unlink()
                     continue
-                if not announced:
-                    print(f"waiting for another process fitting {path.name} ({lock})", flush=True)
-                    announced = True
-                time.sleep(LOCK_WAIT_SECONDS)
+            except FileNotFoundError:
+                continue                                  # released just now: try again
+            except OSError as error:
+                warnings.warn(f"fit cache unavailable ({error}); fitting without it")
+                return fit(), False
+            if not announced:
+                print(f"waiting for another process fitting {path.name} ({lock})", flush=True)
+                announced = True
+            time.sleep(LOCK_WAIT_SECONDS)
         try:
             entry = self.load(path)          # written while we waited for the lock
             if entry is not None:

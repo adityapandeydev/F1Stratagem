@@ -840,3 +840,41 @@ def test_screens_need_the_base_skills():
     with pytest.raises(ValueError, match="skills"):
         other._check_extends(base)
     PaceModel(ALL_SESSIONS, "pace:more", winter=True, skills=("fast", "slow"))._check_extends(base)
+
+
+def test_an_unwritable_cache_fits_without_it(tmp_path, monkeypatch):
+    from predictor import fitcache
+    cache = fitcache.FitCache(tmp_path / "fits")
+    path = tmp_path / "fits" / "m" / "2022-x.json"
+    calls = []
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(fitcache.os, "open", refuse)           # lock creation refused, no lock present
+    with pytest.warns(UserWarning, match="unavailable"):
+        entry, cached = cache.get_or_fit(path, lambda: calls.append(1) or {"hyper": 1})
+    assert entry == {"hyper": 1} and not cached and calls == [1]
+    monkeypatch.undo()
+    monkeypatch.setattr(type(path), "mkdir", refuse)            # the folder cannot be created
+    with pytest.warns(UserWarning, match="unavailable"):
+        entry, cached = fitcache.FitCache(tmp_path / "other").get_or_fit(tmp_path / "other" / "m" / "x.json",
+                                                                         lambda: {"hyper": 2})
+    assert entry == {"hyper": 2} and not cached
+
+
+def test_skills_are_off_until_a_layout_is_revisited(tmp_path, monkeypatch):
+    from predictor import pace, track
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    write_circuit_archive(tmp_path)                    # A (2021), B (2021), A (2022)
+    profile = {**dict.fromkeys(track.FEATURES, 0.0), "share_straight": 0.3, "share_slow": 0.4,
+               "share_medium": 0.2, "share_fast": 0.1}
+    monkeypatch.setattr(track, "session_profile", lambda view, session_id, count=5: profile)
+    monkeypatch.setattr(track, "layout_of", lambda circuit, season, event_key, table=None: circuit and f"{circuit}/gp")
+    archive = Archive(tmp_path)
+    for cutoff, revisit in (("2022-01-01", False), ("2023-01-01", True)):
+        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, skills=("fast",))
+        view = archive.view(pd.Timestamp(cutoff, tz=UTC))
+        hyper = model.fit_hyper(view, model.sessions(view), model._default_start())
+        assert ("skill_prior" in model.last_fit["fitted"]) == revisit
+        assert (hyper.skill_prior > 0) == revisit

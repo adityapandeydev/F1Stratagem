@@ -447,20 +447,28 @@ class PaceModel:
         # it cannot be told apart from the driver's level
         form = self.form and winter
         # season skills, like season form, need a season start inside the counted sessions
-        season_skills = bool(self.season_skills) and winter
+        # skills are read only at revisited layouts (a first visit is neutral): without a
+        # revisit in the counted data nothing depends on them, and fitted they would
+        # drift to their bounds (2019 fit, 2018 data: every layout a first visit)
+        modern = counted[~counted.session_id.str.startswith(HISTORY_PREFIX)]
+        revisited = bool(self.skills or self.season_skills) and any(
+            any(abs(v) > 0 for v in self.shares(view, event).values()) for event in modern.event_key.unique())
+        skills = bool(self.skills) and revisited
+        season_skills = bool(self.season_skills) and winter and revisited
         if self.affinity and state and not affinity:
             # with history in the state, a counted session at a circuit history visited is
             # also a repeat visit, so the affinity can be identified from the first counted season
             visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
             affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers,
-                                           form, bool(self.skills), season_skills)
+                                           form, skills, season_skills)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
         default = self._default_start()
         off = {**({"affinity_prior": 0.0} if self.affinity and not affinity else {}),
                **({"form_prior": 0.0} if self.form and not form else {}),
-               **({"season_skill_prior": 0.0} if self.season_skills and not season_skills else {})}
+               **({"season_skill_prior": 0.0} if self.season_skills and not season_skills else {}),
+               **({"skill_prior": 0.0, "skill_drift": 0.0} if self.skills and not skills else {})}
         start = replace(start, **off,
                         **{s: getattr(default, s) for s in scalars if getattr(start, s) <= 0})
 
