@@ -24,7 +24,7 @@ try:
 except ImportError as error:   # pragma: no cover - the build step is part of installing the service
     raise ImportError("predictor_native is not built; run `make predictor-native`") from error
 
-KINDS = ("car", "driver", "offset", "weekend", "affinity", "form")
+KINDS = ("car", "driver", "offset", "weekend", "affinity", "form", "skill", "season_skill")
 REFERENCE_TYPES = ("Q", "H")  # session types read without an offset: qualifying and historical qualifying
 DAY_SCALE = 14.0  # drift variances are per 14 days
 
@@ -45,13 +45,14 @@ class Program:
     group_rows: np.ndarray     # per group: first driver row, number of drivers, noise type index
     row_starts: np.ndarray     # per driver row: start in `entries` (rows of a group are consecutive), plus the end
     entries: np.ndarray        # state indices of every design row
+    weights: np.ndarray        # one per entry: how much of that state the pace reads (1 unless weighted)
     values: np.ndarray         # observed log times x 100, one per driver row
     noise_types: tuple
     slots: int
 
     def arrays(self):
         return (self.ops.ravel(), self.floats, self.ints, self.group_rows.ravel(), self.row_starts, self.entries,
-                self.values, self.slots)
+                self.weights, self.values, self.slots)
 
 
 @dataclass
@@ -72,20 +73,27 @@ class State:
         return [kind for kind, _ in self.keys]
 
     def design(self, rows):
-        """Design matrix of `Recorder.columns` rows."""
+        """Design matrix of `Recorder.columns` rows (state indices, or (index, weight) pairs)."""
         design = np.zeros((len(rows), len(self.keys)))
-        for row, indices in enumerate(rows):
-            design[row, indices] += 1
+        for row, entries in enumerate(rows):
+            for index, weight in (_weighted(e) for e in entries):
+                design[row, index] += weight
         return design
+
+
+def _weighted(entry):
+    """(state index, weight) of a design entry: an index (weight 1) or an (index, weight) tuple."""
+    return entry if isinstance(entry, tuple) else (entry, 1.0)
 
 
 def settings(hyper, noise_types):
     """Settings as the arrays the native filter reads."""
     priors = [hyper.car_prior, hyper.driver_prior, hyper.offset_prior, hyper.weekend_prior, hyper.affinity_prior,
-              hyper.form_prior]
-    drifts = [hyper.car_drift, hyper.driver_drift, hyper.offset_drift, 0.0, hyper.affinity_drift, 0.0]
-    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0]
-    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]   # which kinds the regulation multiplier scales
+              hyper.form_prior, hyper.skill_prior, hyper.season_skill_prior]
+    drifts = [hyper.car_drift, hyper.driver_drift, hyper.offset_drift, 0.0, hyper.affinity_drift, 0.0,
+              hyper.skill_drift, 0.0]
+    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0, 0.0, 0.0]
+    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]   # which kinds the regulation multiplier scales
     noise = [hyper.noise.get(t, 0.0) for t in noise_types]
     return (np.array(priors, dtype=np.float64), np.array(drifts, dtype=np.float64),
             np.array(winters, dtype=np.float64), np.array(multiplied, dtype=np.float64),
@@ -118,7 +126,7 @@ class Recorder:
         self.slot_of = {}
         self.event, self.circuit = None, None
         self.ops, self.floats, self.ints = [], [], []
-        self.groups, self.row_starts, self.entries, self.values = [], [], [], []
+        self.groups, self.row_starts, self.entries, self.weights, self.values = [], [], [], [], []
         self._program = None
 
     def _float(self, value):
@@ -223,7 +231,9 @@ class Recorder:
         first_row = len(self.row_starts)
         for row in self.columns(cars, drivers, session_type, track):
             self.row_starts.append(len(self.entries))
-            self.entries += row
+            for index, weight in (_weighted(e) for e in row):
+                self.entries.append(index)
+                self.weights.append(float(weight))
         self.values += [float(v) for v in values]
         self._op(UPDATE, track, len(self.groups), int(counted), 0)
         self.groups.append((first_row, len(cars), self.noise_types.index(session_type)))
@@ -239,7 +249,8 @@ class Recorder:
                 ops=np.array(self.ops, dtype=np.int64).reshape(-1, 5), floats=np.array(self.floats, dtype=np.float64),
                 ints=np.array(self.ints, dtype=np.int64), group_rows=np.array(self.groups, dtype=np.int64).reshape(-1, 3),
                 row_starts=np.array(self.row_starts + [len(self.entries)], dtype=np.int64),
-                entries=np.array(self.entries, dtype=np.int64), values=np.array(self.values, dtype=np.float64),
+                entries=np.array(self.entries, dtype=np.int64), weights=np.array(self.weights, dtype=np.float64),
+                values=np.array(self.values, dtype=np.float64),
                 noise_types=tuple(self.noise_types), slots=len(self.slot_of))
         return self._program
 

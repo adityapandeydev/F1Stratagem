@@ -21,7 +21,7 @@ const RESET: i64 = 3;
 const UPDATE: i64 = 4;
 const SNAPSHOT: i64 = 5;
 const TRACKS: usize = 2;
-const KINDS: usize = 6; // car, driver, offset, weekend, affinity, form
+const KINDS: usize = 8; // car, driver, offset, weekend, affinity, form, skill, season_skill
 
 pub struct Settings<'a> {
     pub priors: &'a [f64],
@@ -39,6 +39,7 @@ pub struct Program<'a> {
     pub group_rows: &'a [i64], // rows of 3
     pub row_starts: &'a [i64],
     pub entries: &'a [i64],
+    pub weights: &'a [f64], // one per entry: how much of that state the driver's pace reads
     pub values: &'a [f64],
     pub slots: usize,
 }
@@ -176,6 +177,14 @@ impl From<Failure> for PyErr {
 
 /// Replays the program: counted log-likelihood per track, and track 0's final state.
 pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure> {
+    if p.weights.len() != p.entries.len() {
+        return Err(Failure::Invalid(format!("{} weights for {} entries", p.weights.len(), p.entries.len())));
+    }
+    for (name, values) in [("priors", s.priors), ("drifts", s.drifts), ("winters", s.winters), ("multiplied", s.multiplied)] {
+        if values.len() != KINDS {
+            return Err(Failure::Invalid(format!("{name} has {} values for {KINDS} kinds", values.len())));
+        }
+    }
     let mut states = [State::new(), State::new()];
     let mut parkeds = [vec![(0.0f64, 0.0f64); p.slots], vec![(0.0f64, 0.0f64); p.slots]];
     let mut likelihoods = [0.0; TRACKS];
@@ -254,34 +263,35 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                 let (first, drivers, noise_type) = (g[0] as usize, g[1] as usize, g[2] as usize);
                 let m = drivers - 1;
                 let (n, cap) = (st.n, st.cap);
-                let row = |r: usize| -> &[i64] {
-                    &p.entries[p.row_starts[first + r] as usize..p.row_starts[first + r + 1] as usize]
+                let row = |r: usize| -> std::iter::Zip<std::slice::Iter<'_, i64>, std::slice::Iter<'_, f64>> {
+                    let span = p.row_starts[first + r] as usize..p.row_starts[first + r + 1] as usize;
+                    p.entries[span.clone()].iter().zip(p.weights[span].iter())
                 };
-                let base = row(0);
+                let base = || row(0);
                 // HP = h @ cov, one row per driver after the first (h_i = d_{i+1} - d_0)
                 hp.clear();
                 hp.resize(m * n, 0.0);
                 let mut base_row = vec![0.0; n];
-                for &j in base {
+                for (&j, &w) in base() {
                     let j = j as usize;
                     for q in 0..n {
-                        base_row[q] += st.cov[j * cap + q];
+                        base_row[q] += w * st.cov[j * cap + q];
                     }
                 }
                 innovation.clear();
-                let base_mean: f64 = base.iter().map(|&j| st.mean[j as usize]).sum();
+                let base_mean: f64 = base().map(|(&j, &w)| w * st.mean[j as usize]).sum();
                 for i in 0..m {
                     let out = &mut hp[i * n..(i + 1) * n];
-                    for &j in row(i + 1) {
+                    for (&j, &w) in row(i + 1) {
                         let j = j as usize;
                         for q in 0..n {
-                            out[q] += st.cov[j * cap + q];
+                            out[q] += w * st.cov[j * cap + q];
                         }
                     }
                     for q in 0..n {
                         out[q] -= base_row[q];
                     }
-                    let predicted: f64 = row(i + 1).iter().map(|&j| st.mean[j as usize]).sum::<f64>() - base_mean;
+                    let predicted: f64 = row(i + 1).map(|(&j, &w)| w * st.mean[j as usize]).sum::<f64>() - base_mean;
                     innovation.push((p.values[first + i + 1] - p.values[first]) - predicted);
                 }
                 // S = HP @ h^T + R
@@ -290,9 +300,9 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                 sm.resize(m * m, 0.0);
                 for i in 0..m {
                     let hp_row = &hp[i * n..(i + 1) * n];
-                    let base_part: f64 = base.iter().map(|&j| hp_row[j as usize]).sum();
+                    let base_part: f64 = base().map(|(&j, &w)| w * hp_row[j as usize]).sum();
                     for k in 0..m {
-                        let part: f64 = row(k + 1).iter().map(|&j| hp_row[j as usize]).sum();
+                        let part: f64 = row(k + 1).map(|(&j, &w)| w * hp_row[j as usize]).sum();
                         sm[i * m + k] = part - base_part + variance * (if i == k { 2.0 } else { 1.0 });
                     }
                 }
@@ -367,6 +377,7 @@ fn replay(
     group_rows: &PyReadonlyArray1<i64>,
     row_starts: &PyReadonlyArray1<i64>,
     entries: &PyReadonlyArray1<i64>,
+    weights: &PyReadonlyArray1<f64>,
     values: &PyReadonlyArray1<f64>,
     slots: usize,
     priors: &PyReadonlyArray1<f64>,
@@ -383,6 +394,7 @@ fn replay(
         group_rows: group_rows.as_slice()?,
         row_starts: row_starts.as_slice()?,
         entries: entries.as_slice()?,
+        weights: weights.as_slice()?,
         values: values.as_slice()?,
         slots,
     };
@@ -408,6 +420,7 @@ fn log_likelihood(
     group_rows: PyReadonlyArray1<i64>,
     row_starts: PyReadonlyArray1<i64>,
     entries: PyReadonlyArray1<i64>,
+    weights: PyReadonlyArray1<f64>,
     values: PyReadonlyArray1<f64>,
     slots: usize,
     priors: PyReadonlyArray1<f64>,
@@ -417,7 +430,7 @@ fn log_likelihood(
     regulation_multiplier: f64,
     noise: PyReadonlyArray1<f64>,
 ) -> PyResult<f64> {
-    let (likelihoods, _) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &values, slots,
+    let (likelihoods, _) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &weights, &values, slots,
                                   &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise)?;
     Ok(likelihoods.iter().sum())
 }
@@ -433,6 +446,7 @@ fn filter_state<'py>(
     group_rows: PyReadonlyArray1<i64>,
     row_starts: PyReadonlyArray1<i64>,
     entries: PyReadonlyArray1<i64>,
+    weights: PyReadonlyArray1<f64>,
     values: PyReadonlyArray1<f64>,
     slots: usize,
     priors: PyReadonlyArray1<f64>,
@@ -442,7 +456,7 @@ fn filter_state<'py>(
     regulation_multiplier: f64,
     noise: PyReadonlyArray1<f64>,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>)> {
-    let (likelihoods, state) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &values, slots,
+    let (likelihoods, state) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &weights, &values, slots,
                                       &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise)?;
     let n = state.n;
     let cov = state.covariance().into_pyarray_bound(py).reshape([n, n])?;

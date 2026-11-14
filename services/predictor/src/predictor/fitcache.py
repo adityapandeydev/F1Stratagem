@@ -32,7 +32,7 @@ import warnings
 from dataclasses import asdict
 from pathlib import Path
 
-CODE_MODULES = ("pace.py", "program.py", "rules.py", "archive.py", "fitcache.py")
+CODE_MODULES = ("pace.py", "program.py", "rules.py", "archive.py", "fitcache.py", "track.py", "circuit_layouts.csv")
 REFERENCE_TABLES = ("events", "sessions", "entrants", "qualifying_history")
 LOCK_WAIT_SECONDS = 5.0
 STALE_LOCK_SECONDS = 24 * 3600

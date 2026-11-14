@@ -692,3 +692,110 @@ def test_season_form_is_fitted_only_once_the_counted_data_crosses_a_season(tmp_p
         fitted[season] = ("form_prior" in model.last_fit["fitted"], hyper.form_prior)
     assert fitted[2022] == (False, 0.0)          # one season: form off
     assert fitted[2023][0] and fitted[2023][1] > 0
+
+
+def test_weighted_entries_match_a_direct_kalman_update(monkeypatch):
+    """One weighted observation against the textbook update in numpy."""
+    hyper = Hyper(form_prior=0.4, driver_drift=0.0, car_drift=0.0)
+    weights = {"a": 0.25, "b": 0.75}
+    original = Recorder.columns
+
+    def weighted(self, cars, drivers, session_type="Q", track=0):
+        rows = original(self, cars, drivers, session_type, track)
+        form = {self.tracks[track].index[("form", d)]: d for d in drivers}
+        return [[(i, weights[form[i]]) if i in form else i for i in row] for row in rows]
+
+    monkeypatch.setattr(Recorder, "columns", weighted)
+    state = Recorder(("Q",), form=True)
+    state.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    state.update(["c", "c"], ["a", "b"], [0.0, 0.6])
+    replayed = state.replay(hyper)
+    keys = replayed.keys
+    prior = np.diag([hyper.car_prior ** 2 if k == "car" else hyper.driver_prior ** 2 if k == "driver"
+                     else 0.4 ** 2 for k, _ in keys])
+    h = np.zeros(len(keys))
+    for (kind, key), i in zip(keys, range(len(keys))):
+        if kind == "driver":
+            h[i] = 1.0 if key == "b" else -1.0
+        if kind == "form":
+            h[i] = weights[key] if key == "b" else -weights[key]
+    s = h @ prior @ h + 2 * hyper.noise["Q"] ** 2
+    gain = prior @ h / s
+    assert np.allclose(replayed.mean, gain * 0.6)
+    assert np.allclose(replayed.cov, prior - np.outer(gain, h @ prior))
+    assert replayed.objective == pytest.approx(-0.5 * 0.6 ** 2 / s - 0.5 * np.log(2 * np.pi * s))
+
+
+def test_a_zero_weight_term_changes_nothing(monkeypatch):
+    original = Recorder.columns
+
+    def zero_form(self, cars, drivers, session_type="Q", track=0):
+        rows = original(self, cars, drivers, session_type, track)
+        form = {self.tracks[track].index[("form", d)] for d in drivers}
+        return [[(i, 0.0) if i in form else i for i in row] for row in rows]
+
+    def run(form):
+        state = Recorder(("Q",), form=form)
+        state.advance(pd.Timestamp("2021-07-01", tz=UTC))
+        state.update(["c", "c", "d"], ["a", "b", "e"], [0.0, 0.6, 1.1])
+        return state.replay(Hyper(form_prior=0.4) if form else Hyper())
+
+    plain = run(False)
+    monkeypatch.setattr(Recorder, "columns", zero_form)
+    weighted = run(True)
+    assert weighted.objective == plain.objective
+
+
+def test_two_weighted_updates_of_three_drivers_match_numpy(monkeypatch):
+    """Weights other than 0 and 1, a non-zero prior mean at the second update and a
+    2x2 innovation covariance: mean, covariance, objective and forecasts against numpy."""
+    weights = {"a": 0.25, "b": 0.75, "e": 1.6}
+    original = Recorder.columns
+
+    def weighted(self, cars, drivers, session_type="Q", track=0):
+        rows = original(self, cars, drivers, session_type, track)
+        form = {self.tracks[track].index[("form", d)]: d for d in drivers}
+        return [[(i, weights[form[i]]) if i in form else i for i in row] for row in rows]
+
+    monkeypatch.setattr(Recorder, "columns", weighted)
+    hyper = Hyper(form_prior=0.4)
+    recorder = Recorder(("Q",), form=True)
+    recorder.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    observations = [(["c", "c", "d"], ["a", "b", "e"], [0.0, 0.6, 1.1]),
+                    (["d", "c", "c"], ["e", "b", "a"], [0.3, -0.2, 0.5])]
+    for observation in observations:
+        recorder.update(*observation)
+    state = recorder.replay(hyper)
+    index = {key: i for i, key in enumerate(state.keys)}
+    spread = {"car": hyper.car_prior, "driver": hyper.driver_prior, "form": 0.4}
+    cov = np.diag([spread[kind] ** 2 for kind, _ in state.keys])
+    mean, objective, noise = np.zeros(len(index)), 0.0, hyper.noise["Q"] ** 2
+    for cars, drivers, values in observations:
+        rows = np.zeros((3, len(index)))
+        for i, (car, driver) in enumerate(zip(cars, drivers)):
+            rows[i, index[("car", car)]] += 1
+            rows[i, index[("driver", driver)]] += 1
+            rows[i, index[("form", driver)]] += weights[driver]
+        h = rows[1:] - rows[0]
+        innovation = np.array(values[1:]) - values[0] - h @ mean
+        s = h @ cov @ h.T + noise * (np.eye(2) + 1)
+        gain = cov @ h.T @ np.linalg.inv(s)
+        objective += -0.5 * innovation @ np.linalg.solve(s, innovation) - 0.5 * np.log(np.linalg.det(s)) \
+            - np.log(2 * np.pi)
+        mean, cov = mean + gain @ innovation, cov - gain @ h @ cov
+    assert np.allclose(state.mean, mean, atol=1e-12) and np.allclose(state.cov, cov, atol=1e-12)
+    assert state.objective == pytest.approx(objective, rel=1e-12)
+    forecast = state.design(recorder.columns(["c", "d"], ["a", "e"])) @ state.mean
+    expected = [mean[index[("car", "c")]] + mean[index[("driver", "a")]] + 0.25 * mean[index[("form", "a")]],
+                mean[index[("car", "d")]] + mean[index[("driver", "e")]] + 1.6 * mean[index[("form", "e")]]]
+    assert np.allclose(forecast, expected, atol=1e-12)
+
+
+def test_the_native_filter_rejects_mismatched_weights():
+    recorder = Recorder(("Q",))
+    recorder.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    recorder.update(["c", "d"], ["a", "b"], [0.0, 0.5])
+    program = recorder.program()
+    program.weights = program.weights[:-1]
+    with pytest.raises(ValueError, match="weights"):
+        recorder.objective(Hyper())

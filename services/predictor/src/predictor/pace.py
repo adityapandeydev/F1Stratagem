@@ -114,10 +114,14 @@ class Hyper:
     affinity_drift: float = 0.0  # affinity variance added per 14 days
     affinity_winter: float = 0.0  # affinity variance added at each season start
     form_prior: float = 0.0      # spread of a driver's season form, reset each season; 0 disables it
+    skill_prior: float = 0.0     # spread of a driver's ability in a part of the track (per unit of its share)
+    skill_drift: float = 0.0     # its variance added per 14 days
+    season_skill_prior: float = 0.0   # spread of a driver's season ability in a part of the track, reset each season
 
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
                "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior",
-               "affinity_prior", "affinity_drift", "affinity_winter", "form_prior")
+               "affinity_prior", "affinity_drift", "affinity_winter", "form_prior", "skill_prior", "skill_drift",
+               "season_skill_prior")
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
