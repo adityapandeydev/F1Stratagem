@@ -342,3 +342,59 @@ def layout_of(circuit_id, season, event_key, table=None):
     if len(rows) != 1:
         return None
     return f"{circuit_id}/{rows.layout.iloc[0]}"
+
+
+BANDS = ("straight", "slow", "medium", "fast")
+
+
+def band_times(trace, reference, table):
+    """Seconds a lap spends in each part of the track (straights and the soft corner
+    bands), with the track divided as on the session's reference lap (`table` its
+    corners). Laps are aligned by fraction of the lap."""
+    distance = reference.distance.to_numpy()
+    time = np.interp(distance / distance[-1] * trace.distance.iloc[-1], trace.distance, trace.time)
+    dt = np.diff(time, append=time[-1])
+    owner = np.full(len(distance), -1)
+    for k, row in enumerate(table.itertuples()):
+        a, b = row.start - CORNER_MARGIN_M, row.end + CORNER_MARGIN_M
+        if k > 0:
+            a = max(a, (table.end.iloc[k - 1] + row.start) / 2)
+        if k + 1 < len(table):
+            b = min(b, (row.end + table.start.iloc[k + 1]) / 2)
+        owner[(distance >= a) & (distance < b)] = k
+    times = dict.fromkeys(BANDS, 0.0)
+    times["straight"] = float(dt[owner < 0].sum())
+    for k, row in enumerate(table.itertuples()):
+        cells = np.flatnonzero(owner == k)
+        if not len(cells):
+            continue
+        centres = np.array([(a + b) / 2 for a, b, _, _ in row.pieces])
+        nearest = np.abs(distance[cells][:, None] - centres[None, :]).argmin(axis=1)
+        for piece, (_, _, _, piece_speed) in enumerate(row.pieces):
+            weights = band_weights(piece_speed)
+            spent = float(dt[cells[nearest == piece]].sum())
+            for band in ("slow", "medium", "fast"):
+                times[band] += weights[band] * spent
+    return times
+
+
+def session_band_times(view, session_id, count=5):
+    """Each driver's best clean lap divided into straight and corner-band times
+    (seconds), on the session's reference lap; empty for a wet session or one
+    without a reference. Columns: driver_number, lap_time, and one per band."""
+    laps = view.laps(session_id)
+    if wet_running(laps):
+        return pd.DataFrame()
+    traces = {}
+    for lap in clean_laps(laps).itertuples():
+        trace = lap_telemetry(view, session_id, lap)
+        if trace is not None:
+            traces[lap.DriverNumber] = (lap, trace)
+    fastest = [trace for _, trace in list(traces.values())[:count]]
+    if len(fastest) < MIN_LAPS:
+        return pd.DataFrame()
+    reference = reference_lap(fastest)
+    table = corners(reference)
+    rows = [{"driver_number": number, "lap_time": lap.LapTime.total_seconds(), **band_times(trace, reference, table)}
+            for number, (lap, trace) in traces.items()]
+    return pd.DataFrame(rows)

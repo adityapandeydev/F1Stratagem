@@ -204,3 +204,16 @@ def test_a_session_with_wet_running_has_no_profile():
             return laps
 
     assert track.session_profile(View(), "2022-17-4") is None
+
+
+def test_band_times_split_the_lap_and_a_lap_matches_itself():
+    traces = [trace_of(LAP, seed=s) for s in range(3)]
+    reference = track.reference_lap(traces)
+    table = track.corners(reference)
+    times = track.band_times(traces[0], reference, table)
+    assert set(times) == set(track.BANDS)
+    assert sum(times.values()) == pytest.approx(traces[0].time.iloc[-1] - traces[0].time.iloc[0], rel=0.01)
+    again = track.band_times(traces[0], reference, table)
+    assert all(times[b] == again[b] for b in track.BANDS)
+    slower = traces[0].assign(time=traces[0].time * 1.01)            # 1% slower everywhere
+    assert all(track.band_times(slower, reference, table)[b] > times[b] for b in track.BANDS if times[b] > 0)
