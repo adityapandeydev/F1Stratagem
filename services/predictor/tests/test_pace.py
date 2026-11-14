@@ -929,3 +929,27 @@ def test_an_ownerless_lock_goes_stale_after_a_grace_period(tmp_path):
     old = time.time() - 2 * fitcache.EMPTY_LOCK_GRACE_S
     os.utime(lock, (old, old))
     assert fitcache.lock_owner_gone(lock)
+
+
+def test_push_pace_and_long_runs_together_keep_both(tmp_path, monkeypatch):
+    """Long-run sessions come from the practice sessions before any of them is
+    relabelled as push pace."""
+    from predictor import pace
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    monkeypatch.setattr(PaceModel, "_push_covers", lambda self, view, session: True)
+    kinds = {}
+    for push, long in ((False, True), ("own", False), ("own", True)):
+        model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, practice_push=push, long_runs=long)
+        kinds[(push, long)] = set(model.sessions(view).session_type)
+    assert "L" in kinds[(False, True)] and "FP1" in kinds[(False, True)]
+    assert "FP1P" in kinds[("own", False)] and "L" not in kinds[("own", False)]
+    assert {"FP1P", "L"} <= kinds[("own", True)]
+
+
+def test_every_model_draws_the_same_random_numbers_for_an_example():
+    from predictor.baselines import seed_for
+    example = golden_example(*GOLDEN_EXAMPLES["before_B"])
+    assert seed_for(example) == seed_for(example)
+    import inspect
+    assert "seed = seed_for(example)" in inspect.getsource(PaceModel.predict)

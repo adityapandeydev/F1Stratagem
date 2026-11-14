@@ -72,7 +72,6 @@ fitted on the full evidence.
 """
 
 from dataclasses import dataclass, field, replace
-import zlib
 
 import numpy as np
 import pandas as pd
@@ -80,6 +79,7 @@ from scipy.optimize import minimize
 
 from .forecast import Forecast
 from . import track
+from .baselines import seed_for
 from .laps import long_run_pace, push_pace, race_pace
 from .program import REFERENCE_TYPES, Recorder
 from .rules import REGULATION_CHANGES, low_fuel_segments
@@ -330,15 +330,17 @@ class PaceModel:
         sessions = view.sessions[view.sessions.session_type.isin(self.session_types)]
         if self.history:
             sessions = pd.concat([self._history_sessions(view), sessions], ignore_index=True)
+        long = None
+        if self.long_runs:                        # from the practice sessions as they are
+            practice = sessions[sessions.session_type.isin(PRACTICE)]
+            long = practice.assign(session_id=LONG_RUN_PREFIX + practice.session_id, session_type="L")
         if self.practice_push == "own":
             sessions = sessions.copy()
             practice = sessions.session_type.isin(PRACTICE)
             sessions.loc[practice, "session_type"] = [
                 f"{row.session_type}P" if self._push_covers(view, row) else row.session_type
                 for row in sessions[practice].itertuples()]
-        if self.long_runs:
-            practice = sessions[sessions.session_type.isin(PRACTICE)]
-            long = practice.assign(session_id=LONG_RUN_PREFIX + practice.session_id, session_type="L")
+        if long is not None:
             sessions = pd.concat([sessions, long], ignore_index=True)
         if before is not None:
             sessions = sessions[sessions.available_at_utc < before]
@@ -759,7 +761,7 @@ class PaceModel:
         self._ensure_hyper(view, example.season)
         mean, cov = self.distribution(view, example)
         size = len(mean)
-        seed = zlib.crc32(f"{self.name}|{example.event_key}|{example.session_type}|{example.cutoff_label}".encode())
+        seed = seed_for(example)              # shared by every model: common random numbers
         rng = np.random.default_rng(seed)
         samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
         order = np.argsort(samples, axis=1)

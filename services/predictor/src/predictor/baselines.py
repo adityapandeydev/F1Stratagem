@@ -109,8 +109,11 @@ RANKERS = {"uniform": rank_uniform, "championship": rank_championship, "persiste
            "practice": rank_practice, "qualifying": rank_qualifying}
 
 
-def seed_for(name, example):
-    return zlib.crc32(f"{name}|{example.event_key}|{example.session_type}|{example.cutoff_label}".encode())
+def seed_for(example):
+    """Random seed of an example, the same for every model: paired comparisons then
+    share their random draws (common random numbers), so a difference between two
+    models is not inflated by their sampling noise."""
+    return zlib.crc32(f"{example.event_key}|{example.session_type}|{example.cutoff_label}".encode())
 
 
 class RetirementModel:
@@ -188,7 +191,7 @@ class RankBaseline:
         ranks = self.ranks(view, example)
         if ranks is None:
             return None
-        seed = seed_for(self.ranker, example)
+        seed = seed_for(example)
         rng = np.random.default_rng(seed)
         positions = sample_orders(-self.beta * (ranks - 1), draws, rng)
         return forecast_from_positions(self.name, example, positions, rng, self.retirements, seed,
