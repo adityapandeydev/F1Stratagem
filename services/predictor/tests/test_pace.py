@@ -893,3 +893,13 @@ def test_a_lock_left_by_a_dead_process_is_taken_over(tmp_path):
     path.with_suffix(".lock").write_text(f"{dead}-0")
     entry, cached = fitcache.FitCache(tmp_path / "fits").get_or_fit(path, lambda: {"hyper": 1})
     assert entry == {"hyper": 1} and not cached and path.exists() and not path.with_suffix(".lock").exists()
+
+
+def test_a_driver_race_offset_is_read_only_in_races():
+    recorder = Recorder(("Q", "R"), driver_offsets=("R",))
+    recorder.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    race = recorder.columns(["c"], ["a"], "R")[0]
+    qualifying = recorder.columns(["c"], ["a"], "Q")[0]
+    keys = recorder.keys
+    assert ("offset", ("a", "R")) in keys and ("offset", ("c", "R")) in keys
+    assert len(race) == len(qualifying) + 2          # car and driver race offsets

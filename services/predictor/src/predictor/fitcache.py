@@ -32,7 +32,8 @@ import warnings
 from dataclasses import asdict
 from pathlib import Path
 
-CODE_MODULES = ("pace.py", "program.py", "rules.py", "archive.py", "fitcache.py", "track.py", "circuit_layouts.csv")
+CODE_MODULES = ("pace.py", "program.py", "rules.py", "archive.py", "fitcache.py", "track.py", "circuit_layouts.csv",
+                "laps.py")
 REFERENCE_TABLES = ("events", "sessions", "entrants", "qualifying_history")
 READ_FILES = ("normalized/", "source/car_data/", "source/pos_data/")   # session files a fit can read
 LOCK_WAIT_SECONDS = 5.0

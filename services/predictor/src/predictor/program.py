@@ -119,12 +119,16 @@ class Recorder:
     update), then `replay(hyper)` for the state under any settings with the same
     weekend / affinity switches. `columns` adds the states a forecast reads."""
 
-    def __init__(self, noise_types, weekend=False, affinity=False, form=False, skills=(), season_skills=()):
+    def __init__(self, noise_types, weekend=False, affinity=False, form=False, skills=(), season_skills=(),
+                 driver_offsets=()):
         self.weekend, self.affinity, self.form = weekend, affinity, form
         # parts of the track (track.BANDS) with a driver skill, persistent or per season; an
         # observation reads each weighted by its track's share (`shares`, set per session)
         self.skills, self.season_skills = tuple(skills), tuple(season_skills)
         self.shares = None
+        # session types where each driver also has an offset (a driver who races better than
+        # they qualify), as the car has
+        self.driver_offsets = tuple(driver_offsets)
         self.noise_types = list(noise_types)
         self.tracks = [_Track()]
         self.slot_of = {}
@@ -223,6 +227,8 @@ class Recorder:
             row = [self.column(car, "car", track), self.column(driver, "driver", track)]
             if session_type not in REFERENCE_TYPES:
                 row.append(self.column((car, session_type), "offset", track))
+                if session_type in self.driver_offsets:
+                    row.append(self.column((driver, session_type), "offset", track))
             if self.weekend and session_type != "H":   # a historical session is its weekend's only one
                 row.append(self.column(car, "weekend", track))
             if self.form:

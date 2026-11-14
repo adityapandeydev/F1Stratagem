@@ -80,6 +80,7 @@ from scipy.optimize import minimize
 
 from .forecast import Forecast
 from . import track
+from .laps import race_pace
 from .program import REFERENCE_TYPES, Recorder
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
@@ -89,6 +90,7 @@ SLOW_CUTOFF = 1.07
 DRAWS = 10000
 QUALIFYING_ONLY = ("Q",)
 ALL_SESSIONS = ("Q", "SQ", "FP1", "FP2", "FP3", "T")
+WITH_RACES = ALL_SESSIONS + ("R",)   # races as evidence: corrected race pace (laps.race_pace)
 HISTORY_FIRST_SEASON = 2006      # first season with low-fuel qualifying segments
 HISTORY_PREFIX = "history:"
 MIN_QUALIFYING_SESSIONS = 5   # fewer before a season: the settings keep their starting values
@@ -100,7 +102,7 @@ OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
 @dataclass
 class Hyper:
     noise: dict = field(default_factory=lambda: {"Q": 0.3, "SQ": 0.35, "FP1": 0.8, "FP2": 0.7, "FP3": 0.6,
-                                                 "T": 1.2, "H": 0.3})
+                                                 "T": 1.2, "H": 0.3, "R": 0.5})
     car_drift: float = 0.05     # variances added per 14 days
     driver_drift: float = 0.01
     offset_drift: float = 0.005
@@ -240,6 +242,22 @@ def session_observations(session_type, results, laps, entrants):
     return observations
 
 
+def race_observations(laps, entrants):
+    """One group from a race: each driver's corrected race pace (`laps.race_pace`:
+    tyres, tyre age and fuel taken out lap by lap); none for a wet race."""
+    pace = race_pace(laps)
+    if pace.empty:
+        return []
+    ids = entrants.set_index("driver_number")
+    cars = [ids.lineage_id.get(n) if "lineage_id" in ids else None for n in pace.driver_number]
+    drivers = [ids.driver_id.get(n) for n in pace.driver_number]
+    keep = [pd.notna(c) and pd.notna(d) for c, d in zip(cars, drivers)]
+    if sum(keep) < 2:
+        return []
+    return [([c for c, k in zip(cars, keep) if k], [d for d, k in zip(drivers, keep) if k],
+             pace.pace.to_numpy()[keep])]
+
+
 def history_observations(rows):
     """Observations of one historical qualifying session: one group per low-fuel segment."""
     observations = []
@@ -260,7 +278,7 @@ class PaceModel:
 
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
-                 skills=(), season_skills=()):
+                 skills=(), season_skills=(), driver_offsets=()):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -272,6 +290,7 @@ class PaceModel:
         self.affinity = affinity
         self.form = form
         self.skills, self.season_skills = tuple(skills), tuple(season_skills)
+        self.driver_offsets = tuple(driver_offsets)
         self._profiles, self._shares = {}, {}
         self._layout_index = self._event_start = self._layout_sessions = None
         self.history = history
@@ -308,6 +327,11 @@ class PaceModel:
                 history = view.qualifying_history()
                 self._observations[session.session_id] = history_observations(
                     history[history.event_key == session.event_key])
+            return self._observations[session.session_id]
+        if session.session_type == "R":
+            if session.session_id not in self._observations:
+                self._observations[session.session_id] = race_observations(
+                    view.laps(session.session_id), view.entrants(session.session_id))
             return self._observations[session.session_id]
         if session.session_id not in self._observations:
             laps = view.laps(session.session_id) if session.session_type not in SEGMENTED else None
@@ -372,7 +396,7 @@ class PaceModel:
         sees only that weekend's qualifying; only qualifying updates count."""
         objective = objective or self.objective
         recorder = Recorder(self.session_types, weekend, affinity, form, self.skills if skills else (),
-                            self.season_skills if season_skills else ())
+                            self.season_skills if season_skills else (), self.driver_offsets)
         event = None
         for session in sessions.itertuples():
             recorder.advance(session.scheduled_start_utc)
@@ -585,6 +609,7 @@ class PaceModel:
                 "weekend": self.weekend, "shared_from_qualifying": self.shared_from_qualifying,
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
+                "driver_offsets": list(self.driver_offsets),
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
