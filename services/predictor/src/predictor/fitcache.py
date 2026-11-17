@@ -43,6 +43,12 @@ EMPTY_LOCK_GRACE_S = 60.0       # an owner is written right after the lock is cr
 REFUSALS_BEFORE_GIVING_UP = 3   # lock creation refused with no lock present
 
 
+def _fit_name(model):
+    """The name a model's fits are stored under: models that differ only in how they
+    forecast (not in what they fit) share it, so one fit serves them all."""
+    return getattr(model, "fit_name", None) or model.name
+
+
 def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -136,7 +142,7 @@ class FitCache:
     def key(self, model, season, start, qualifying_start, root, base=None):
         """`base`: in a screen, the base model's fitted settings for the season."""
         self.prime(root, [season])
-        content = {"model": model.name, "options": model.options(), "season": season,
+        content = {"model": _fit_name(model), "options": model.options(), "season": season,
                    "start": hyper_dict(start), "qualifying_start": hyper_dict(qualifying_start),
                    "base": hyper_dict(base),
                    "code": self._code, "data": self._data[season]}
@@ -146,7 +152,7 @@ class FitCache:
         return code_fingerprint() == self._code and data_fingerprint(root, season) == self._data[season]
 
     def path(self, model, season, key):
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", model.name)      # a valid folder name on every system
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", _fit_name(model))   # a valid folder name on every system
         return self.folder / safe / f"{season}-{key[:24]}.json"
 
     def load(self, path):

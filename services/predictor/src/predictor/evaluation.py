@@ -76,7 +76,7 @@ def score(forecast, example):
 def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False, form=False,
                 skills=(), season_skills=(), races=False, driver_race=False, push=False, long_runs=False,
                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
-                wet_forecast=False, wet_ability=False):
+                wet_forecast=False, wet_ability=False, wet_races=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, WITH_RACES, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
@@ -86,13 +86,19 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
         + ("r" if races else "") + ("d" if driver_race else "") \
         + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "") + ("w" if wet_noise else "") + ("t" if robust else "") \
         + ("p" if push else "") + ("n" if push == "own" else "") \
-        + ("c" if wet_forecast and not wet_ability else "") + ("y" if wet_ability else "")
-    return PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
+        + ("x" if wet_races else "")
+    forecast = ("c" if wet_forecast and not wet_ability else "") + ("y" if wet_ability else "")
+    model = PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
                      skills=skills, season_skills=season_skills, driver_offsets=("R",) if driver_race else (),
                      practice_push=push, long_runs=long_runs, race_estimates=race_estimates,
                      knockout=knockout, failures=failures, wet_noise=wet_noise, robust=robust,
-                     wet_forecast=wet_forecast, wet_ability=wet_ability)
+                     wet_forecast=wet_forecast, wet_ability=wet_ability, wet_races=wet_races)
+    # the wet forecast mode changes no fit: a model with it shares the fits of the one without
+    if forecast == "c":
+        model.fit_name = model.name
+    model.name += forecast
+    return model
 
 
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
@@ -180,6 +186,11 @@ def model_registry():
                                               wet_forecast=True),
             "pace3wrqwy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                               wet_ability=True),
+            # wet and mixed races read with a drying curve (x)
+            "pace3wrqwx": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                              wet_races=True),
+            "pace3wrqwxy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                               wet_races=True, wet_ability=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
@@ -390,6 +401,8 @@ def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, s
             # quick screen: the base's settings frozen, only this model's own settings fitted
             model.screen_base = base
             model.name = f"{model.name}|screen"
+            if getattr(model, "fit_name", None):
+                model.fit_name = f"{model.fit_name}|screen"
 
     def view_for(example):
         return archive.view(example.cutoff_time)

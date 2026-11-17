@@ -80,7 +80,7 @@ from scipy.optimize import minimize
 from .forecast import Forecast
 from . import track
 from .baselines import seed_for
-from .laps import long_run_pace, push_pace, race_pace, wet_session
+from .laps import long_run_pace, push_pace, race_pace, wet_race, wet_session
 from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
@@ -104,7 +104,8 @@ class Hyper:
     noise: dict = field(default_factory=lambda: {"Q": 0.3, "SQ": 0.35, "FP1": 0.8, "FP2": 0.7, "FP3": 0.6,
                                                  "T": 1.2, "H": 0.3, "R": 0.5, "L": 0.5,
                                                  "FP1P": 0.5, "FP2P": 0.5, "FP3P": 0.5,
-                                                 "QW": 0.8, "SQW": 0.8, "FP1W": 1.0, "FP2W": 1.0, "FP3W": 1.0})
+                                                 "QW": 0.8, "SQW": 0.8, "FP1W": 1.0, "FP2W": 1.0, "FP3W": 1.0,
+                                                 "RW": 0.8})
     car_drift: float = 0.05     # variances added per 14 days
     driver_drift: float = 0.01
     offset_drift: float = 0.005
@@ -374,11 +375,12 @@ def _pace_group(pace, entrants, slow_cutoff=None):
              pace.pace.to_numpy(dtype=float)[keep])]
 
 
-def race_observations(laps, entrants, with_covariance=False):
+def race_observations(laps, entrants, with_covariance=False, drying=False):
     """One group from a race: each driver's corrected race pace (`laps.race_pace`:
-    tyres, tyre age and fuel taken out lap by lap); none for a wet race. With
-    `with_covariance`, also [the estimation covariance of the group's values]."""
-    pace = race_pace(laps)
+    tyres, tyre age and fuel taken out lap by lap); none for a wet race unless
+    `drying` (then none for a dry one). With `with_covariance`, also [the estimation
+    covariance of the group's values]."""
+    pace = race_pace(laps, drying)
     groups = _pace_group(pace, entrants)
     if not with_covariance:
         return groups
@@ -413,7 +415,7 @@ class PaceModel:
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
                  race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
-                 wet_forecast=False, wet_ability=False):
+                 wet_forecast=False, wet_ability=False, wet_races=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -450,6 +452,12 @@ class PaceModel:
         if (wet_forecast or wet_ability) and not wet_noise:
             raise ValueError("wet forecasts and wet ability need wet sessions as their own types")
         self.wet_forecast, self.wet_ability = wet_forecast or wet_ability, wet_ability
+        # wet and mixed races as their own type "RW" (laps.race_pace with drying)
+        if wet_races and not (wet_noise and "R" in session_types):
+            raise ValueError("wet races need races and wet sessions as their own types")
+        self.wet_races = wet_races
+        if wet_races:
+            self.session_types = self.session_types + (f"R{WET_SUFFIX}",)
         if wet_noise:
             self.session_types = self.session_types + tuple(
                 f"{t}{WET_SUFFIX}" for t in ("Q", "SQ", "FP1", "FP2", "FP3") if t in self.session_types)
@@ -466,6 +474,7 @@ class PaceModel:
         self._circuits = None
         self.hyper = None
         self.fit_cache = None        # a fitcache.FitCache: reuse fits across cutoffs and runs
+        self.fit_name = None         # fits stored under another model's name (same fit, other forecasts)
         self.screen_base = None      # a PaceModel: screen against it (see `_fit_season`)
         self.fitted_season = None
         self.fit_log = {}
@@ -487,6 +496,11 @@ class PaceModel:
             sessions.loc[dry, "session_type"] = [
                 f"{row.session_type}{WET_SUFFIX}" if self._wet_session(view, row.session_id) else row.session_type
                 for row in sessions[dry].itertuples()]
+            if self.wet_races:
+                races = sessions.session_type == "R"
+                sessions.loc[races, "session_type"] = [
+                    f"R{WET_SUFFIX}" if self._wet_race(view, row.session_id) else "R"
+                    for row in sessions[races].itertuples()]
         long = None
         if self.long_runs:                        # from the practice sessions as they are
             practice = sessions[sessions.session_type.isin(PRACTICE)]
@@ -559,10 +573,11 @@ class PaceModel:
                 covered = push and raw and len(push[0][0]) >= len(raw[0][0]) / 2
                 self._observations[session.session_id] = push if covered else raw
             return self._observations[session.session_id]
-        if session.session_type == "R":
+        if base_type(session.session_type) == "R":
             if session.session_id not in self._observations:
                 groups, covariances = race_observations(view.laps(session.session_id),
-                                                        view.entrants(session.session_id), with_covariance=True)
+                                                        view.entrants(session.session_id), with_covariance=True,
+                                                        drying=session.session_type != "R")
                 self._observations[session.session_id] = groups
                 self._covariances[session.session_id] = covariances
             return self._observations[session.session_id]
@@ -572,6 +587,11 @@ class PaceModel:
             self._observations[session.session_id] = session_observations(
                 kind, view.results(session.session_id), laps, view.entrants(session.session_id))
         return self._observations[session.session_id]
+
+    def _wet_race(self, view, session_id):
+        if session_id not in self._wet:
+            self._wet[session_id] = wet_race(view.laps(session_id))
+        return self._wet[session_id]
 
     def _wet_session(self, view, session_id):
         """Wet or mixed: wet-weather tyres on more than WET_SHARE of the session's timed laps."""
@@ -883,6 +903,8 @@ class PaceModel:
             problems.append("robust")
         if base.wet_ability and not self.wet_ability:
             problems.append("wet ability")
+        if base.wet_races and not self.wet_races:
+            problems.append("wet races")
         if base.practice_push and base.practice_push != self.practice_push:
             problems.append("practice push mode")
         if base.history and base.history != self.history:
@@ -912,7 +934,7 @@ class PaceModel:
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
                 "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise, "robust": self.robust,
-                "wet_forecast": self.wet_forecast, "wet_ability": self.wet_ability,
+                "wet_ability": self.wet_ability, "wet_races": self.wet_races,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 

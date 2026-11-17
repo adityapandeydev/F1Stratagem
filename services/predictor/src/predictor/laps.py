@@ -15,10 +15,18 @@ rate with the other such compounds. Split strategies need no special handling.
 Laps far from the fit (traffic, mistakes) are trimmed on a robust scale and the
 fit repeated on the final set.
 
-A race is not used when the track was wet for part of it (wet tyres on more than
-WET_SHARE of timed laps, or fewer than CLEAN_SHARE of them clean: the slick laps of
-a drying track are not dry pace), or when the fit cannot tell drivers apart. A
-driver needs MIN_LAPS clean laps.
+A race is not used as dry pace when the track was wet for part of it (wet tyres on
+more than WET_SHARE of timed laps, or fewer than CLEAN_SHARE of them clean: the slick
+laps of a drying track are not dry pace), or when the fit cannot tell drivers apart.
+A driver needs MIN_LAPS clean laps.
+
+A wet or mixed race is read with `drying=True`: every compound's laps, within 107% of
+their lap's median, fitted with an effect per lap number shared by every car (the
+track drying or getting wetter, fuel, a slow lap for all) and a lap trend per
+compound against the first (slicks gaining on intermediates as the track dries):
+
+    100 log(lap time) = driver pace + lap effect + compound offset
+                        + compound trend x lap + wear(compound) x tyre age + noise
 
 The result per driver is the corrected race pace (log time x 100, relative: only
 differences between drivers carry meaning) and its standard error relative to the
@@ -61,9 +69,10 @@ def wet_race(laps):
     return float(timed.Compound.fillna("").astype(str).str.upper().isin(WET).mean()) > WET_SHARE
 
 
-def clean_race_laps(laps):
+def clean_race_laps(laps, drying=False):
     """Laps of a race usable for pace: green, timed, not lap 1, not an in or out lap,
-    accurate, not deleted, dry tyres with known age, within 107% of the median."""
+    accurate, not deleted, dry tyres with known age, within 107% of the median. With
+    `drying`, wet tyres too and within 107% of their own lap's median."""
     frame = laps[laps.LapTime.notna() & laps.PitInTime.isna() & laps.PitOutTime.isna() & (laps.LapNumber > 1)]
     if "TrackStatus" in frame:
         frame = frame[frame.TrackStatus.fillna("").astype(str) == "1"]
@@ -72,24 +81,26 @@ def clean_race_laps(laps):
     if "Deleted" in frame:
         frame = frame[~frame.Deleted.fillna(False).astype(bool)]
     compound = frame.Compound.fillna("").astype(str).str.upper()
-    frame = frame[compound.isin(DRY) & frame.TyreLife.notna()].copy()
+    frame = frame[compound.isin(DRY + WET if drying else DRY) & frame.TyreLife.notna()].copy()
     if frame.empty:
         return frame.assign(seconds=pd.Series(dtype=float), driver_number=pd.Series(dtype=str),
                             compound=pd.Series(dtype=str))
     frame["seconds"] = frame.LapTime.dt.total_seconds()
-    frame = frame[frame.seconds <= frame.seconds.median() * SLOW_CUTOFF]
+    median = frame.groupby("LapNumber").seconds.transform("median") if drying else frame.seconds.median()
+    frame = frame[frame.seconds <= median * SLOW_CUTOFF]
     return frame.assign(driver_number=frame.DriverNumber.astype(str),
                         compound=frame.Compound.astype(str).str.upper())
 
 
-def race_pace(laps):
+def race_pace(laps, drying=False):
     """Corrected pace per driver (see the module docstring). DataFrame:
     driver_number, pace, se, laps; empty when the race is not used. `.attrs` holds
-    the fitted corrections, the noise scale and lap counts."""
+    the fitted corrections, the noise scale and lap counts. With `drying`, the pace
+    of a wet or mixed race (empty for a dry one)."""
     empty = pd.DataFrame(columns=EMPTY)
-    if wet_race(laps):
+    if wet_race(laps) != drying:
         return empty
-    frame = clean_race_laps(laps)
+    frame = clean_race_laps(laps, drying)
     if len(frame) < CLEAN_SHARE * laps.LapTime.notna().sum():
         return empty
     # trim, then drop drivers left with fewer than MIN_LAPS laps and refit the rest,
@@ -103,7 +114,7 @@ def race_pace(laps):
         y = 100 * np.log(frame.seconds.to_numpy()) - FUEL * frame.LapNumber.to_numpy(dtype=float)
         keep = np.ones(len(frame), dtype=bool)
         for _ in range(TRIM_ROUNDS):
-            x, names = _design(frame[keep], drivers)
+            x, names = _design(frame[keep], drivers, drying=drying)
             beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
             residual = y - _design(frame, drivers, names)[0] @ beta
             scale = 1.4826 * float(np.median(np.abs(residual[keep] - np.median(residual[keep]))))
@@ -115,15 +126,25 @@ def race_pace(laps):
         if (kept >= MIN_LAPS).all():
             break
         frame = frame[frame.driver_number.isin(kept[kept >= MIN_LAPS].index)]
-    x, names = _design(frame[keep], drivers)                    # the final fit, on the final lap set
-    if keep.sum() <= x.shape[1] or np.linalg.matrix_rank(x) < x.shape[1]:
+    x, names = _design(frame[keep], drivers, drying=drying)     # the final fit, on the final lap set
+    n = len(drivers)
+    rank = np.linalg.matrix_rank(x)
+    centre = np.eye(n) - np.ones((n, n)) / n                    # relative to the field mean
+    if drying:
+        # a compound the whole field ran at the same time cannot be told from those laps'
+        # effects, nor the field's level from the lap effects: only each driver against
+        # the field must be estimable (in the row space of the design)
+        contrasts = np.hstack([centre, np.zeros((n, x.shape[1] - n))])
+        separable = np.allclose(contrasts @ np.linalg.pinv(x) @ x, contrasts, atol=1e-8)
+    else:
+        separable = rank == x.shape[1]
+    if keep.sum() <= rank or not separable:
         return empty                                            # drivers or tyres not separable
     beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
     residual = y[keep] - x @ beta
-    sigma = float(np.sqrt(residual @ residual / max(len(residual) - x.shape[1], 1)))
-    cov = sigma ** 2 * np.linalg.inv(x.T @ x)
-    n = len(drivers)
-    centre = np.eye(n) - np.ones((n, n)) / n                    # relative to the field mean
+    sigma = float(np.sqrt(residual @ residual / max(len(residual) - rank, 1)))
+    # a generalised inverse: drivers against the field are estimable, so their covariance is exact
+    cov = sigma ** 2 * (np.linalg.pinv(x.T @ x) if drying else np.linalg.inv(x.T @ x))
     result = pd.DataFrame({"driver_number": drivers, "pace": beta[:n],
                            "se": np.sqrt(np.diag(centre @ cov[:n, :n] @ centre.T)),
                            "laps": [int((keep & (frame.driver_number == d).to_numpy()).sum()) for d in drivers]})
@@ -133,18 +154,23 @@ def race_pace(laps):
     return result
 
 
-def _design(frame, drivers, names=None):
+def _design(frame, drivers, names=None, drying=False):
     """Columns: one per driver (pace), compound offsets against the first compound,
-    wear per compound with enough laps and ages, one shared wear for the rest. With
-    `names`, the same columns as a previous call (for residuals of trimmed laps)."""
+    wear per compound with enough laps and ages, one shared wear for the rest; with
+    `drying`, also an effect per lap number but the first and a lap trend per compound
+    but the first. With `names`, the same columns as a previous call (for residuals
+    of trimmed laps)."""
     number = frame.driver_number.to_numpy()
     compound = frame.compound.to_numpy()
     age = frame.TyreLife.to_numpy(dtype=float)
+    lap = frame.LapNumber.to_numpy(dtype=float) if "LapNumber" in frame else np.zeros(len(frame))
     if names is None:
         present = sorted(set(compound))
         own = [c for c in present if (compound == c).sum() >= MIN_WEAR_LAPS and len(set(age[compound == c])) >= 2]
         names = [f"driver:{d}" for d in drivers] + [f"compound:{c}" for c in present[1:]] \
             + [f"wear:{c}" for c in own] + (["wear:shared"] if len(own) < len(present) else [])
+        if drying:
+            names += [f"lap:{int(n)}" for n in sorted(set(lap))[1:]] + [f"trend:{c}" for c in present[1:]]
     own = {name[5:] for name in names if name.startswith("wear:") and name != "wear:shared"}
     columns = []
     for name in names:
@@ -153,6 +179,10 @@ def _design(frame, drivers, names=None):
             columns.append((number == value).astype(float))
         elif kind == "compound":
             columns.append((compound == value).astype(float))
+        elif kind == "lap":
+            columns.append((lap == float(value)).astype(float))
+        elif kind == "trend":
+            columns.append((compound == value) * lap)
         elif value == "shared":
             columns.append(~np.isin(compound, list(own)) * age)
         else:

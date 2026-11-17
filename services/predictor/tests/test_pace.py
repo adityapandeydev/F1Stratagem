@@ -1199,3 +1199,13 @@ def test_wet_session_needs_wet_tyres_on_enough_timed_laps():
     laps = pd.DataFrame({"LapTime": [90.0] * 10, "Compound": ["SOFT"] * 9 + ["INTERMEDIATE"]})
     assert wet_session(laps) and not wet_session(laps.assign(Compound="SOFT"))
     assert not wet_session(pd.DataFrame())
+
+
+def test_wet_races_are_their_own_type_and_need_wet_sessions():
+    from predictor.pace import WITH_RACES
+    from predictor.program import base_type
+    assert base_type("RW") == "R"
+    model = PaceModel(WITH_RACES, wet_noise=True, wet_races=True)
+    assert "RW" in model.session_types and model.options()["wet_races"]
+    with pytest.raises(ValueError):
+        PaceModel(WITH_RACES, wet_races=True)

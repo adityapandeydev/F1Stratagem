@@ -31,7 +31,7 @@ WET_SUFFIX = "W"               # a session in wet or mixed conditions: "QW", "FP
 
 def base_type(session_type):
     """The dry session type a wet one belongs to ("FP2W" -> "FP2")."""
-    if session_type.endswith(WET_SUFFIX) and session_type[:-1] in ("Q", "SQ", "FP1", "FP2", "FP3", "T"):
+    if session_type.endswith(WET_SUFFIX) and session_type[:-1] in ("Q", "SQ", "FP1", "FP2", "FP3", "T", "R"):
         return session_type[:-1]
     return session_type
 DAY_SCALE = 14.0  # drift variances are per 14 days
