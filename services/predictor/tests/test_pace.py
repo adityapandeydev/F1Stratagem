@@ -1091,3 +1091,14 @@ def test_robust_updates_follow_the_student_t_density_and_shrink_surprises():
     moved = lambda st: abs(st.mean[1] - st.mean[0])
     assert moved(robust) < moved(gaussian)                         # a surprising result moves the state less
     assert run([0.0, 0.3], 0.0).objective == run([0.0, 0.3], 0.0).objective
+
+
+def test_robust_forecasts_draw_heavy_tailed_laps():
+    from predictor.pace import knockout_positions
+    pace = np.zeros((4000, 20))
+    normal = knockout_positions(pace, 0.3, np.random.default_rng(3))
+    heavy = knockout_positions(pace, 0.3, np.random.default_rng(3), dof=2.0)
+    assert sorted(heavy[0]) == list(range(1, 21))
+    assert not (normal == heavy).all()
+    gaussian = knockout_positions(pace, 0.3, np.random.default_rng(3), dof=0.0)
+    assert (normal == gaussian).all()                          # dof 0: the Gaussian draws, unchanged

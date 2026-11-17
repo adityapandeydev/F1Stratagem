@@ -302,14 +302,15 @@ def qualifying_failures(results):
     return rows
 
 
-def knockout_positions(pace, noise, rng, failures=None, failure_rng=None):
+def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.0):
     """Positions from Q1, Q2 and Q3: per draw (rows of `pace`) every driver sets a lap
     per segment he takes part in (pace + independent noise); the slowest leave after Q1
     and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten.
     `failures` (drivers x 3): probability of setting no time in each segment; a driver
     who fails is behind everyone who set a time in that segment. Failures draw from
     `failure_rng`, so the lap noise is the same with or without them (models compared
-    on shared random draws stay paired)."""
+    on shared random draws stay paired). With `dof` > 0 the lap noise is Student-t
+    (scale `noise`), as the robust filter assumes."""
     draws, size = pace.shape
     if failures is not None and failure_rng is None:
         failure_rng = np.random.default_rng(0)        # never the lap-noise stream
@@ -318,7 +319,8 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None):
     alive = np.ones((draws, size), dtype=bool)
     rows = np.arange(draws)[:, None]
     def segment_lap(index):
-        lap = pace + noise * rng.standard_normal(pace.shape)
+        draw = rng.standard_t(dof, pace.shape) if dof > 0 else rng.standard_normal(pace.shape)
+        lap = pace + noise * draw
         if failures is not None:
             failed = failure_rng.random(pace.shape) < failures[None, :, index]
             lap = np.where(failed, 1e6 + failure_rng.random(pace.shape), lap)     # behind every time set
@@ -935,7 +937,8 @@ class PaceModel:
             pace = rng.multivariate_normal(mean, cov - noise ** 2 * np.eye(size) + 1e-9 * np.eye(size), size=draws,
                                            method="cholesky")
             failures = self.failure_rates(view, example) if self.failures else None
-            positions = knockout_positions(pace, noise, rng, failures, np.random.default_rng([seed, 1]))
+            positions = knockout_positions(pace, noise, rng, failures, np.random.default_rng([seed, 1]),
+                                           dof=self.hyper.robust_dof if self.robust else 0.0)
         else:
             samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
             order = np.argsort(samples, axis=1)
