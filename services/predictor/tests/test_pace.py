@@ -1071,3 +1071,23 @@ def test_wet_qualifying_counts_in_the_qualifying_objective(tmp_path, monkeypatch
     updates = counted[counted[:, 0] == program.UPDATE]
     assert updates[:, 3].sum() > 0                                 # wet qualifying updates are counted
     assert recorder.objective(Hyper(**GOLDEN_SETTINGS | NO_AFFINITY | {"weekend_prior": 0.0})) != 0.0
+
+
+def test_robust_updates_follow_the_student_t_density_and_shrink_surprises():
+    from math import lgamma, log, pi
+    def run(values, dof):
+        recorder = Recorder(("Q",))
+        recorder.advance(pd.Timestamp("2021-07-01", tz=UTC))
+        recorder.update(["c", "d"], ["a", "b"], values)
+        return recorder.replay(Hyper(robust_dof=dof))
+    hyper = Hyper()
+    s = 2 * hyper.car_prior ** 2 + 2 * hyper.driver_prior ** 2 + 2 * hyper.noise["Q"] ** 2
+    for gap in (0.3, 5.0):
+        state = run([0.0, gap], 4.0)
+        q = gap ** 2 / s
+        expected = lgamma(2.5) - lgamma(2.0) - 0.5 * log(4.0 * pi) - 0.5 * log(s) - 2.5 * log(1 + q / 4.0)
+        assert state.objective == pytest.approx(expected, rel=1e-10)
+    gaussian, robust = run([0.0, 5.0], 0.0), run([0.0, 5.0], 4.0)
+    moved = lambda st: abs(st.mean[1] - st.mean[0])
+    assert moved(robust) < moved(gaussian)                         # a surprising result moves the state less
+    assert run([0.0, 0.3], 0.0).objective == run([0.0, 0.3], 0.0).objective

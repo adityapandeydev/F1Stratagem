@@ -106,7 +106,8 @@ def settings(hyper, noise_types):
     noise = [hyper.noise.get(t, 0.0) for t in noise_types]
     return (np.array(priors, dtype=np.float64), np.array(drifts, dtype=np.float64),
             np.array(winters, dtype=np.float64), np.array(multiplied, dtype=np.float64),
-            float(hyper.regulation_multiplier), np.array(noise, dtype=np.float64), float(hyper.estimate_scale))
+            float(hyper.regulation_multiplier), np.array(noise, dtype=np.float64), float(hyper.estimate_scale),
+            float(hyper.robust_dof))
 
 
 class _Track:

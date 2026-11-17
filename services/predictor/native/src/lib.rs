@@ -31,6 +31,33 @@ pub struct Settings<'a> {
     pub regulation_multiplier: f64,
     pub noise: &'a [f64],
     pub estimate_scale: f64, // multiplies a group's estimation covariance (laps fitted together)
+    pub robust_dof: f64,     // Student-t degrees of freedom of a group's noise; 0: Gaussian
+}
+
+/// ln Gamma(x) for x > 0 (Lanczos, g = 7, n = 9; relative error below 1e-13).
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        let pi = std::f64::consts::PI;
+        return (pi / (pi * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let mut a = G[0];
+    let t = x + 7.5;
+    for (i, g) in G.iter().enumerate().skip(1) {
+        a += g / (x + i as f64);
+    }
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
 pub struct Program<'a> {
@@ -300,11 +327,13 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                 let variance = s.noise[noise_type] * s.noise[noise_type];
                 sm.clear();
                 sm.resize(m * m, 0.0);
+                let mut hph = vec![0.0; m * m]; // the state part of S (robust updates rescale the rest)
                 for i in 0..m {
                     let hp_row = &hp[i * n..(i + 1) * n];
                     let base_part: f64 = base().map(|(&j, &w)| w * hp_row[j as usize]).sum();
                     for k in 0..m {
                         let part: f64 = row(k + 1).map(|(&j, &w)| w * hp_row[j as usize]).sum();
+                        hph[i * m + k] = part - base_part;
                         sm[i * m + k] = part - base_part + variance * (if i == k { 2.0 } else { 1.0 });
                     }
                 }
@@ -327,6 +356,7 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                         sm[k * m + i] = v;
                     }
                 }
+                let sm_full = sm.clone(); // S before factorising (robust updates rescale its noise part)
                 if !cholesky(&mut sm, m) {
                     return Err(Failure::Numerical("innovation covariance is not positive definite".into()));
                 }
@@ -341,8 +371,30 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                 }
                 let quadratic: f64 = solved.iter().map(|v| v * v).sum();
                 let log_det: f64 = (0..m).map(|i| sm[i * m + i].ln()).sum();
+                let nu = s.robust_dof;
                 if b != 0 {
-                    likelihoods[track] += -0.5 * quadratic - log_det - 0.5 * m as f64 * log_two_pi;
+                    likelihoods[track] += if nu > 0.0 {
+                        // multivariate Student-t density with scale S and nu degrees of freedom
+                        let mf = m as f64;
+                        ln_gamma(0.5 * (nu + mf)) - ln_gamma(0.5 * nu) - 0.5 * mf * (nu * std::f64::consts::PI).ln()
+                            - log_det - 0.5 * (nu + mf) * (1.0 + quadratic / nu).ln()
+                    } else {
+                        -0.5 * quadratic - log_det - 0.5 * m as f64 * log_two_pi
+                    };
+                }
+                if nu > 0.0 {
+                    // robust update: a surprising group (quadratic above its expected m) has
+                    // its noise scaled up by (nu + quadratic) / (nu + m) before the update
+                    let scale = (nu + quadratic) / (nu + m as f64);
+                    if (scale - 1.0).abs() > 1e-12 {
+                        let full = sm_full.clone();
+                        for idx in 0..m * m {
+                            sm[idx] = hph[idx] + (full[idx] - hph[idx]) * scale;
+                        }
+                        if !cholesky(&mut sm, m) {
+                            return Err(Failure::Numerical("robust innovation covariance is not positive definite".into()));
+                        }
+                    }
                 }
                 // W = S^-1 HP (column by column), mean += HP^T S^-1 innovation, cov -= HP^T W
                 let mut weights = innovation.clone();
@@ -401,6 +453,7 @@ fn replay(
     regulation_multiplier: f64,
     noise: &PyReadonlyArray1<f64>,
     estimate_scale: f64,
+    robust_dof: f64,
 ) -> PyResult<([f64; TRACKS], State)> {
     let program = Program {
         ops: ops.as_slice()?,
@@ -421,6 +474,7 @@ fn replay(
         regulation_multiplier,
         noise: noise.as_slice()?,
         estimate_scale,
+        robust_dof,
     };
     py.allow_threads(|| run(&program, &settings)).map_err(PyErr::from)
 }
@@ -446,9 +500,10 @@ fn log_likelihood(
     regulation_multiplier: f64,
     noise: PyReadonlyArray1<f64>,
     estimate_scale: f64,
+    robust_dof: f64,
 ) -> PyResult<f64> {
     let (likelihoods, _) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &weights, &values, slots,
-                                  &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise, estimate_scale)?;
+                                  &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise, estimate_scale, robust_dof)?;
     Ok(likelihoods.iter().sum())
 }
 
@@ -473,9 +528,10 @@ fn filter_state<'py>(
     regulation_multiplier: f64,
     noise: PyReadonlyArray1<f64>,
     estimate_scale: f64,
+    robust_dof: f64,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>)> {
     let (likelihoods, state) = replay(py, &ops, &floats, &ints, &group_rows, &row_starts, &entries, &weights, &values, slots,
-                                      &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise, estimate_scale)?;
+                                      &priors, &drifts, &winters, &multiplied, regulation_multiplier, &noise, estimate_scale, robust_dof)?;
     let n = state.n;
     let cov = state.covariance().into_pyarray_bound(py).reshape([n, n])?;
     Ok((likelihoods.to_vec().into_pyarray_bound(py), state.mean.clone().into_pyarray_bound(py), cov))

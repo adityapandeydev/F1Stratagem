@@ -115,6 +115,7 @@ class Hyper:
     driver_winter: float = 0.0
     regulation_multiplier: float = 1.0   # car winter variance multiplier at new regulations
     estimate_scale: float = 0.0  # scales a race's pace estimation covariance into its noise; 0: not used
+    robust_dof: float = 0.0      # Student-t degrees of freedom of observation noise; 0: Gaussian
     weekend_prior: float = 0.0  # spread of a car's weekend effect; 0 disables it
     affinity_prior: float = 0.0  # spread of a car x circuit affinity; 0 disables it
     affinity_drift: float = 0.0  # affinity variance added per 14 days
@@ -127,12 +128,12 @@ class Hyper:
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
                "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior",
                "affinity_prior", "affinity_drift", "affinity_winter", "form_prior", "skill_prior", "skill_drift",
-               "season_skill_prior", "estimate_scale")
+               "season_skill_prior", "estimate_scale", "robust_dof")
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
     def fitted(types, winter=False, regulation=False, weekend=False, affinity=False, new_cars=True, new_drivers=True,
-               form=False, skills=False, season_skills=False, estimates=False):
+               form=False, skills=False, season_skills=False, estimates=False, robust=False):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations; the
@@ -146,7 +147,7 @@ class Hyper:
                 *(("affinity_prior", "affinity_drift", *(("affinity_winter",) if winter else ())) if affinity else ()),
                 *(("form_prior",) if form else ()),
                 *(("skill_prior", "skill_drift") if skills else ()), *(("season_skill_prior",) if season_skills else ()),
-                *(("estimate_scale",) if estimates else ()))
+                *(("estimate_scale",) if estimates else ()), *(("robust_dof",) if robust else ()))
 
     def vector(self, noise_types, scalars):
         return np.log([self.noise[t] for t in noise_types] + [getattr(self, name) for name in scalars])
@@ -395,7 +396,7 @@ class PaceModel:
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
-                 race_estimates=False, knockout=False, failures=False, wet_noise=False):
+                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -425,6 +426,8 @@ class PaceModel:
         # own noise: a compromised session widens uncertainty instead of moving long-run pace
         self.wet_noise = wet_noise
         self._wet = {}
+        # heavy-tailed observation noise: an unusual session moves the estimates less
+        self.robust = robust
         if wet_noise:
             self.session_types = self.session_types + tuple(
                 f"{t}{WET_SUFFIX}" for t in ("Q", "SQ", "FP1", "FP2", "FP3") if t in self.session_types)
@@ -709,7 +712,8 @@ class PaceModel:
             visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
             affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers,
-                                           form, skills, season_skills, self.race_estimates and "R" in types)
+                                           form, skills, season_skills, self.race_estimates and "R" in types,
+                                           self.robust)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen]
         default = self._default_start()
@@ -786,7 +790,7 @@ class PaceModel:
         owned = Hyper.fitted(base.session_types, winter=base.winter, regulation=base.winter, weekend=base.weekend,
                              affinity=base.affinity, form=base.form, skills=bool(base.skills),
                              season_skills=bool(base.season_skills),
-                             estimates=base.race_estimates and "R" in base.session_types)
+                             estimates=base.race_estimates and "R" in base.session_types, robust=base.robust)
         noise = {**start.noise, **{t: base.hyper.noise[t] for t in base.session_types}}
         merged = replace(start, noise=noise, **{name: getattr(base.hyper, name) for name in owned})
         if base.fit_log[season].get("fitted") is None:     # the base kept its starting values: too little data
@@ -814,6 +818,8 @@ class PaceModel:
                 problems.append(bands)
         if base.race_estimates and not self.race_estimates:
             problems.append("race estimates")
+        if base.robust and not self.robust:
+            problems.append("robust")
         if base.history and base.history != self.history:
             problems.append("history mode")
         if problems:
@@ -826,7 +832,8 @@ class PaceModel:
                         if self.affinity else {}), **({"form_prior": 0.1} if self.form else {}),
                      **({"skill_prior": 0.3, "skill_drift": 0.001} if self.skills else {}),
                      **({"season_skill_prior": 0.2} if self.season_skills else {}),
-                     **({"estimate_scale": 1.0} if self.race_estimates else {}))
+                     **({"estimate_scale": 1.0} if self.race_estimates else {}),
+                     **({"robust_dof": 5.0} if self.robust else {}))
 
     def fit(self, history, view_for):
         return self
@@ -838,7 +845,7 @@ class PaceModel:
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
-                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise,
+                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise, "robust": self.robust,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
