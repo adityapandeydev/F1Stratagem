@@ -11,12 +11,17 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Data archive (FastF1, Jolpica, Open-Meteo, FIA documents), see [data-archive.md](data-archive.md) | Implemented |
 | Cutoff-gated archive access, targets, forecast object, baselines, walk-forward evaluation | Implemented |
 | Pace model for qualifying: car, driver, team × session offsets, weekend effect, winter reset | Implemented (v3w) |
-| Corrected race pace as evidence (tyres, tyre age, fuel lap by lap) | Implemented, current model at both cutoffs (v3wr) |
-| Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance | Implemented |
+| Corrected race pace as evidence (tyres, tyre age, fuel lap by lap) | Implemented (v3wr) |
+| Qualifying simulated through Q1, Q2 and Q3 (eliminations, a lap per segment) | Implemented (v3wrq) |
+| Wet and mixed sessions as their own evidence types (own noise) | Implemented; last-cutoff champion (v3wrqw) |
+| Robust Student-t observation noise | Implemented; pre-weekend champion (v3wrqwt), being re-checked after a forecast fix |
+| Champion router: a model per forecast moment | Implemented |
+| Forecast roster from the FIA entry list known at the cutoff | Implemented |
+| Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance, Student-t updates | Implemented |
 | Fit cache (fits reused across cutoffs and runs) and quick screens | Implemented |
 | Track profiles from telemetry, circuit layout table | Implemented |
-| Practice run classification (push laps, long runs) | Implemented; push pace with its own noise (v3wrpn) is the last-cutoff challenger |
-| Race pace estimation uncertainty in the filter (v3wru) | In evaluation |
+| Practice run classification (push laps, long runs) | Implemented; per-driver push pace (v3wrqwp) in evaluation |
+| Race pace estimation uncertainty in the filter (v3wru), failed laps in qualifying (v3wrqf) | Tested, not adopted |
 | Qualifying history 1996–2017, driver season form, car × circuit affinity, driver corner skills | Tested, not adopted (see Training and evaluation) |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
 | Pace model for races, circuit/car profiles, hazards | Planned |
@@ -629,7 +634,10 @@ lower is better):
 | v2: + practice, testing, team × session offsets | 0.112 | 0.102 |
 | v3w: + weekend effect, winter reset (current) | 0.104 | 0.099 |
 | v3wa: v3w + car × circuit affinity (not adopted) | 0.104 | 0.099 |
-| v3wr: v3w + corrected race pace (current, both cutoffs) | 0.1035 | 0.0984 |
+| v3wr: v3w + corrected race pace | 0.1035 | 0.0984 |
+| v3wrq: + Q1/Q2/Q3 simulation | 0.1027 | 0.0974 |
+| v3wrqw: + wet sessions as their own evidence (last-cutoff champion) | 0.1020 | 0.0960 |
+| v3wrqwt: + robust Student-t noise (pre-weekend champion) | 0.1012 | 0.0951 |
 
 v3w's pole log loss is 1.61 at the last cutoff against 2.08 for championship
 order. Its 80% intervals contain the result 89–91% of the time against an
@@ -649,7 +657,7 @@ flowchart TB
     promo -->|"no"| stay["Current version stays"]
 ```
 
-### Results since the native filter (2026-11-13 to 2026-11-15)
+### Results since the native filter (2026-11-13 to 2026-11-17)
 
 Promotion now follows **per-horizon champions**: each forecast moment (before the
 weekend, last cutoff) has its own model, replaced only by a candidate that is
@@ -673,6 +681,11 @@ target's entrants stand in for it, with substitutions counted once visible).
 | Practice push pace, compound-corrected (v3wrp) | within noise | not adopted |
 | Practice long runs as evidence (v3wrl) | worse beyond noise at the last cutoff (team fuel loads vary by session) | not adopted; kept for the race model |
 | Push pace with its own noise (v3wrpn) | last cutoff −0.00204 better beyond noise; 2024: +0.00055 | not promoted; last-cutoff challenger |
+| Race pace estimation covariance in the noise (v3wru) | level (−0.00004, −0.00001): with 20+ clean laps the estimates' own error is small next to race noise | not adopted |
+| Qualifying simulated through Q1, Q2 and Q3 (v3wrq) | −0.00084 and −0.00087, better beyond noise (also under the entry-list roster); 2024: −0.00204 and −0.00190 | **adopted at both cutoffs** |
+| Failed laps, driver-specific (v3wrqf) | worse beyond noise before the weekend (+0.00043): failures are mostly not driver traits | not adopted |
+| Wet and mixed sessions as their own types (v3wrqw) | −0.00053 and −0.00136, better beyond noise; 2024: −0.00144 and −0.00435 | **adopted at both cutoffs**; last-cutoff champion |
+| Robust Student-t noise (v3wrqwt) | −0.00074 before the weekend, better beyond noise; last cutoff within noise; 2024 before the weekend −0.00074 | **pre-weekend champion** (re-check pending after aligning its forecast draws with the fitted distribution) |
 
 Lessons:
 
@@ -688,8 +701,20 @@ Lessons:
 - Errors concentrate in wet and mixed qualifying (12 of 104 sessions): ranking
   error about 50% higher and intervals too narrow (78% coverage against 87%
   predicted), while dry sessions are slightly underconfident (91% against 87%).
-  A global spread change would therefore be wrong; condition-aware evidence is
-  planned.
+  A global spread change would therefore be wrong. Treating wet sessions as weaker
+  evidence (v3wrqw) lowered the fitted dry qualifying noise from about 0.45 to
+  0.39 and improved every season; forecasts of wet qualifying are still made as if
+  dry, and a wet forecast mode and driver wet ability are next.
+- Simulating qualifying segment by segment helped more than any evidence change:
+  lap noise acts in each segment, which a single sorted draw understated.
+- Heavy-tailed noise fits lap data far better (log-likelihood +780 on data before
+  2021 at 2–5 degrees of freedom), but forecasts must draw from the same
+  distribution the filter fits (one shared scale per segment), or they become
+  overconfident.
+- The roster comes from the FIA entry list published before the cutoff (125 of 128
+  pre-weekend forecasts 2019–2024): withdrawn drivers are forecast but not scored,
+  late substitutes are not forecast, and a seat is taken only from sessions
+  available at the cutoff.
 
 **Track profiles.** Corners are found on each session's reference lap (the
 median line of its clean dry laps) from the racing line's curvature and banded

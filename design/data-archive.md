@@ -278,6 +278,7 @@ checks what it reads.
 | `rnc_usage` (gearbox case, driveline) | 2022–2024 | as above; sheets not published outside these years |
 | `car_updates` (component, reason, geometry, description) | 2024–2026 | every team covered at every event |
 | `tyre_nominations` (C1–C6, minimum pressures, camber) | 2022–2026 | three compounds per event; pressures 2022–2025 (2026 sheets use a new layout, not yet parsed); no preview published for 2022 Bahrain and 2025 São Paulo |
+| `entry_lists` (race drivers per car, extra first-practice drivers, publication time) | 2019–2026 | at least ten race drivers per list; car numbers carry footnote markers in the text layer, so drivers are identified by name. The reference build resolves each list to its event (the weekend containing the publication) and each name to a driver ID; every race driver of 2018–2024 resolves |
 
 - Car presentation tables are read from the drawn row dividers and column borders,
   not from text order, so merged cells and missing dividers are handled.

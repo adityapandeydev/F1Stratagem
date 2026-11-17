@@ -29,9 +29,13 @@ Models (`predictor evaluate --models ...`):
 | `pace` | v1: qualifying evidence only |
 | `pace2` | v2: + practice, sprint qualifying, testing, team × session offsets |
 | `pace3w` | v3w: + weekend effect and winter reset |
-| `pace3wr` | v3wr: v3w + corrected race pace (current at both cutoffs) |
-| `pace3wrpn` | v3wr + practice push pace with its own noise (last-cutoff challenger) |
-| `pace3wru` | v3wr + race pace estimation covariance (in evaluation) |
+| `pace3wr` | v3wr: v3w + corrected race pace |
+| `pace3wrq` | v3wrq: + Q1/Q2/Q3 simulation |
+| `pace3wrqw` | v3wrqw: + wet sessions as their own evidence (last-cutoff champion) |
+| `pace3wrqwt` | v3wrqwt: + robust Student-t noise (pre-weekend champion) |
+| `pace3wrqwp` | v3wrqw + per-driver push pace in practice (in evaluation) |
+| `champion` | Router: the pre-weekend champion before the weekend, the last-cutoff champion after any session |
+| `pace3wrpn`, `pace3wru`, `pace3wrqf` | Tested, not adopted (push pace challenger, race estimation covariance, failed laps) |
 | `pace3wa` | v3wa: v3w + car × circuit affinity (tested, not adopted) |
 | `pace3`, `pace2q`, `pace3q`, `pace2w`, `pace2s` | Development variants kept for comparison |
 
