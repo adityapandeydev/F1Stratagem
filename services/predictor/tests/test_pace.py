@@ -1214,3 +1214,40 @@ def test_wet_races_are_their_own_type_and_need_wet_sessions():
     assert "RW" in model.session_types and model.options()["wet_races"]
     with pytest.raises(ValueError):
         PaceModel(WITH_RACES, wet_races=True)
+
+
+def test_wet_evolution_reads_segments_at_one_track_and_widens_wet_forecasts():
+    import types as pytypes
+    from predictor.pace import WITH_RACES, session_observations
+    results = pd.DataFrame({"DriverNumber": ["1", "2"], "Q1": pd.to_timedelta([90.0, 91.0], unit="s"),
+                            "Q2": pd.to_timedelta([None, None]), "Q3": pd.to_timedelta([None, None])})
+    entrants = pd.DataFrame({"driver_number": ["1", "2"], "driver_id": ["a", "b"], "lineage_id": ["x", "y"]})
+    raw = session_observations("Q", results, None, entrants)[0][2]
+    read = session_observations("Q", results, None, entrants, {"Q1": {"1": 0.4, "2": -0.4}})[0][2]
+    assert read == pytest.approx(raw - np.array([0.4, -0.4]))
+    # a segment read only in part is left as it ran: one track throughout
+    partial = session_observations("Q", results, None, entrants, {"Q1": {"1": 0.4}})[0][2]
+    assert partial == pytest.approx(raw)
+    model = PaceModel(WITH_RACES, wet_noise=True, wet_forecast=True, wet_evolution=True)
+    model.hyper = Hyper(noise={"Q": 0.5, "QW": 1.0})
+    model._evolution = {"s1": [[0.5, -0.5]], "s2": [[1.0, 0.0, -1.0]], "later": [[9.0, -9.0]]}
+    view = pytypes.SimpleNamespace(sessions=pd.DataFrame({"session_id": ["s1", "s2"]}))
+    assert model.evolution_variance(view) == pytest.approx((0.5 + 2.0) / 3)
+    wet, dry = pytypes.SimpleNamespace(condition="wet"), pytypes.SimpleNamespace(condition="dry")
+    assert model.forecast_noise(view, wet) == pytest.approx((1.0, np.sqrt(2.5 / 3)))
+    assert model.forecast_noise(view, dry) == (0.5, 0.0)
+    assert model.options()["wet_evolution"] and "wet_evolution" not in PaceModel(WITH_RACES, wet_noise=True).options()
+    with pytest.raises(ValueError):
+        PaceModel(WITH_RACES, wet_evolution=True)
+
+
+def test_the_track_spread_is_normal_beside_a_student_t_lap_noise():
+    from scipy import stats
+    from predictor.pace import knockout_positions
+    rng = np.random.default_rng(3)
+    draws, size, track = 200_000, 20, 1.0
+    pace = np.full((draws, size), 50.0)
+    pace[:, 0], pace[:, 1] = 0.0, track * np.sqrt(2)
+    positions = knockout_positions(pace, 1e-9, rng, dof=3.0, track=track)
+    # the Student-t scale of the lap noise does not multiply the track's variance
+    assert np.mean(positions[:, 1] < positions[:, 0]) == pytest.approx(stats.norm.sf(1.0), abs=0.005)

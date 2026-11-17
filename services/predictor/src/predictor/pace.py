@@ -80,7 +80,7 @@ from scipy.optimize import minimize
 from .forecast import Forecast
 from . import track
 from .baselines import seed_for
-from .laps import long_run_pace, push_pace, race_pace, wet_race, wet_session
+from .laps import long_run_pace, push_pace, qualifying_trend, race_pace, wet_race, wet_session
 from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
@@ -213,14 +213,18 @@ def _optimise(negative, x0, lower=None):
     return x, value, False
 
 
-def _lap_groups(session_type, results, laps):
-    """Groups of (driver number, seconds) run under shared conditions."""
+def _lap_groups(session_type, results, laps, trends=None):
+    """Groups of (driver number, seconds) run under shared conditions. `trends`
+    (`laps.qualifying_trend`) reads each segment time at the segment's mean track."""
     if session_type in SEGMENTED:
         for segment in SEGMENTS:
             if segment not in results or results[segment].isna().all():
                 continue
             frame = pd.DataFrame({"number": results.DriverNumber.astype(str),
                                   "seconds": pd.to_timedelta(results[segment]).dt.total_seconds()}).dropna()
+            if trends and segment in trends and frame.number.isin(list(trends[segment])).all():
+                shift = frame.number.map(trends[segment]).to_numpy(dtype=float)
+                frame["seconds"] = frame.seconds.to_numpy() * np.exp(-shift / 100)
             if len(frame) >= 2:
                 yield frame
         return
@@ -243,11 +247,11 @@ def _group_observation(cars, drivers, seconds):
             100 * np.log(seconds[keep]))
 
 
-def session_observations(session_type, results, laps, entrants):
+def session_observations(session_type, results, laps, entrants, trends=None):
     """[(car keys, driver keys, log times x 100)] for one session."""
     ids = entrants.set_index("driver_number")
     observations = []
-    for frame in _lap_groups(session_type, results, laps):
+    for frame in _lap_groups(session_type, results, laps, trends):
         cars = [ids.lineage_id.get(n) if "lineage_id" in ids else None for n in frame.number]
         drivers = [ids.driver_id.get(n) for n in frame.number]
         group = _group_observation(cars, drivers, frame.seconds.to_numpy())
@@ -312,7 +316,8 @@ def qualifying_failures(results):
     return rows
 
 
-def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.0, scale_rng=None):
+def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.0, scale_rng=None,
+                       track=0.0, track_rng=None):
     """Positions from Q1, Q2 and Q3: per draw (rows of `pace`) every driver sets a lap
     per segment he takes part in (pace + independent noise); the slowest leave after Q1
     and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten.
@@ -321,12 +326,17 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.
     `failure_rng`, so the lap noise is the same with or without them (models compared
     on shared random draws stay paired). With `dof` > 0 the lap noise of a segment is
     multivariate Student-t as the robust filter fits it: one chi-squared scale per draw
-    and segment shared by every driver, times independent normal draws."""
+    and segment shared by every driver, times independent normal draws. `track` > 0:
+    each lap also meets a track condition of that standard deviation (a wet qualifying:
+    which lap of the drying track a driver's best falls on), normal and drawn from
+    `track_rng` apart from the lap noise."""
     draws, size = pace.shape
     if failures is not None and failure_rng is None:
         failure_rng = np.random.default_rng(0)        # never the lap-noise stream
     if dof > 0 and scale_rng is None:
         scale_rng = np.random.default_rng(1)          # nor the Student-t scales: lap normals stay paired
+    if track > 0 and track_rng is None:
+        track_rng = np.random.default_rng(2)
     first, second = knockout_cuts(size)
     positions = np.zeros((draws, size), dtype=int)
     alive = np.ones((draws, size), dtype=bool)
@@ -336,6 +346,8 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.
         if dof > 0:
             draw = draw * np.sqrt(dof / scale_rng.chisquare(dof, (pace.shape[0], 1)))
         lap = pace + noise * draw
+        if track > 0:
+            lap = lap + track * track_rng.standard_normal(pace.shape)
         if failures is not None:
             failed = failure_rng.random(pace.shape) < failures[None, :, index]
             lap = np.where(failed, 1e6 + failure_rng.random(pace.shape), lap)     # behind every time set
@@ -415,7 +427,7 @@ class PaceModel:
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
                  race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
-                 wet_forecast=False, wet_ability=False, wet_races=False):
+                 wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -456,6 +468,12 @@ class PaceModel:
         if wet_races and not (wet_noise and "R" in session_types):
             raise ValueError("wet races need races and wet sessions as their own types")
         self.wet_races = wet_races
+        # a wet qualifying read at one track per segment (laps.qualifying_trend); a wet
+        # forecast adds the spread of track conditions the drivers' laps met
+        if wet_evolution and not wet_noise:
+            raise ValueError("track evolution in wet qualifying needs wet sessions as their own types")
+        self.wet_evolution = wet_evolution
+        self._evolution = {}
         if wet_races:
             self.session_types = self.session_types + (f"R{WET_SUFFIX}",)
         if wet_noise:
@@ -584,9 +602,34 @@ class PaceModel:
         if session.session_id not in self._observations:
             kind = base_type(session.session_type)
             laps = view.laps(session.session_id) if kind not in SEGMENTED else None
+            results = view.results(session.session_id)
+            trends = None
+            if self.wet_evolution and kind in SEGMENTED and session.session_type != kind:
+                trends = qualifying_trend(view.laps(session.session_id), results)
+                self._evolution[session.session_id] = [list(v.values()) for v in trends.values()]
             self._observations[session.session_id] = session_observations(
-                kind, view.results(session.session_id), laps, view.entrants(session.session_id))
+                kind, results, laps, view.entrants(session.session_id), trends)
         return self._observations[session.session_id]
+
+    def evolution_variance(self, view):
+        """The variance of track condition between the segment times of a wet qualifying,
+        pooled over the wet qualifying sessions available at the view's cutoff (0 if none):
+        which lap of the track a driver's best fell on is unknown before the session."""
+        total, count = 0.0, 0
+        for session_id in view.sessions.session_id:
+            for values in self._evolution.get(session_id, ()):
+                if len(values) >= 2:
+                    total += float(np.sum(np.square(np.asarray(values) - np.mean(values))))
+                    count += len(values) - 1
+        return total / count if count else 0.0
+
+    def forecast_noise(self, view, example):
+        """(lap noise, track spread) of a forecast segment: the forecast type's noise
+        (a Student-t scale when robust) and, for a wet forecast with wet_evolution, the
+        standard deviation of the track conditions the laps meet (0 otherwise)."""
+        kind = self.forecast_type(example)
+        track = np.sqrt(self.evolution_variance(view)) if self.wet_evolution and kind != "Q" else 0.0
+        return self.hyper.noise[kind], float(track)
 
     def _wet_race(self, view, session_id):
         if session_id not in self._wet:
@@ -905,6 +948,8 @@ class PaceModel:
             problems.append("wet ability")
         if base.wet_races and not self.wet_races:
             problems.append("wet races")
+        if base.wet_evolution and not self.wet_evolution:
+            problems.append("wet evolution")
         if base.practice_push and base.practice_push != self.practice_push:
             problems.append("practice push mode")
         if base.history and base.history != self.history:
@@ -935,6 +980,7 @@ class PaceModel:
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
                 "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise, "robust": self.robust,
                 "wet_ability": self.wet_ability, "wet_races": self.wet_races,
+                **({"wet_evolution": True} if self.wet_evolution else {}),
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
@@ -1008,7 +1054,8 @@ class PaceModel:
         state = recorder.replay(self.hyper)
         design = state.design(rows)
         mean = design @ state.mean
-        cov = design @ state.cov @ design.T + self.hyper.noise[kind] ** 2 * np.eye(len(cars))
+        noise, track = self.forecast_noise(view, example)
+        cov = design @ state.cov @ design.T + (noise ** 2 + track ** 2) * np.eye(len(cars))
         return mean, cov
 
     def forecast_type(self, example):
@@ -1026,13 +1073,15 @@ class PaceModel:
         rng = np.random.default_rng(seed)
         if self.knockout:
             # weekend pace without lap noise, then each segment's laps with their own noise
-            noise = self.hyper.noise[self.forecast_type(example)]
-            pace = rng.multivariate_normal(mean, cov - noise ** 2 * np.eye(size) + 1e-9 * np.eye(size), size=draws,
+            noise, track = self.forecast_noise(view, example)
+            lap = noise ** 2 + track ** 2
+            pace = rng.multivariate_normal(mean, cov - lap * np.eye(size) + 1e-9 * np.eye(size), size=draws,
                                            method="cholesky")
             failures = self.failure_rates(view, example) if self.failures else None
             positions = knockout_positions(pace, noise, rng, failures, np.random.default_rng([seed, 1]),
                                            dof=self.hyper.robust_dof if self.robust else 0.0,
-                                           scale_rng=np.random.default_rng([seed, 2]))
+                                           scale_rng=np.random.default_rng([seed, 2]),
+                                           track=track, track_rng=np.random.default_rng([seed, 3]))
         else:
             samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
             order = np.argsort(samples, axis=1)

@@ -200,3 +200,63 @@ def test_a_lapped_car_meets_the_track_of_race_time_not_of_its_lap_number():
     assert abs(lapped) < 0.05
     by_lap_number = race_pace(laps.drop(columns=["LapStartTime", "Time"]), drying=True).set_index("driver_number").pace
     assert by_lap_number[[str(i) for i in range(6, 11)]].mean() - by_lap_number[[str(i) for i in range(1, 6)]].mean() < -0.1
+
+
+def _drying_qualifying(seed=5, early=(1, 2, 3)):
+    """One Q1 on a track drying 0.01% a second: twelve drivers each run push laps
+    between cool-down laps through the segment, the `early` ones stop halfway."""
+    rng = np.random.default_rng(seed)
+    pace = {str(d): 0.3 * d for d in range(1, 13)}
+    rows, best = [], {}
+    for driver, own in pace.items():
+        clock = 10.0 * int(driver)
+        stop = 300.0 if int(driver) in early else 600.0
+        lap = 0
+        while clock < stop:
+            lap += 1
+            push = lap % 2 == 0
+            middle = clock + 45.0
+            seconds = 90 * np.exp((own + 5 - 0.01 * middle + (0 if push else 8) + rng.normal(0, 0.05)) / 100)
+            rows.append({"DriverNumber": driver, "LapNumber": lap, "LapTime": pd.Timedelta(seconds=seconds),
+                         "Time": pd.Timedelta(seconds=clock + seconds), "PitInTime": pd.NaT, "PitOutTime": pd.NaT,
+                         "Compound": "INTERMEDIATE"})
+            if push and seconds < best.get(driver, (np.inf,))[0]:
+                best[driver] = (seconds, middle)
+            clock += seconds
+    laps = pd.DataFrame(rows)
+    results = pd.DataFrame({"DriverNumber": list(best), "Q1": [pd.Timedelta(seconds=b[0]) for b in best.values()],
+                            "Q2": pd.to_timedelta([None] * len(best)), "Q3": pd.to_timedelta([None] * len(best))})
+    return laps, results, pace, best
+
+
+def test_a_drying_qualifying_reads_each_segment_time_at_one_track():
+    laps, results, pace, best = _drying_qualifying()
+    trend = L.qualifying_trend(laps, results)
+    assert set(trend) == {"Q1"}
+    observed = {d: 100 * np.log(b[0]) for d, b in best.items()}
+    corrected = {d: observed[d] - trend["Q1"][d] for d in best}
+    error = np.array([corrected[d] - pace[d] for d in best])
+    raw = np.array([observed[d] - pace[d] for d in best])
+    # the drivers who stopped early lose ~3% on the raw times; corrected they are level
+    assert np.ptp(raw) > 2.0 and np.ptp(error) < 0.3
+    assert sum(trend["Q1"].values()) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_qualifying_without_lap_times_has_no_trend():
+    laps, results, _, _ = _drying_qualifying()
+    assert L.qualifying_trend(laps.drop(columns="Time"), results) == {}
+    assert L.qualifying_trend(laps, results.drop(columns="Q3")) == {}
+
+
+def test_a_segment_with_a_time_not_found_among_the_laps_is_left_as_it_ran():
+    laps, results, _, best = _drying_qualifying()
+    driver = next(iter(best))
+    gone = laps[~((laps.DriverNumber == driver)
+                  & ((laps.LapTime.dt.total_seconds() - best[driver][0]).abs() < 1e-6))]
+    assert L.qualifying_trend(gone, results) == {}
+
+
+def test_a_qualifying_left_with_too_few_laps_of_any_class_has_no_trend():
+    laps, results, _, _ = _drying_qualifying()
+    laps = laps.iloc[:27].assign(Compound=["INTERMEDIATE", "WET", "SOFT"] * 9)
+    assert L.qualifying_trend(laps, results) == {}

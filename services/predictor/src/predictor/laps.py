@@ -357,3 +357,107 @@ def _fit(frame, y, wear, trim=True):
                            "laps": [int((keep & (frame.driver_number == d).to_numpy()).sum()) for d in drivers]})
     result.attrs = {"corrections": dict(zip(names[n:], beta[n:].tolist())), "noise": sigma, "laps_used": int(keep.sum())}
     return result
+
+
+# Track evolution within a wet qualifying. On a drying (or worsening) track the lap that
+# counts is worth more the later (or earlier) it was set: a driver who crossed the line
+# last on a drying track beats a faster driver who ran earlier. `qualifying_trend` fits
+# the track's condition through the session from every push lap, so each segment time
+# can be read at a common track: driver + a smooth trend per tyre class (dry,
+# intermediate, wet: their gap moves through the crossover) over session time, a
+# slope that may bend every TREND_KNOT seconds with a ridge weight TREND_BEND on each
+# bend. The trend runs on through breaks and red flags (the track keeps drying), and a
+# class run only late is tied to the rest by its drivers' earlier laps. Laps more than
+# TREND_SLOW slower than the fit (out, in and cool-down laps) leave the fit.
+TREND_KNOT = 180.0
+TREND_BEND = 1.0               # ridge weight on each bend (change of slope, per minute): with
+                               # few push laps per driver a free bend trades against driver pace
+TREND_SLOW = 1.5               # log time x 100 above the fitted lap
+TREND_START = 2.0              # the first fit: laps within this of the driver's own best
+TREND_ROUNDS = 4
+TREND_CLASS_LAPS = 10          # a tyre class needs this many laps for its own trend
+MATCH_SECONDS = 0.0015         # a segment time and its lap agree to the timing resolution
+SEGMENTS_Q = ("Q1", "Q2", "Q3")
+
+
+def _trend_columns(t, cls, classes):
+    """(columns, bends): per tyre class a level (all but the first), a slope and a
+    hinge every TREND_KNOT seconds within the class's laps; `bends` marks the hinges."""
+    columns, bends = [], []
+    start = t.min()
+    for k, c in enumerate(classes):
+        inside = cls == c
+        since = (t - start) * inside
+        if k:
+            columns.append(inside.astype(float))
+            bends.append(False)
+        columns.append(since / 60.0)
+        bends.append(False)
+        first, last = since[inside].min(), since[inside].max()
+        for knot in np.arange(TREND_KNOT, last, TREND_KNOT):
+            if knot > first:
+                columns.append(np.maximum(since - knot, 0.0) * inside / 60.0)
+                bends.append(True)
+    return np.column_stack(columns), np.array(bends, dtype=bool)
+
+
+def qualifying_trend(laps, results):
+    """{segment: {driver number: track condition at the time of his segment time, log
+    time x 100, centred over the segment's drivers}} for one qualifying, from
+    segments whose differences of condition the laps can estimate and whose every
+    segment time is found among the fitted laps (a time left unread would compare one
+    track with another). Subtracting it from each segment time reads the segment on one
+    track. Empty without lap times."""
+    columns = ("LapTime", "Time", "DriverNumber", "Compound")
+    if any(c not in laps for c in columns) or any(s not in results for s in SEGMENTS_Q):
+        return {}
+    clean = laps[laps.LapTime.notna() & laps.Time.notna()]
+    for flag in ("PitInTime", "PitOutTime"):
+        if flag in clean:
+            clean = clean[clean[flag].isna()]
+    if len(clean) < 2 * TREND_CLASS_LAPS:
+        return {}
+    seconds = clean.LapTime.dt.total_seconds().to_numpy()
+    y = 100 * np.log(seconds)
+    t = clean.Time.dt.total_seconds().to_numpy() - seconds / 2
+    numbers = clean.DriverNumber.astype(str).to_numpy()
+    cls = clean.Compound.fillna("").astype(str).str.upper().map(tyre_class).to_numpy()
+    counts = pd.Series(cls).value_counts()
+    keep = (y <= y.min() + 100 * np.log(1.25)) & np.isin(cls, counts[counts >= TREND_CLASS_LAPS].index)
+    y, t, numbers, cls, seconds = y[keep], t[keep], numbers[keep], cls[keep], seconds[keep]
+    if len(y) < 2 * TREND_CLASS_LAPS:
+        return {}
+    classes = list(pd.Series(cls).value_counts().index)        # the most used class first
+    drivers = sorted(set(numbers))
+    trend, bends = _trend_columns(t, cls, classes)
+    n = len(drivers)
+    x = np.column_stack([(numbers == d).astype(float) for d in drivers] + [trend])
+    penalty = np.sqrt(TREND_BEND) * np.eye(x.shape[1])[np.r_[np.zeros(n, dtype=bool), bends]]
+    used = y <= pd.Series(y).groupby(numbers).transform("min").to_numpy() + TREND_START
+    for _ in range(TREND_ROUNDS):
+        beta = np.linalg.lstsq(np.vstack([x[used], penalty]), np.r_[y[used], np.zeros(len(penalty))],
+                               rcond=None)[0]
+        used = y - x @ beta < TREND_SLOW
+    fit = np.vstack([x[used], penalty])                         # a bend without laps is held by its penalty
+    projector = np.linalg.pinv(fit) @ fit
+    out = {}
+    for segment in SEGMENTS_Q:
+        best = pd.to_timedelta(results[segment]).dt.total_seconds()
+        rows, names = [], []
+        for number, value in zip(results.DriverNumber.astype(str), best):
+            if pd.isna(value):
+                continue
+            match = np.flatnonzero((numbers == number) & (np.abs(seconds - value) < MATCH_SECONDS))
+            if len(match) != 1:
+                rows = []
+                break
+            rows.append(match[0])
+            names.append(number)
+        if len(rows) < 2:
+            continue
+        contrasts = np.zeros((len(rows), x.shape[1]))
+        contrasts[:, n:] = trend[rows] - trend[rows].mean(axis=0)
+        if not np.allclose(contrasts @ projector, contrasts, atol=1e-6):
+            continue                                            # condition differences not estimable
+        out[segment] = dict(zip(names, (contrasts @ beta).tolist()))
+    return out
