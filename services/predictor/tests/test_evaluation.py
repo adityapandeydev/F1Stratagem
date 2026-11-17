@@ -93,6 +93,15 @@ def test_the_champion_router_serves_each_cutoff_with_its_champion():
         assert forecast.metadata["served_by"] == served and forecast.model == "champion"
     same = ChampionRouter({"pre_weekend": "a", "after_session": "a"}, registry)
     assert same.models["pre_weekend"] is same.models["after_session"]
+    registry["c"] = lambda: Stub("c")
+    four = ChampionRouter({"pre_weekend": "a", "after_session": "b", "pre_weekend_wet": "c",
+                           "after_session_wet": "c"}, registry)
+    assert four.models["pre_weekend_wet"] is four.models["after_session_wet"]
+    for label, condition, served in (("pre_weekend", "wet", "c"), ("last", "wet", "c"), ("last", "dry", "b"),
+                                     ("pre_weekend", None, "a")):
+        example = types.SimpleNamespace(cutoff_label=label, condition=condition)
+        assert four.predict(None, example).metadata["served_by"] == served
+    assert router.route(types.SimpleNamespace(cutoff_label="last", condition="wet")) == "after_session"
 
 
 def test_a_practice_only_reserve_is_not_a_regular_driver():

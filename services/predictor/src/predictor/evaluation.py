@@ -98,8 +98,12 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
 # Before the weekend: no session of the event has run. Once any has, the last-cutoff
 # champion serves; after FP1 and after FP2 that routing is provisional until those
-# cutoffs have been evaluated.
-CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqw"}
+# cutoffs have been evaluated. A forecast for a wet qualifying (the wet side of the
+# dry/wet toggle) is served by the "_wet" champion of its moment: v3wrqwc forecasts with
+# the fitted wet qualifying noise (dry forecasts identical to v3wrqw; wet calibration
+# 0.75-0.79 -> 0.88-0.92 coverage against 0.86 predicted, RPS within noise on 15 wet events).
+CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqw",
+             "pre_weekend_wet": "pace3wrqwc", "after_session_wet": "pace3wrqwc"}
 
 
 class ChampionRouter:
@@ -111,9 +115,8 @@ class ChampionRouter:
     def __init__(self, champions=None, registry=None):
         self.champions = dict(champions or CHAMPIONS)
         registry = registry or model_registry()
-        self.models = {key: registry[name]() for key, name in self.champions.items()}
-        if self.champions["pre_weekend"] == self.champions["after_session"]:
-            self.models["after_session"] = self.models["pre_weekend"]      # one fit serves both
+        instances = {name: registry[name]() for name in dict.fromkeys(self.champions.values())}
+        self.models = {key: instances[name] for key, name in self.champions.items()}   # one fit per model
 
     @property
     def fit_cache(self):
@@ -126,7 +129,9 @@ class ChampionRouter:
                 model.fit_cache = cache
 
     def route(self, example):
-        return "pre_weekend" if example.cutoff_label == "pre_weekend" else "after_session"
+        moment = "pre_weekend" if example.cutoff_label == "pre_weekend" else "after_session"
+        wet = f"{moment}_wet"
+        return wet if getattr(example, "condition", None) == "wet" and wet in self.champions else moment
 
     def fit(self, history, view_for):
         for model in {id(m): m for m in self.models.values()}.values():
