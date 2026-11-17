@@ -1,4 +1,5 @@
 import copy
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -981,3 +982,22 @@ def test_a_groups_estimation_covariance_enters_its_noise():
     plain.advance(pd.Timestamp("2021-07-01", tz=UTC))
     plain.update(["c", "c", "d"], ["a", "b", "e"], [0.0, 0.6, 1.1], covariance=covariance)
     assert plain.replay(Hyper()).objective == recorder.replay(Hyper(estimate_scale=0.0)).objective   # scale 0: unused
+
+
+def test_a_screen_inherits_and_freezes_the_estimate_scale(tmp_path, monkeypatch):
+    from predictor import pace
+    from predictor.pace import WITH_RACES
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    base = PaceModel(WITH_RACES, "pace:base", winter=True, weekend=True, race_estimates=True)
+    base._ensure_hyper(view, 2023)
+    base.hyper = replace(base.hyper, estimate_scale=7.0)
+    base.fit_log[2023] = {**base.fit_log[2023], "fitted": list(base.fit_log[2023].get("fitted", [])) + ["estimate_scale"]}
+    model = PaceModel(WITH_RACES, "pace:candidate", winter=True, weekend=True, race_estimates=True, affinity=True)
+    model.screen_base = base
+    model._fit_season(view, 2023, model._default_start())
+    assert model.hyper.estimate_scale == 7.0 and "estimate_scale" not in model.last_fit.get("fitted", [])
+    dropped = PaceModel(WITH_RACES, "pace:dropped", winter=True, weekend=True)
+    with pytest.raises(ValueError, match="race estimates"):
+        dropped._check_extends(base)

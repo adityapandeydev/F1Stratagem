@@ -652,7 +652,8 @@ class PaceModel:
         # every setting the base model has, fitted or held, by its switches
         owned = Hyper.fitted(base.session_types, winter=base.winter, regulation=base.winter, weekend=base.weekend,
                              affinity=base.affinity, form=base.form, skills=bool(base.skills),
-                             season_skills=bool(base.season_skills))
+                             season_skills=bool(base.season_skills),
+                             estimates=base.race_estimates and "R" in base.session_types)
         noise = {**start.noise, **{t: base.hyper.noise[t] for t in base.session_types}}
         merged = replace(start, noise=noise, **{name: getattr(base.hyper, name) for name in owned})
         if base.fit_log[season].get("fitted") is None:     # the base kept its starting values: too little data
@@ -678,6 +679,8 @@ class PaceModel:
         for bands in ("skills", "season_skills"):
             if not set(getattr(base, bands)) <= set(getattr(self, bands)):
                 problems.append(bands)
+        if base.race_estimates and not self.race_estimates:
+            problems.append("race estimates")
         if base.history and base.history != self.history:
             problems.append("history mode")
         if problems:
