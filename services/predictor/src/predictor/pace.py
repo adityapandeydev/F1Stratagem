@@ -115,7 +115,10 @@ class Hyper:
     driver_winter: float = 0.0
     regulation_multiplier: float = 1.0   # car winter variance multiplier at new regulations
     estimate_scale: float = 0.0  # scales a race's pace estimation covariance into its noise; 0: not used
-    robust_dof: float = 0.0      # Student-t degrees of freedom of observation noise; 0: Gaussian
+    robust_dof: float = 0.0      # Student-t degrees of freedom of observation noise; 0: Gaussian.
+    # The likelihood is the multivariate t of the whole innovation; the update rescales
+    # its noise part (session noise and any estimation covariance) by (nu + q)/(nu + m),
+    # which can fall below 1 for a quiet session (a one-step variational approximation).
     weekend_prior: float = 0.0  # spread of a car's weekend effect; 0 disables it
     affinity_prior: float = 0.0  # spread of a car x circuit affinity; 0 disables it
     affinity_drift: float = 0.0  # affinity variance added per 14 days
@@ -169,6 +172,8 @@ LOG_BOUNDS = (-20.0, 4.0)   # settings are fitted as logs: about 2e-9 to 55
 # Historical qualifying cannot be more precise than this (modern qualifying noise is
 # about 0.45): below it the 2019 fit had a second optimum treating history as exact.
 HISTORY_NOISE_FLOOR = 0.05
+MIN_ROBUST_DOF = 2.0         # fewer degrees of freedom: forecast lap noise of infinite variance
+MIN_WET_SESSIONS = 3         # a wet noise type is fitted once the data has this many of its sessions
 FIT_TOLERANCE = 0.01        # stop once a full round improves the log-likelihood by less than this
 FIT_ROUNDS = 10
 
@@ -303,7 +308,7 @@ def qualifying_failures(results):
     return rows
 
 
-def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.0):
+def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.0, scale_rng=None):
     """Positions from Q1, Q2 and Q3: per draw (rows of `pace`) every driver sets a lap
     per segment he takes part in (pace + independent noise); the slowest leave after Q1
     and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten.
@@ -316,6 +321,8 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.
     draws, size = pace.shape
     if failures is not None and failure_rng is None:
         failure_rng = np.random.default_rng(0)        # never the lap-noise stream
+    if dof > 0 and scale_rng is None:
+        scale_rng = np.random.default_rng(1)          # nor the Student-t scales: lap normals stay paired
     first, second = knockout_cuts(size)
     positions = np.zeros((draws, size), dtype=int)
     alive = np.ones((draws, size), dtype=bool)
@@ -323,7 +330,7 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.
     def segment_lap(index):
         draw = rng.standard_normal(pace.shape)
         if dof > 0:
-            draw = draw * np.sqrt(dof / rng.chisquare(dof, (pace.shape[0], 1)))
+            draw = draw * np.sqrt(dof / scale_rng.chisquare(dof, (pace.shape[0], 1)))
         lap = pace + noise * draw
         if failures is not None:
             failed = failure_rng.random(pace.shape) < failures[None, :, index]
@@ -757,7 +764,9 @@ class PaceModel:
                                            form, skills, season_skills, self.race_estimates and "R" in types,
                                            self.robust)
                    if s not in frozen]
-        noise_types = [t for t in types if f"noise:{t}" not in frozen]
+        counts = sessions.session_type.value_counts()
+        noise_types = [t for t in types if f"noise:{t}" not in frozen
+                       and not (t.endswith(WET_SUFFIX) and base_type(t) != t and counts.get(t, 0) < MIN_WET_SESSIONS)]
         default = self._default_start()
         off = {**({"affinity_prior": 0.0} if self.affinity and not affinity else {}),
                **({"form_prior": 0.0} if self.form and not form else {}),
@@ -767,7 +776,7 @@ class PaceModel:
                         **{s: getattr(default, s) for s in scalars if getattr(start, s) <= 0})
 
         lower = [np.log(HISTORY_NOISE_FLOOR) if t == "H" else LOG_BOUNDS[0] for t in noise_types] \
-            + [LOG_BOUNDS[0]] * len(scalars)
+            + [np.log(MIN_ROBUST_DOF) if name == "robust_dof" else LOG_BOUNDS[0] for name in scalars]
         evaluations, rejected = [0], [0]
         objective = self.objective_function(view, sessions, start)
         if not noise_types and not scalars:   # everything frozen (only in a screen): nothing to fit
@@ -862,6 +871,8 @@ class PaceModel:
             problems.append("race estimates")
         if base.robust and not self.robust:
             problems.append("robust")
+        if base.practice_push and base.practice_push != self.practice_push:
+            problems.append("practice push mode")
         if base.history and base.history != self.history:
             problems.append("history mode")
         if problems:
@@ -929,7 +940,7 @@ class PaceModel:
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
         counted = sessions[~sessions.session_id.str.startswith(HISTORY_PREFIX)] \
             if self.history in UNCOUNTED_HISTORY else sessions
-        if (counted.session_type == "Q").sum() < MIN_QUALIFYING_SESSIONS:
+        if (counted.session_type.map(base_type) == "Q").sum() < MIN_QUALIFYING_SESSIONS:
             self.hyper = start
         elif self.shared_from_qualifying:
             qualifying = PaceModel(QUALIFYING_ONLY)
@@ -978,7 +989,8 @@ class PaceModel:
                                            method="cholesky")
             failures = self.failure_rates(view, example) if self.failures else None
             positions = knockout_positions(pace, noise, rng, failures, np.random.default_rng([seed, 1]),
-                                           dof=self.hyper.robust_dof if self.robust else 0.0)
+                                           dof=self.hyper.robust_dof if self.robust else 0.0,
+                                           scale_rng=np.random.default_rng([seed, 2]))
         else:
             samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
             order = np.argsort(samples, axis=1)

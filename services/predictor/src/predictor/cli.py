@@ -58,7 +58,7 @@ def main(argv=None):
             print(f"By stage of the season (rounds); a model must not be worse beyond noise in "
                   f"{evaluation.LATE_STAGE} at either cutoff:")
             print(stages[["stage", "model", "events", "mean_difference", "block_90_low", "block_90_high",
-                          "better_beyond_noise", "worse_beyond_noise"]].to_string(index=False))
+                          "verdict"]].to_string(index=False))
         print()
         print("RPS by season:")
         print(evaluation.common_events(scores).pivot_table(index="season", columns="model", values="rps").round(4))

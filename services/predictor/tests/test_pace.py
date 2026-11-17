@@ -1056,7 +1056,11 @@ def test_wet_sessions_have_their_own_noise_and_share_offsets(tmp_path, monkeypat
     offsets = [key for kind, key in recorder.keys if kind == "offset"]
     assert all(t == "FP1" for _, t in offsets)                      # the wet FP1 shares the FP1 offsets
     hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
-    assert "FP1W" in model.last_fit["fitted"]
+    assert "FP1W" not in model.last_fit["fitted"]                  # one wet session: held at its default
+    monkeypatch.setattr(PaceModel, "_wet_session", lambda self, view, sid: sid.endswith("-1"))
+    every = PaceModel(ALL_SESSIONS, winter=True, weekend=True, wet_noise=True)
+    every.fit_hyper(view, every.sessions(view), Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
+    assert "FP1W" in every.last_fit["fitted"]                      # three wet sessions: fitted
 
 
 def test_wet_qualifying_counts_in_the_qualifying_objective(tmp_path, monkeypatch):
@@ -1095,7 +1099,7 @@ def test_robust_updates_follow_the_student_t_density_and_shrink_surprises():
 
 def test_robust_forecasts_draw_heavy_tailed_laps():
     from predictor.pace import knockout_positions
-    pace = np.zeros((4000, 20))
+    pace = np.tile(np.linspace(0, 1, 20), (4000, 1))
     normal = knockout_positions(pace, 0.3, np.random.default_rng(3))
     heavy = knockout_positions(pace, 0.3, np.random.default_rng(3), dof=2.0)
     assert sorted(heavy[0]) == list(range(1, 21))
@@ -1140,3 +1144,35 @@ def test_a_wet_practice_gives_no_push_group(tmp_path, monkeypatch):
     model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, practice_push="split")
     monkeypatch.setattr(PaceModel, "_wet_session", lambda self, view, sid: True)
     assert model._push_group(view, "2021-01-1") == []
+
+
+def test_student_t_laps_keep_the_gaussian_normals():
+    """The t scales come from their own stream: with very many degrees of freedom the
+    t forecast equals the Gaussian one draw for draw."""
+    from predictor.pace import knockout_positions
+    pace = np.random.default_rng(2).normal(size=(3000, 20))
+    gaussian = knockout_positions(pace, 0.4, np.random.default_rng(9))
+    near = knockout_positions(pace, 0.4, np.random.default_rng(9), dof=1e9, scale_rng=np.random.default_rng(4))
+    assert (gaussian == near).mean() > 0.999
+
+
+def test_robust_likelihood_for_a_group_of_three():
+    from math import lgamma, log, pi
+    recorder = Recorder(("Q",))
+    recorder.advance(pd.Timestamp("2021-07-01", tz=UTC))
+    recorder.update(["c", "c", "d"], ["a", "b", "e"], [0.0, 0.6, 3.1])
+    nu = 5.0
+    state = recorder.replay(Hyper(robust_dof=nu))
+    hyper = Hyper()
+    index = {key: i for i, key in enumerate(state.keys)}
+    prior = np.diag([hyper.car_prior ** 2 if kind == "car" else hyper.driver_prior ** 2 for kind, _ in state.keys])
+    rows = np.zeros((3, len(index)))
+    for i, (car, driver) in enumerate(zip(["c", "c", "d"], ["a", "b", "e"])):
+        rows[i, index[("car", car)]] = rows[i, index[("driver", driver)]] = 1
+    h = rows[1:] - rows[0]
+    s = h @ prior @ h.T + hyper.noise["Q"] ** 2 * (np.eye(2) + 1)
+    y = np.array([0.6, 3.1])
+    q = y @ np.linalg.solve(s, y)
+    expected = lgamma((nu + 2) / 2) - lgamma(nu / 2) - log(nu * pi) - 0.5 * np.log(np.linalg.det(s)) \
+        - (nu + 2) / 2 * log(1 + q / nu)
+    assert state.objective == pytest.approx(expected, rel=1e-10)

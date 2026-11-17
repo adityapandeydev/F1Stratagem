@@ -28,7 +28,7 @@ def test_the_roster_is_known_at_the_cutoff():
     assert list(roster.excluded) == [False, True, False]
     assert list(roster.position) == [2, 0, 3]                   # absolute positions kept
     before = _roster_at_cutoff(archive, "e", t - pd.Timedelta(hours=1), target)
-    assert list(before.driver_id) == ["a", "c", "s"]          # before any session: the entry-list proxy
+    assert list(before.driver_id) == ["a", "b", "c"]          # before any session: s, not a regular of x, is a later substitute
 
 
 def test_a_withdrawn_driver_is_not_a_winner_in_baseline_fitting():
@@ -150,7 +150,7 @@ def test_the_entry_list_published_before_the_cutoff_is_the_roster():
                            "lineage_id": ["x", "y", "x"], "position": [2, 3, 1], "outcome": None, "excluded": False})
     # the list for "e" has 3 race drivers: below 10, so it is not trusted and the proxy is used
     proxy = _roster_at_cutoff(archive, "e", t, target)
-    assert list(proxy.driver_id) == ["a", "c", "s"]
+    assert list(proxy.driver_id) == ["a", "b", "c"]            # no trusted list: regulars before the weekend
     lists["event_key"] = "e"
     lists["driver_id"] = ["a", "b", "c", "r"] + [f"d{i}" for i in range(10)]
     roster = _roster_at_cutoff(archive, "e", t, target)
@@ -159,7 +159,7 @@ def test_the_entry_list_published_before_the_cutoff_is_the_roster():
     assert roster.set_index("driver_id").loc["b", "excluded"]  # entered, then withdrew: forecast, not scored
     assert roster.set_index("driver_id").loc["a", "position"] == 2
     earlier = _roster_at_cutoff(archive, "e", t - pd.Timedelta(hours=3), target)
-    assert list(earlier.driver_id) == ["a", "c", "s"]          # before the list was published
+    assert list(earlier.driver_id) == ["a", "b", "c"]          # before the list was published
 
 
 def test_a_listed_drivers_seat_is_known_at_the_cutoff():
@@ -178,3 +178,30 @@ def test_a_listed_drivers_seat_is_known_at_the_cutoff():
     assert _latest_seat(archive, "rookie", t, "631") == ("63", None)         # footnote marker removed
     assert _latest_seat(archive, "rookie", t, "44") == ("44", None)
     assert _latest_seat(archive, "rookie", t) is None
+
+
+def test_before_the_weekend_without_a_list_a_later_substitute_is_not_forecast():
+    import types
+    import pandas as pd
+    from predictor.evaluation import _roster_at_cutoff
+    t = pd.Timestamp("2024-03-07 13:00", tz="UTC")
+    sessions = pd.DataFrame({"session_id": ["p-4", "e-1"], "event_key": ["p", "e"], "session_type": ["Q", "FP1"],
+                             "available_at_utc": [t - pd.Timedelta(days=7), t + pd.Timedelta(days=1)]})
+    entrants = pd.DataFrame({"session_id": ["p-4", "p-4"], "driver_number": ["55", "16"],
+                             "driver_id": ["sainz", "leclerc"], "lineage_id": ["maranello", "maranello"]})
+    archive = types.SimpleNamespace(sessions=sessions, entrants=entrants, entry_lists=None,
+                                    events=pd.DataFrame({"event_key": ["p", "e"], "season": 2024, "round": [1, 2],
+                                                         "is_testing": False}))
+    target = pd.DataFrame({"session_id": "e-4", "driver_number": ["38", "16"], "driver_id": ["bearman", "leclerc"],
+                           "lineage_id": ["maranello", "maranello"], "position": [7, 2], "outcome": None,
+                           "excluded": False})
+    roster = _roster_at_cutoff(archive, "e", t, target).set_index("driver_id")
+    assert set(roster.index) == {"sainz", "leclerc"} and roster.loc["sainz", "excluded"]
+
+
+def test_too_few_events_say_no_verdict():
+    import pandas as pd
+    from predictor import evaluation
+    rows = [{"event_key": f"2024-{i:02d}", "season": 2024, "model": m, "rps": 0.1 + (0.01 if m == "b" else 0.0)}
+            for i in range(1, 6) for m in ("a", "b")]
+    assert evaluation.compare(pd.DataFrame(rows), "a").iloc[0].verdict == "none"

@@ -82,8 +82,9 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
         + ("a" if affinity else "") + ("h" if history else "") \
         + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "") + ("k" if skills else "") + ("b" if season_skills else "") \
-        + ("r" if races else "") + ("d" if driver_race else "") + ("p" if push else "") + ("n" if push == "own" else "") + ("s" if push == "split" else "") \
-        + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "") + ("w" if wet_noise else "") + ("t" if robust else "")
+        + ("r" if races else "") + ("d" if driver_race else "") \
+        + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "") + ("w" if wet_noise else "") + ("t" if robust else "") \
+        + ("p" if push else "") + ("n" if push == "own" else "")
     return PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
                      skills=skills, season_skills=season_skills, driver_offsets=("R",) if driver_race else (),
@@ -165,6 +166,7 @@ def model_registry():
             "pace3wrqw": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True),
             "pace3wrqwt": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True),
             "pace3wrqwp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, push="split"),
+            # name pace:v3wrqwp ("split" adds no letter)
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
@@ -280,8 +282,10 @@ def _substitutions_seen(archive, event_key, cutoff_time, target):
     stays entered."""
     sessions = archive.sessions
     run = sessions[(sessions.event_key == event_key) & (sessions.available_at_utc <= cutoff_time)]
-    if run.empty or "lineage_id" not in target:
+    if "lineage_id" not in target:
         return [row._asdict() for row in target.itertuples(index=False)]
+    if run.empty:
+        return _regulars_before_the_weekend(archive, event_key, cutoff_time, target)
     entrants = archive.entrants
     ran = set(entrants[entrants.session_id.isin(run.session_id)].driver_id.dropna())
     latest = run.sort_values("available_at_utc").iloc[-1]
@@ -300,6 +304,27 @@ def _substitutions_seen(archive, event_key, cutoff_time, target):
         else:
             rows.append({**row._asdict(), "driver_number": str(replacement.driver_number),
                          "driver_id": replacement.driver_id, "position": np.nan, "outcome": None, "excluded": True})
+    return rows
+
+
+def _regulars_before_the_weekend(archive, event_key, cutoff_time, target):
+    """Before any session of the event, without an entry list: a target driver who is
+    not a regular of his car is a substitute announced later (Bearman for Sainz,
+    Saudi Arabia 2024), so the car's regular is forecast instead, excluded from
+    scoring."""
+    regulars = _regular_drivers(archive, event_key)
+    entered = set(target.driver_id)
+    rows = []
+    for row in target.itertuples(index=False):
+        car = regulars.get(row.lineage_id, set()) if pd.notna(row.lineage_id) else set()
+        missing = sorted(car - entered)
+        seat = _latest_seat(archive, missing[0], cutoff_time) if car and row.driver_id not in car and missing else None
+        if seat is None:
+            rows.append(row._asdict())
+        else:
+            entered.add(missing[0])
+            rows.append({**row._asdict(), "driver_number": seat[0], "driver_id": missing[0], "position": np.nan,
+                         "outcome": None, "excluded": True})
     return rows
 
 
@@ -431,6 +456,8 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
         rows.append({"model": model, "reference": base, "metric": metric, "events": diff.size,
                      "mean_difference": diff.mean(), "interval_90_low": low, "interval_90_high": high,
                      "block_90_low": block_low, "block_90_high": block_high,
+                     "verdict": ("none" if np.isnan(block_low) else "better" if block_high < 0
+                                 else "worse" if block_low > 0 else "noise"),
                      "better_beyond_noise": bool(block_high < 0), "worse_beyond_noise": bool(block_low > 0),
                      "within_margin": bool(block_high < DEGRADATION_MARGIN),     # NaN compares False: no verdict
                      "share_of_events_better": float(np.mean(diff < 0))})
