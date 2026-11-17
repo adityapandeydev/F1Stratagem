@@ -56,6 +56,7 @@ class Example:
     cutoff_session: str | None = None
     team_ids: list = field(default_factory=list)
     lineage_ids: list = field(default_factory=list)
+    condition: str | None = None  # "dry" or "wet": the condition a forecast is asked for (None: not given)
 
 
 # Rankers: information available at the cutoff -> one value per entrant (lower is better).

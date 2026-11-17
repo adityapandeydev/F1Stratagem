@@ -41,6 +41,17 @@ WET = ("INTERMEDIATE", "WET")
 EMPTY = ["driver_number", "pace", "se", "laps"]
 
 
+def wet_session(laps):
+    """Whether a session ran in wet or mixed conditions: wet tyres on more than
+    WET_SHARE of its timed laps (False without timed laps)."""
+    if "LapTime" not in laps or "Compound" not in laps:
+        return False
+    timed = laps[laps.LapTime.notna()]
+    if timed.empty:
+        return False
+    return float(timed.Compound.fillna("").astype(str).str.upper().isin(WET).mean()) > WET_SHARE
+
+
 def wet_race(laps):
     """Whether the track was wet for part of the race: wet tyres on more than
     WET_SHARE of its timed laps."""

@@ -21,7 +21,7 @@ const RESET: i64 = 3;
 const UPDATE: i64 = 4;
 const SNAPSHOT: i64 = 5;
 const TRACKS: usize = 2;
-const KINDS: usize = 8; // car, driver, offset, weekend, affinity, form, skill, season_skill
+const KINDS: usize = 9; // car, driver, offset, weekend, affinity, form, skill, season_skill, wet
 
 pub struct Settings<'a> {
     pub priors: &'a [f64],

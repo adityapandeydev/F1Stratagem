@@ -80,7 +80,7 @@ from scipy.optimize import minimize
 from .forecast import Forecast
 from . import track
 from .baselines import seed_for
-from .laps import WET as WET_COMPOUNDS, WET_SHARE, long_run_pace, push_pace, race_pace
+from .laps import long_run_pace, push_pace, race_pace, wet_session
 from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
@@ -127,16 +127,18 @@ class Hyper:
     skill_prior: float = 0.0     # spread of a driver's ability in a part of the track (per unit of its share)
     skill_drift: float = 0.0     # its variance added per 14 days
     season_skill_prior: float = 0.0   # spread of a driver's season ability in a part of the track, reset each season
+    wet_prior: float = 0.0       # spread of a driver's wet ability (wet sessions only); 0 disables it
+    wet_drift: float = 0.0       # its variance added per 14 days
 
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
                "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior",
                "affinity_prior", "affinity_drift", "affinity_winter", "form_prior", "skill_prior", "skill_drift",
-               "season_skill_prior", "estimate_scale", "robust_dof")
+               "season_skill_prior", "estimate_scale", "robust_dof", "wet_prior", "wet_drift")
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
     def fitted(types, winter=False, regulation=False, weekend=False, affinity=False, new_cars=True, new_drivers=True,
-               form=False, skills=False, season_skills=False, estimates=False, robust=False):
+               form=False, skills=False, season_skills=False, estimates=False, robust=False, wet=False):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations; the
@@ -150,7 +152,8 @@ class Hyper:
                 *(("affinity_prior", "affinity_drift", *(("affinity_winter",) if winter else ())) if affinity else ()),
                 *(("form_prior",) if form else ()),
                 *(("skill_prior", "skill_drift") if skills else ()), *(("season_skill_prior",) if season_skills else ()),
-                *(("estimate_scale",) if estimates else ()), *(("robust_dof",) if robust else ()))
+                *(("estimate_scale",) if estimates else ()), *(("robust_dof",) if robust else ()),
+                *(("wet_prior", "wet_drift") if wet else ()))
 
     def vector(self, noise_types, scalars):
         return np.log([self.noise[t] for t in noise_types] + [getattr(self, name) for name in scalars])
@@ -409,7 +412,8 @@ class PaceModel:
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
-                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False):
+                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
+                 wet_forecast=False, wet_ability=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -441,6 +445,11 @@ class PaceModel:
         self._wet = {}
         # heavy-tailed observation noise: an unusual session moves the estimates less
         self.robust = robust
+        # forecasts for a wet qualifying (example.condition "wet") use the wet qualifying
+        # noise and, with wet_ability, each driver's wet ability (a state read by wet sessions)
+        if (wet_forecast or wet_ability) and not wet_noise:
+            raise ValueError("wet forecasts and wet ability need wet sessions as their own types")
+        self.wet_forecast, self.wet_ability = wet_forecast or wet_ability, wet_ability
         if wet_noise:
             self.session_types = self.session_types + tuple(
                 f"{t}{WET_SUFFIX}" for t in ("Q", "SQ", "FP1", "FP2", "FP3") if t in self.session_types)
@@ -567,10 +576,7 @@ class PaceModel:
     def _wet_session(self, view, session_id):
         """Wet or mixed: wet-weather tyres on more than WET_SHARE of the session's timed laps."""
         if session_id not in self._wet:
-            laps = view.laps(session_id)
-            timed = laps[laps.LapTime.notna()] if "LapTime" in laps else laps.iloc[0:0]
-            compound = timed.Compound.fillna("").astype(str).str.upper() if "Compound" in timed else pd.Series(dtype=str)
-            self._wet[session_id] = bool(len(compound)) and float(compound.isin(WET_COMPOUNDS).mean()) > WET_SHARE
+            self._wet[session_id] = wet_session(view.laps(session_id))
         return self._wet[session_id]
 
     def failure_rates(self, view, example):
@@ -669,7 +675,7 @@ class PaceModel:
         sees only that weekend's qualifying; only qualifying updates count."""
         objective = objective or self.objective
         recorder = Recorder(self.session_types, weekend, affinity, form, self.skills if skills else (),
-                            self.season_skills if season_skills else (), self.driver_offsets)
+                            self.season_skills if season_skills else (), self.driver_offsets, self.wet_ability)
         event = None
         for session in sessions.itertuples():
             recorder.advance(session.scheduled_start_utc)
@@ -760,11 +766,14 @@ class PaceModel:
             # also a repeat visit, so the affinity can be identified from the first counted season
             visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
             affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
+        counts = sessions.session_type.value_counts()
+        # wet ability once the data has enough wet sessions to tell it from noise
+        wet = self.wet_ability and sum(n for t, n in counts.items()
+                                       if t.endswith(WET_SUFFIX) and base_type(t) != t) >= MIN_WET_SESSIONS
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers,
                                            form, skills, season_skills, self.race_estimates and "R" in types,
-                                           self.robust)
+                                           self.robust, wet)
                    if s not in frozen]
-        counts = sessions.session_type.value_counts()
         noise_types = [t for t in types if f"noise:{t}" not in frozen
                        and not (t.endswith(WET_SUFFIX) and base_type(t) != t and counts.get(t, 0) < MIN_WET_SESSIONS)]
         default = self._default_start()
@@ -841,7 +850,8 @@ class PaceModel:
         owned = Hyper.fitted(base.session_types, winter=base.winter, regulation=base.winter, weekend=base.weekend,
                              affinity=base.affinity, form=base.form, skills=bool(base.skills),
                              season_skills=bool(base.season_skills),
-                             estimates=base.race_estimates and "R" in base.session_types, robust=base.robust)
+                             estimates=base.race_estimates and "R" in base.session_types, robust=base.robust,
+                             wet=base.wet_ability)
         noise = {**start.noise, **{t: base.hyper.noise[t] for t in base.session_types}}
         merged = replace(start, noise=noise, **{name: getattr(base.hyper, name) for name in owned})
         if base.fit_log[season].get("fitted") is None:     # the base kept its starting values: too little data
@@ -871,6 +881,8 @@ class PaceModel:
             problems.append("race estimates")
         if base.robust and not self.robust:
             problems.append("robust")
+        if base.wet_ability and not self.wet_ability:
+            problems.append("wet ability")
         if base.practice_push and base.practice_push != self.practice_push:
             problems.append("practice push mode")
         if base.history and base.history != self.history:
@@ -886,7 +898,8 @@ class PaceModel:
                      **({"skill_prior": 0.3, "skill_drift": 0.001} if self.skills else {}),
                      **({"season_skill_prior": 0.2} if self.season_skills else {}),
                      **({"estimate_scale": 1.0} if self.race_estimates else {}),
-                     **({"robust_dof": 5.0} if self.robust else {}))
+                     **({"robust_dof": 5.0} if self.robust else {}),
+                     **({"wet_prior": 0.2, "wet_drift": 0.001} if self.wet_ability else {}))
 
     def fit(self, history, view_for):
         return self
@@ -899,6 +912,7 @@ class PaceModel:
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
                 "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise, "robust": self.robust,
+                "wet_forecast": self.wet_forecast, "wet_ability": self.wet_ability,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
@@ -967,12 +981,18 @@ class PaceModel:
             recorder.shares = self.shares(view, example.event_key)
         drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
         cars = [c if pd.notna(c) else f"unknown:{n}" for c, n in zip(example.lineage_ids, example.driver_numbers)]
-        rows = recorder.columns(cars, drivers, "Q")
+        kind = self.forecast_type(example)
+        rows = recorder.columns(cars, drivers, kind)
         state = recorder.replay(self.hyper)
         design = state.design(rows)
         mean = design @ state.mean
-        cov = design @ state.cov @ design.T + self.hyper.noise["Q"] ** 2 * np.eye(len(cars))
+        cov = design @ state.cov @ design.T + self.hyper.noise[kind] ** 2 * np.eye(len(cars))
         return mean, cov
+
+    def forecast_type(self, example):
+        """The session type a forecast is made as: "QW" for a wet qualifying when the
+        model forecasts by condition, else "Q"."""
+        return f"Q{WET_SUFFIX}" if self.wet_forecast and getattr(example, "condition", None) == "wet" else "Q"
 
     def predict(self, view, example, draws=DRAWS):
         if example.session_type != "Q":
@@ -984,7 +1004,7 @@ class PaceModel:
         rng = np.random.default_rng(seed)
         if self.knockout:
             # weekend pace without lap noise, then each segment's laps with their own noise
-            noise = self.hyper.noise["Q"]
+            noise = self.hyper.noise[self.forecast_type(example)]
             pace = rng.multivariate_normal(mean, cov - noise ** 2 * np.eye(size) + 1e-9 * np.eye(size), size=draws,
                                            method="cholesky")
             failures = self.failure_rates(view, example) if self.failures else None
@@ -1000,6 +1020,6 @@ class PaceModel:
             positions=positions, season=example.season, session_type=example.session_type,
             event_key=example.event_key, cutoff_label=example.cutoff_label, cutoff_time=example.cutoff_time.isoformat(),
             driver_numbers=list(example.driver_numbers), driver_ids=list(example.driver_ids), model=self.name,
-            seed=seed, metadata={"hyper": {"noise": dict(self.hyper.noise), **{k: getattr(self.hyper, k)
+            seed=seed, metadata={"condition": getattr(example, "condition", None), "hyper": {"noise": dict(self.hyper.noise), **{k: getattr(self.hyper, k)
                                                                          for k in Hyper.SCALARS},
                                            "fit": self.fit_log.get(example.season)}})

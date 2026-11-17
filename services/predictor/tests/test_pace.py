@@ -1176,3 +1176,26 @@ def test_robust_likelihood_for_a_group_of_three():
     expected = lgamma((nu + 2) / 2) - lgamma(nu / 2) - log(nu * pi) - 0.5 * np.log(np.linalg.det(s)) \
         - (nu + 2) / 2 * log(1 + q / nu)
     assert state.objective == pytest.approx(expected, rel=1e-10)
+
+
+def test_wet_sessions_read_a_wet_ability_and_wet_forecasts_use_the_wet_noise(tmp_path, monkeypatch):
+    import types as pytypes
+    recorder = Recorder(("Q", "QW"), wet_ability=True)
+    dry, wet = recorder.columns(["c"], ["a"], "Q")[0], recorder.columns(["c"], ["a"], "QW")[0]
+    assert ("wet", "a") in recorder.keys and len(wet) == len(dry) + 1
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    monkeypatch.setattr(PaceModel, "_wet_session", lambda self, view, sid: sid == "2021-02-1")
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, wet_noise=True, wet_ability=True)
+    assert model.wet_forecast
+    for condition, kind in (("wet", "QW"), ("dry", "Q"), (None, "Q")):
+        assert model.forecast_type(pytypes.SimpleNamespace(condition=condition)) == kind
+    with pytest.raises(ValueError):
+        PaceModel(ALL_SESSIONS, wet_forecast=True)
+
+
+def test_wet_session_needs_wet_tyres_on_enough_timed_laps():
+    from predictor.laps import wet_session
+    laps = pd.DataFrame({"LapTime": [90.0] * 10, "Compound": ["SOFT"] * 9 + ["INTERMEDIATE"]})
+    assert wet_session(laps) and not wet_session(laps.assign(Compound="SOFT"))
+    assert not wet_session(pd.DataFrame())

@@ -75,7 +75,8 @@ def score(forecast, example):
 
 def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False, form=False,
                 skills=(), season_skills=(), races=False, driver_race=False, push=False, long_runs=False,
-                race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False):
+                race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
+                wet_forecast=False, wet_ability=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, WITH_RACES, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
@@ -84,12 +85,14 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
         + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "") + ("k" if skills else "") + ("b" if season_skills else "") \
         + ("r" if races else "") + ("d" if driver_race else "") \
         + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "") + ("w" if wet_noise else "") + ("t" if robust else "") \
-        + ("p" if push else "") + ("n" if push == "own" else "")
+        + ("p" if push else "") + ("n" if push == "own" else "") \
+        + ("c" if wet_forecast and not wet_ability else "") + ("y" if wet_ability else "")
     return PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
                      skills=skills, season_skills=season_skills, driver_offsets=("R",) if driver_race else (),
                      practice_push=push, long_runs=long_runs, race_estimates=race_estimates,
-                     knockout=knockout, failures=failures, wet_noise=wet_noise, robust=robust)
+                     knockout=knockout, failures=failures, wet_noise=wet_noise, robust=robust,
+                     wet_forecast=wet_forecast, wet_ability=wet_ability)
 
 
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
@@ -167,6 +170,11 @@ def model_registry():
             "pace3wrqwt": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True),
             "pace3wrqwp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, push="split"),
             # name pace:v3wrqwp ("split" adds no letter)
+            # forecasts by the target's condition (c), with each driver's wet ability (y)
+            "pace3wrqwc": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                              wet_forecast=True),
+            "pace3wrqwy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                              wet_ability=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
@@ -193,6 +201,10 @@ def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
             continue
         target = target.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
         target = _roster_at_cutoff(archive, event_key, cutoff.time, target)
+        from .laps import wet_session
+        # the condition the forecast is asked for: in evaluation the one the session ran in,
+        # so a dry and a wet forecast are each scored on their own condition
+        condition = "wet" if wet_session(archive._table(target_session.session_id, "laps")) else "dry"
         example = Example(
             event_key=event_key, season=int(event_key[:4]), session_type=session_type, cutoff_label=cutoff_label,
             cutoff_time=cutoff.time, target_available_at=target_session.available_at_utc,
@@ -201,7 +213,7 @@ def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
             outcomes=[None if pd.isna(o) else o for o in target.outcome],
             excluded=target.excluded.to_numpy(dtype=bool), band_rank=np.array([]),
             cutoff_session=cutoff.anchor_session, team_ids=target.team_id.tolist(),
-            lineage_ids=target.lineage_id.tolist() if "lineage_id" in target else [])
+            lineage_ids=target.lineage_id.tolist() if "lineage_id" in target else [], condition=condition)
         example.band_rank = dense_ranks(rank_championship(archive.view(cutoff), example))
         examples.append(example)
     return examples

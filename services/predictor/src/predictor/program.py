@@ -24,7 +24,7 @@ try:
 except ImportError as error:   # pragma: no cover - the build step is part of installing the service
     raise ImportError("predictor_native is not built; run `make predictor-native`") from error
 
-KINDS = ("car", "driver", "offset", "weekend", "affinity", "form", "skill", "season_skill")
+KINDS = ("car", "driver", "offset", "weekend", "affinity", "form", "skill", "season_skill", "wet")
 REFERENCE_TYPES = ("Q", "H")  # session types read without an offset: qualifying and historical qualifying
 WET_SUFFIX = "W"               # a session in wet or mixed conditions: "QW", "FP2W" (own noise, shared offsets)
 
@@ -98,11 +98,11 @@ def _weighted(entry):
 def settings(hyper, noise_types):
     """Settings as the arrays the native filter reads."""
     priors = [hyper.car_prior, hyper.driver_prior, hyper.offset_prior, hyper.weekend_prior, hyper.affinity_prior,
-              hyper.form_prior, hyper.skill_prior, hyper.season_skill_prior]
+              hyper.form_prior, hyper.skill_prior, hyper.season_skill_prior, hyper.wet_prior]
     drifts = [hyper.car_drift, hyper.driver_drift, hyper.offset_drift, 0.0, hyper.affinity_drift, 0.0,
-              hyper.skill_drift, 0.0]
-    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0, 0.0, 0.0]
-    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]   # which kinds the regulation multiplier scales
+              hyper.skill_drift, 0.0, hyper.wet_drift]
+    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0, 0.0, 0.0, 0.0]
+    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]   # which kinds the regulation multiplier scales
     noise = [hyper.noise.get(t, 0.0) for t in noise_types]
     return (np.array(priors, dtype=np.float64), np.array(drifts, dtype=np.float64),
             np.array(winters, dtype=np.float64), np.array(multiplied, dtype=np.float64),
@@ -130,8 +130,10 @@ class Recorder:
     weekend / affinity switches. `columns` adds the states a forecast reads."""
 
     def __init__(self, noise_types, weekend=False, affinity=False, form=False, skills=(), season_skills=(),
-                 driver_offsets=()):
+                 driver_offsets=(), wet_ability=False):
         self.weekend, self.affinity, self.form = weekend, affinity, form
+        # a driver's pace in the wet against his dry pace, read by wet sessions ("QW", "FP2W")
+        self.wet_ability = wet_ability
         # parts of the track (track.BANDS) with a driver skill, persistent or per season; an
         # observation reads each weighted by its track's share (`shares`, set per session)
         self.skills, self.season_skills = tuple(skills), tuple(season_skills)
@@ -240,6 +242,8 @@ class Recorder:
                 row.append(self.column((car, base), "offset", track))
                 if base in self.driver_offsets:
                     row.append(self.column((driver, base), "offset", track))
+            if self.wet_ability and base != session_type:
+                row.append(self.column(driver, "wet", track))
             if self.weekend and session_type != "H":   # a historical session is its weekend's only one
                 row.append(self.column(car, "weekend", track))
             if self.form:
