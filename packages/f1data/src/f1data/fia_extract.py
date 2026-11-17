@@ -11,6 +11,11 @@ document number, publication time, page):
                     (team, component, primary reason, geometry change, description).
   tyre_nominations  "Pirelli Preview": the three nominated slick compounds (C1-C6)
                     and minimum starting pressures front/rear.
+  entry_lists       "Entry List": one row per driver, the race drivers of each car
+                    (role "race") and the extra drivers allowed in first practice
+                    (role "practice"), with name, nationality and team as printed.
+                    Car numbers carry footnote markers in the text layer (car 19 with
+                    footnote 1 reads "191"), so drivers are identified by name.
 
 The PDFs are text-based (not scans). Layout-dependent parsers check what they
 read (row counts, value ranges) and report problems instead of guessing; a
@@ -461,6 +466,32 @@ def parse_pirelli(path):
     return record
 
 
+# ---------------------------------------------------------------- entry lists
+
+ENTRY_ROW = re.compile(r"^(\d+)\s+(.+?)\s+([A-Z]{3})\s+(.+)$")
+
+
+def parse_entry_list(pdf):
+    """Rows (raw_number, driver_name, nationality, team, role) of an entry list."""
+    rows, role, started = [], "race", False
+    for page in pdf.pages:
+        for line in (page.extract_text() or "").splitlines():
+            line = line.strip()
+            if re.match(r"No\.?\s+Driver", line):
+                started = True
+                continue
+            if line.startswith("In addition"):
+                role = "practice"
+                continue
+            match = ENTRY_ROW.match(line) if started else None
+            if match:
+                rows.append({"raw_number": match.group(1), "driver_name": match.group(2),
+                             "nationality": match.group(3), "team": match.group(4), "role": role})
+    if sum(r["role"] == "race" for r in rows) < 10:
+        raise ExtractionProblem(f"entry list: only {sum(r['role'] == 'race' for r in rows)} race drivers read")
+    return rows
+
+
 # ---------------------------------------------------------------- driver
 
 def kind_of(entry):
@@ -474,6 +505,8 @@ def kind_of(entry):
     # pre-season testing previews list every compound, not a race nomination
     if entry["category"] == "tyres" and "pirelli preview" in title and "test" not in entry["event"].lower():
         return "tyre_nominations"
+    if entry["category"] == "entry_list" or title.endswith("entry list"):
+        return "entry_lists"
     return None
 
 
@@ -491,14 +524,16 @@ def load_corrections(path=CORRECTIONS):
     return {(e["file"], e["page"]): e for e in entries}
 
 
-def extract(root, seasons=None):
+def extract(root, seasons=None, kinds=None):
+    """Parse every document of the known kinds (or only `kinds`) into tables/."""
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))["files"]
-    tables = {"pu_usage": [], "rnc_usage": [], "car_updates": [], "car_updates_none": [], "tyre_nominations": []}
+    tables = {"pu_usage": [], "rnc_usage": [], "car_updates": [], "car_updates_none": [], "tyre_nominations": [],
+              "entry_lists": []}
     problems, counts, applied = [], {}, 0
     corrections = load_corrections()
     for key, entry in sorted(manifest.items()):
         kind = kind_of(entry)
-        if kind is None or (seasons and entry["season"] not in seasons):
+        if kind is None or (seasons and entry["season"] not in seasons) or (kinds and kind not in kinds):
             continue
         source = {name: entry.get(name) for name in PROVENANCE} | {"file": key}
         try:
@@ -534,6 +569,9 @@ def extract(root, seasons=None):
                     tables["car_updates_none"] += [{**source, "team_id": team_id(team), "team": team} for team in none]
             if kind == "tyre_nominations":
                 tables["tyre_nominations"].append({**source, **parse_pirelli(root / key)})
+            if kind == "entry_lists":
+                with pdfplumber.open(root / key) as pdf:
+                    tables["entry_lists"] += [{**source, **row} for row in parse_entry_list(pdf)]
             counts[kind] = counts.get(kind, 0) + 1
         except (ExtractionProblem, ValueError, KeyError) as error:
             problems.append({"file": key, "kind": kind, "error": str(error)})
@@ -550,6 +588,13 @@ def extract(root, seasons=None):
                 frame["below_previous_sheet"] = frame["count"] < previous
             frame = frame.astype({c: "string" for c in frame.columns if frame[c].dtype == object})
             written[name] = write_table(frame, root / "tables" / f"{name}.parquet", {})
-    atomic_json(root / "tables" / "extract-problems.json",
-                {"extracted_at_utc": utcnow(), "documents_parsed": counts, "corrections_applied": applied, "problems": problems})
+    report = root / "tables" / "extract-problems.json"
+    if kinds and report.is_file():
+        # a partial run keeps the other kinds' counts and problems
+        earlier = json.loads(report.read_text(encoding="utf-8"))
+        counts = {**{k: v for k, v in earlier.get("documents_parsed", {}).items() if k not in kinds}, **counts}
+        problems = [p for p in earlier.get("problems", []) if p.get("kind") not in kinds] + problems
+        applied = earlier.get("corrections_applied", 0) if "car_updates" not in kinds else applied
+    atomic_json(report, {"extracted_at_utc": utcnow(), "documents_parsed": counts, "corrections_applied": applied,
+                         "problems": problems})
     return written, counts, problems

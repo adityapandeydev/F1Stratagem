@@ -25,6 +25,8 @@ started a race keep an empty driver ID; their laps still count for the team.
 """
 
 import json
+import re
+import unicodedata
 
 import pandas as pd
 
@@ -283,6 +285,52 @@ def event_rows(root, races, sessions):
     return events.sort_values(["season", "is_testing", "round", "test_number"], na_position="first").reset_index(drop=True)
 
 
+def _name_tokens(text):
+    """Lower-case ASCII tokens of a name ("Nico Hülkenberg" -> {"nico", "hulkenberg"})."""
+    plain = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode()
+    plain = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", plain)        # "LewisHamilton" -> "Lewis Hamilton"
+    return set(re.findall(r"[a-z]+", plain.lower()))
+
+
+def entry_lists(root, events, driver_table, entrants, sessions):
+    """FIA entry lists resolved to event keys and driver IDs: one row per driver per
+    published list, with its role ("race": a car's entered driver; "practice": an
+    extra driver for first practice) and publication time. A name is matched to the
+    drivers of that season (FastF1 entrants), then to every known driver; it must
+    contain the driver's family name and the first given name (in either order:
+    "Zhou Guanyu"). Unmatched names keep an empty driver ID."""
+    path = root / "external" / "fia" / "tables" / "entry_lists.parquet"
+    if not path.is_file():
+        return pd.DataFrame(columns=["event_key", "season", "driver_id", "driver_name", "role", "team",
+                                     "published_utc", "doc_number"])
+    lists = pd.read_parquet(path)
+    lists["season"] = lists.season.astype(int)
+    # the event whose weekend (3 days before its first session to its last) contains the
+    # publication: FIA and FastF1 name some events differently (Brazilian / Sao Paulo)
+    windows = sessions.groupby("event_key").scheduled_start_utc.agg(["min", "max"])
+    published = pd.to_datetime(lists.published_utc, utc=True)
+    lists["event_key"] = [next((key for key, (first, last) in windows.iterrows()
+                                if first - pd.Timedelta(days=3) <= when <= last + pd.Timedelta(hours=6)), None)
+                          for when in published]
+    known = [(row.driver_id, _name_tokens(row.family_name), _name_tokens(str(row.given_name).split()[0]))
+             for row in driver_table.itertuples()]
+    by_season = entrants.groupby("season").driver_id.apply(lambda d: set(d.dropna())).to_dict()
+
+    def resolve(name, season):
+        tokens = _name_tokens(name)
+        season_drivers = by_season.get(season, set())
+        matches = [d for d, family, given in known if family <= tokens and given <= tokens]
+        local = [d for d in matches if d in season_drivers]
+        chosen = local or matches
+        if len(chosen) != 1:   # spelling of the given name differs ("Nicolas"): a unique family name that season
+            chosen = [d for d, family, given in known if family <= tokens and d in season_drivers]
+        return chosen[0] if len(chosen) == 1 else None
+
+    lists["driver_id"] = [resolve(n, s) for n, s in zip(lists.driver_name, lists.season)]
+    columns = ["event_key", "season", "driver_id", "driver_name", "role", "team", "published_utc", "doc_number"]
+    return lists[columns].sort_values(["published_utc", "doc_number"]).reset_index(drop=True)
+
+
 def build(root):
     """Rebuild every reference table from the archive. Returns the manifest."""
     out = root / "reference"
@@ -308,10 +356,11 @@ def build(root):
                                       "Location_country": "country", "Location_locality": "locality",
                                       "Location_lat": "latitude", "Location_long": "longitude"}))
     history = qualifying_history(root, races, lineage)
+    entries = entry_lists(root, events, driver_table, entrants, sessions)
     files = {}
     for name, frame in (("events", events), ("sessions", sessions), ("entrants", entrants),
                         ("drivers", driver_table), ("teams", team_table), ("circuits", circuit_table),
-                        ("qualifying_history", history)):
+                        ("qualifying_history", history), ("entry_lists", entries)):
         files[name] = write_table(frame, out / f"{name}.parquet", {})
     gaps = unresolved(entrants)
     manifest = {
@@ -326,6 +375,9 @@ def build(root):
         "lineages": int(team_table.lineage_id.nunique()),
         "qualifying_history": {"rows": len(history),
                                "events_per_season": history.groupby("season").event_key.nunique().rename(str).to_dict()},
+        "entry_lists": {"rows": len(entries), "events": int(entries.event_key.nunique()),
+                        "unresolved_names": sorted(set(entries.driver_name[entries.driver_id.isna()])),
+                        "unmatched_events": int(entries.event_key.isna().sum())},
         "note": "Unresolved entrants keep empty IDs.",
     }
     atomic_json(out / "manifest.json", manifest)

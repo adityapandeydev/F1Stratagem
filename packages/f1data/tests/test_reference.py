@@ -77,3 +77,22 @@ def test_qualifying_history_keeps_times_lineage_and_an_estimated_start(tmp_path)
     assert pd.isna(history.loc["alonso", "q2_seconds"])
     assert history.loc["vettel", "lineage_id"] == "milton_keynes"
     assert history.loc["vettel", "start_utc"] == pd.Timestamp("2010-03-13 12:00", tz="UTC")   # day before the race
+
+
+def test_entry_list_names_resolve_in_either_order_and_glued():
+    from f1data.reference import _name_tokens
+    assert _name_tokens("Zhou Guanyu") == {"zhou", "guanyu"}
+    assert _name_tokens("LewisHamilton") == {"lewis", "hamilton"}
+    assert _name_tokens("Nico Hülkenberg") == {"nico", "hulkenberg"}
+
+
+def test_entry_list_rows_and_roles_are_parsed():
+    from types import SimpleNamespace
+    from f1data.fia_extract import parse_entry_list
+    text = "\n".join(["No. Driver Nat Team Constructor"]
+                     + [f"{n} Driver{n} Name GBR Team {n} Constructor" for n in range(1, 21)]
+                     + ["In addition to the list of cars and drivers eligible to take part in the event",
+                        "455 Logan Sargeant USA Williams Racing Williams Mercedes"])
+    rows = parse_entry_list(SimpleNamespace(pages=[SimpleNamespace(extract_text=lambda: text)]))
+    assert sum(r["role"] == "race" for r in rows) == 20
+    assert rows[-1]["role"] == "practice" and rows[-1]["driver_name"] == "Logan Sargeant"
