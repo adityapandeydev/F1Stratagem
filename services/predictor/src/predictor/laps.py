@@ -20,13 +20,20 @@ more than WET_SHARE of timed laps, or fewer than CLEAN_SHARE of them clean: the 
 laps of a drying track are not dry pace), or when the fit cannot tell drivers apart.
 A driver needs MIN_LAPS clean laps.
 
-A wet or mixed race is read with `drying=True`: every compound's laps, within 107% of
-their lap's median, fitted with an effect per lap number shared by every car (the
-track drying or getting wetter, fuel, a slow lap for all) and a lap trend per
-compound against the first (slicks gaining on intermediates as the track dries):
+A wet or mixed race is read with `drying=True`. Tyres fall in three classes (slicks,
+intermediates, full wets), and the gap between classes swings by seconds a lap
+around a crossover: before it the old class is seconds faster, after it the new one,
+and a lap late costs more than a lap early (slicks lose more on a wet track than
+intermediates on a dry one). No shape is assumed: every lap has an effect shared by
+the field (the track, fuel, a slow lap for all) and, on a lap where two classes run
+together, each class but the lap's most used has its own effect for that lap:
 
-    100 log(lap time) = driver pace + lap effect + compound offset
-                        + compound trend x lap + wear(compound) x tyre age + noise
+    100 log(lap time) = driver pace + lap effect + class gap on that lap
+                        + compound offset within its class + wear(compound) x tyre age + noise
+
+A car on the other class at a crossover lap is thus compared only through that
+lap's class gap, never read as slow or fast driving. Laps are kept within 107% of
+the median of their lap and tyre class.
 
 The result per driver is the corrected race pace (log time x 100, relative: only
 differences between drivers carry meaning) and its standard error relative to the
@@ -72,7 +79,7 @@ def wet_race(laps):
 def clean_race_laps(laps, drying=False):
     """Laps of a race usable for pace: green, timed, not lap 1, not an in or out lap,
     accurate, not deleted, dry tyres with known age, within 107% of the median. With
-    `drying`, wet tyres too and within 107% of their own lap's median."""
+    `drying`, wet tyres too and within 107% of the median of their lap and tyre class."""
     frame = laps[laps.LapTime.notna() & laps.PitInTime.isna() & laps.PitOutTime.isna() & (laps.LapNumber > 1)]
     if "TrackStatus" in frame:
         frame = frame[frame.TrackStatus.fillna("").astype(str) == "1"]
@@ -86,7 +93,11 @@ def clean_race_laps(laps, drying=False):
         return frame.assign(seconds=pd.Series(dtype=float), driver_number=pd.Series(dtype=str),
                             compound=pd.Series(dtype=str))
     frame["seconds"] = frame.LapTime.dt.total_seconds()
-    median = frame.groupby("LapNumber").seconds.transform("median") if drying else frame.seconds.median()
+    if drying:      # a car on the other tyre class at a crossover may be seconds off: its own median
+        tyres = frame.Compound.astype(str).str.upper().map(tyre_class)
+        median = frame.groupby([frame.LapNumber, tyres]).seconds.transform("median")
+    else:
+        median = frame.seconds.median()
     frame = frame[frame.seconds <= median * SLOW_CUTOFF]
     return frame.assign(driver_number=frame.DriverNumber.astype(str),
                         compound=frame.Compound.astype(str).str.upper())
@@ -154,23 +165,36 @@ def race_pace(laps, drying=False):
     return result
 
 
+def tyre_class(compound):
+    """Slick ("dry"), "INTERMEDIATE" or "WET"."""
+    return compound if compound in WET else "dry"
+
+
 def _design(frame, drivers, names=None, drying=False):
     """Columns: one per driver (pace), compound offsets against the first compound,
-    wear per compound with enough laps and ages, one shared wear for the rest; with
-    `drying`, also an effect per lap number but the first and a lap trend per compound
-    but the first. With `names`, the same columns as a previous call (for residuals
-    of trimmed laps)."""
+    wear per compound with enough laps and ages, one shared wear for the rest. With
+    `drying`, compound offsets only within a tyre class, an effect per lap number but
+    the first, and a class gap per lap where two classes run (each class but the lap's
+    most used). With `names`, the same columns as a previous call (for residuals of
+    trimmed laps)."""
     number = frame.driver_number.to_numpy()
     compound = frame.compound.to_numpy()
     age = frame.TyreLife.to_numpy(dtype=float)
     lap = frame.LapNumber.to_numpy(dtype=float) if "LapNumber" in frame else np.zeros(len(frame))
+    classes = np.array([tyre_class(c) for c in compound], dtype=object)
     if names is None:
         present = sorted(set(compound))
         own = [c for c in present if (compound == c).sum() >= MIN_WEAR_LAPS and len(set(age[compound == c])) >= 2]
-        names = [f"driver:{d}" for d in drivers] + [f"compound:{c}" for c in present[1:]] \
+        offsets = present[1:]
+        if drying:              # across classes the lap effects and class gaps take the difference
+            offsets = [c for c in present if c != min(p for p in present if tyre_class(p) == tyre_class(c))]
+        names = [f"driver:{d}" for d in drivers] + [f"compound:{c}" for c in offsets] \
             + [f"wear:{c}" for c in own] + (["wear:shared"] if len(own) < len(present) else [])
         if drying:
-            names += [f"lap:{int(n)}" for n in sorted(set(lap))[1:]] + [f"trend:{c}" for c in present[1:]]
+            names += [f"lap:{int(n)}" for n in sorted(set(lap))[1:]]
+            for n in sorted(set(lap)):
+                counts = pd.Series(classes[lap == n]).value_counts()
+                names += [f"gap:{c}@{int(n)}" for c in sorted(counts.index[1:])]
     own = {name[5:] for name in names if name.startswith("wear:") and name != "wear:shared"}
     columns = []
     for name in names:
@@ -181,8 +205,9 @@ def _design(frame, drivers, names=None, drying=False):
             columns.append((compound == value).astype(float))
         elif kind == "lap":
             columns.append((lap == float(value)).astype(float))
-        elif kind == "trend":
-            columns.append((compound == value) * lap)
+        elif kind == "gap":
+            group, n = value.split("@")
+            columns.append(((classes == group) & (lap == float(n))).astype(float))
         elif value == "shared":
             columns.append(~np.isin(compound, list(own)) * age)
         else:

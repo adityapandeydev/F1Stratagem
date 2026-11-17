@@ -136,27 +136,34 @@ def test_a_driver_trimmed_below_the_minimum_is_dropped_and_the_rest_refitted():
     assert (pace.laps >= L.MIN_LAPS).all()
 
 
-def test_a_drying_race_recovers_driver_pace_through_a_field_wide_tyre_change():
-    """The whole field runs intermediates, then slicks, on a track that dries lap by lap:
-    the lap effects take the drying and the change, and the gaps between drivers remain."""
+def test_a_drying_race_recovers_driver_pace_through_a_crossover():
+    """A track dries: intermediates are faster until lap 20, slicks after, the gap
+    swinging by seconds a lap (late on intermediates costs more than early on slicks).
+    One driver changes early, one on time, one late; another field-wide change follows.
+    The class gaps per lap take the crossover, and the gaps between drivers remain."""
     import numpy as np
     import pandas as pd
     from predictor.laps import race_pace
     rng = np.random.default_rng(3)
-    gaps = {"1": 0.0, "2": 0.4, "3": 0.9}
+    gaps = {"1": 0.0, "2": 0.4, "3": 0.9, "4": 0.2, "5": 0.6, "6": 1.2}
+    change = {"1": 24, "2": 14, "3": 20, "4": 16, "5": 26, "6": 18}     # first lap on slicks
     rows = []
     for lap in range(1, 51):
-        track = 0.12 * max(0, 25 - lap) + (3.0 if lap <= 20 else 0.0)        # drying, then slicks
+        track = 0.15 * max(0, 30 - lap)                                  # drying all race
+        # percent: slicks 0.6 a lap behind before lap 20, then intermediates 1.2 a lap behind
+        slick_minus_inter = 0.6 * (20 - lap) if lap < 20 else -min(1.2 * (lap - 19), 6.0)
         for driver, gap in gaps.items():
-            compound = "INTERMEDIATE" if lap <= 20 else "MEDIUM"
-            age = lap if lap <= 20 else lap - 20
-            seconds = 90 * np.exp((track + gap + 0.02 * age + rng.normal(0, 0.05)) / 100)
+            slick = lap >= change[driver]
+            compound = "MEDIUM" if slick else "INTERMEDIATE"
+            age = lap - change[driver] + 1 if slick else lap
+            loss = max(slick_minus_inter, 0) if slick else max(-slick_minus_inter, 0)
+            seconds = 90 * np.exp((track + gap + loss + 0.02 * age + rng.normal(0, 0.05)) / 100)
             rows.append({"DriverNumber": driver, "LapNumber": lap, "LapTime": pd.Timedelta(seconds=seconds),
                          "PitInTime": pd.NaT, "PitOutTime": pd.NaT, "TrackStatus": "1", "IsAccurate": True,
                          "Deleted": False, "Compound": compound, "TyreLife": float(age)})
     laps = pd.DataFrame(rows)
     assert race_pace(laps).empty                                   # not dry pace
     pace = race_pace(laps, drying=True).set_index("driver_number").pace
-    assert pace["2"] - pace["1"] == pytest.approx(0.4, abs=0.05)
-    assert pace["3"] - pace["1"] == pytest.approx(0.9, abs=0.05)
+    for driver, gap in gaps.items():
+        assert pace[driver] - pace["1"] == pytest.approx(gap, abs=0.06)
     assert race_pace(laps.assign(Compound="MEDIUM"), drying=True).empty   # a dry race is not read as wet
