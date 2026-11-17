@@ -1057,3 +1057,17 @@ def test_wet_sessions_have_their_own_noise_and_share_offsets(tmp_path, monkeypat
     assert all(t == "FP1" for _, t in offsets)                      # the wet FP1 shares the FP1 offsets
     hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
     assert "FP1W" in model.last_fit["fitted"]
+
+
+def test_wet_qualifying_counts_in_the_qualifying_objective(tmp_path, monkeypatch):
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    monkeypatch.setattr(PaceModel, "_wet_session", lambda self, view, sid: True)   # every session wet
+    model = PaceModel(ALL_SESSIONS, winter=True, objective="qualifying", wet_noise=True)
+    sessions = model.sessions(view)
+    assert set(sessions[sessions.session_id.str.endswith("-2")].session_type) == {"QW"}
+    recorder = model.record(view, sessions, False, False)
+    counted = recorder.program().ops
+    updates = counted[counted[:, 0] == program.UPDATE]
+    assert updates[:, 3].sum() > 0                                 # wet qualifying updates are counted
+    assert recorder.objective(Hyper(**GOLDEN_SETTINGS | NO_AFFINITY | {"weekend_prior": 0.0})) != 0.0

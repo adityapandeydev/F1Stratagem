@@ -634,11 +634,12 @@ class PaceModel:
                 for cars, drivers, values in groups:
                     recorder.update(cars, drivers, values, session.session_type, counted=False)
                 continue
-            if objective == "qualifying" and session.session_type == "Q":
+            if objective == "qualifying" and base_type(session.session_type) == "Q":
+                # wet qualifying (QW) counts as qualifying and keeps its own noise
                 recorder.advance(session.scheduled_start_utc, track=1)
                 for cars, drivers, values in groups:
-                    recorder.update(cars, drivers, values, "Q", track=1)
-                    recorder.update(cars, drivers, values, "Q")
+                    recorder.update(cars, drivers, values, session.session_type, track=1)
+                    recorder.update(cars, drivers, values, session.session_type)
                 continue
             covariances = self._covariances.get(session.session_id, []) if self.race_estimates else []
             for index, (cars, drivers, values) in enumerate(groups):
