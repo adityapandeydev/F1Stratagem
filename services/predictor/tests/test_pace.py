@@ -1128,14 +1128,19 @@ def test_split_practice_gives_a_push_group_and_a_best_lap_group_of_the_rest(tmp_
 
 
 def test_robust_forecast_noise_shares_one_scale_per_segment():
-    """Two drivers' lap difference under the forecast draws follows the fitted
-    multivariate Student-t: its tail matches the t density, not independent t draws."""
+    """The production sampler: two drivers far ahead of the field always reach Q3, so
+    their order there follows the lap difference, which under the fitted multivariate
+    Student-t is a t variable: P(the slower ahead) = t.sf(gap / (noise sqrt 2)). Independent
+    scales per driver would give 0.219 at one unit, 0.080 at two."""
     from scipy import stats
-    rng = np.random.default_rng(5)
-    dof, draws = 4.0, 400000
-    z = rng.standard_normal((draws, 2)) * np.sqrt(dof / rng.chisquare(dof, (draws, 1)))
-    gap = (z[:, 1] - z[:, 0]) / np.sqrt(2)
-    assert np.mean(np.abs(gap) > 2.0) == pytest.approx(2 * stats.t.sf(2.0, dof), abs=0.003)
+    from predictor.pace import knockout_positions
+    dof, noise, size, draws = 3.0, 0.4, 20, 200000
+    for units in (1.0, 2.0):
+        pace = np.full((draws, size), 50.0)
+        pace[:, 0], pace[:, 1] = 0.0, units * noise * np.sqrt(2)
+        positions = knockout_positions(pace, noise, np.random.default_rng(1), dof=dof,
+                                       scale_rng=np.random.default_rng(2))
+        assert np.mean(positions[:, 1] < positions[:, 0]) == pytest.approx(stats.t.sf(units, dof), abs=0.005)
 
 
 def test_a_wet_practice_gives_no_push_group(tmp_path, monkeypatch):

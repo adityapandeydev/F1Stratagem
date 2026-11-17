@@ -167,3 +167,36 @@ def test_a_drying_race_recovers_driver_pace_through_a_crossover():
     for driver, gap in gaps.items():
         assert pace[driver] - pace["1"] == pytest.approx(gap, abs=0.06)
     assert race_pace(laps.assign(Compound="MEDIUM"), drying=True).empty   # a dry race is not read as wet
+
+
+def test_a_lapped_car_meets_the_track_of_race_time_not_of_its_lap_number():
+    """Equal pace on a drying track; half the field runs a lap behind (lapped). Read by
+    lap number, the lapped cars meet a drier track at each of their laps and look faster;
+    read by race time, the pace is equal."""
+    import numpy as np
+    import pandas as pd
+    from predictor.laps import race_pace
+    rng = np.random.default_rng(11)
+    rows = []
+    for driver in [str(i) for i in range(1, 11)]:
+        delay = 92.0 if int(driver) > 5 else 0.0        # one lap behind
+        start = 300.0 + delay
+        stop = 24 + int(driver) % 5                      # onto slicks, staggered
+        for lap in range(1, 41):
+            middle = start + 46.0
+            track = max(0.0, 6.0 - 0.15 * middle / 92.0)               # drying with race time (percent)
+            compound = "INTERMEDIATE" if lap < stop else "MEDIUM"
+            age = lap if lap < stop else lap - stop + 1
+            fuel = -0.065 * lap
+            seconds = 90 * np.exp((track + fuel + 0.02 * age + rng.normal(0, 0.03)) / 100)
+            rows.append({"DriverNumber": driver, "LapNumber": lap, "LapTime": pd.Timedelta(seconds=seconds),
+                         "LapStartTime": pd.Timedelta(seconds=start), "Time": pd.Timedelta(seconds=start + seconds),
+                         "PitInTime": pd.NaT, "PitOutTime": pd.NaT, "TrackStatus": "1", "IsAccurate": True,
+                         "Deleted": False, "Compound": compound, "TyreLife": float(age)})
+            start += seconds
+    laps = pd.DataFrame(rows)
+    pace = race_pace(laps, drying=True).set_index("driver_number").pace
+    lapped = pace[[str(i) for i in range(6, 11)]].mean() - pace[[str(i) for i in range(1, 6)]].mean()
+    assert abs(lapped) < 0.05
+    by_lap_number = race_pace(laps.drop(columns=["LapStartTime", "Time"]), drying=True).set_index("driver_number").pace
+    assert by_lap_number[[str(i) for i in range(6, 11)]].mean() - by_lap_number[[str(i) for i in range(1, 6)]].mean() < -0.1

@@ -33,7 +33,9 @@ together, each class but the lap's most used has its own effect for that lap:
 
 A car on the other class at a crossover lap is thus compared only through that
 lap's class gap, never read as slow or fast driving. Laps are kept within 107% of
-the median of their lap and tyre class.
+the median of their lap and tyre class. "Lap" here is race time (the leader's lap in
+progress at the middle of the car's lap, so a lapped car meets the track the leader
+did), while fuel follows the car's own laps.
 
 The result per driver is the corrected race pace (log time x 100, relative: only
 differences between drivers carry meaning) and its standard error relative to the
@@ -93,9 +95,11 @@ def clean_race_laps(laps, drying=False):
         return frame.assign(seconds=pd.Series(dtype=float), driver_number=pd.Series(dtype=str),
                             compound=pd.Series(dtype=str))
     frame["seconds"] = frame.LapTime.dt.total_seconds()
-    if drying:      # a car on the other tyre class at a crossover may be seconds off: its own median
+    if drying:
+        frame["track_lap"] = track_laps(laps, frame)
+        # a car on the other tyre class at a crossover may be seconds off: its own median
         tyres = frame.Compound.astype(str).str.upper().map(tyre_class)
-        median = frame.groupby([frame.LapNumber, tyres]).seconds.transform("median")
+        median = frame.groupby([frame.track_lap, tyres]).seconds.transform("median")
     else:
         median = frame.seconds.median()
     frame = frame[frame.seconds <= median * SLOW_CUTOFF]
@@ -165,6 +169,20 @@ def race_pace(laps, drying=False):
     return result
 
 
+def track_laps(laps, frame):
+    """The leader's lap in progress at the middle of each lap of `frame`: track
+    conditions follow race time, and a lapped car runs its lap 30 on the track of the
+    leader's lap 31. Without session times, the driver's own lap number."""
+    columns = ("Time", "LapStartTime")
+    if any(c not in laps or c not in frame for c in columns) or frame.LapStartTime.isna().any():
+        return frame.LapNumber.to_numpy(dtype=float)
+    # when the first car completed each lap number (every timed lap counts, not only clean ones)
+    ends = laps[laps.Time.notna()].groupby("LapNumber").Time.min().sort_index()
+    ends = np.maximum.accumulate(ends.dt.total_seconds().to_numpy())
+    middle = (frame.LapStartTime + frame.LapTime / 2).dt.total_seconds().to_numpy()
+    return (np.searchsorted(ends, middle, side="left") + 1).astype(float)
+
+
 def tyre_class(compound):
     """Slick ("dry"), "INTERMEDIATE" or "WET"."""
     return compound if compound in WET else "dry"
@@ -180,7 +198,9 @@ def _design(frame, drivers, names=None, drying=False):
     number = frame.driver_number.to_numpy()
     compound = frame.compound.to_numpy()
     age = frame.TyreLife.to_numpy(dtype=float)
-    lap = frame.LapNumber.to_numpy(dtype=float) if "LapNumber" in frame else np.zeros(len(frame))
+    # track effects and class gaps follow race time (the leader's lap), fuel the car's own laps
+    lap = frame.track_lap.to_numpy(dtype=float) if "track_lap" in frame else \
+        frame.LapNumber.to_numpy(dtype=float) if "LapNumber" in frame else np.zeros(len(frame))
     classes = np.array([tyre_class(c) for c in compound], dtype=object)
     if names is None:
         present = sorted(set(compound))

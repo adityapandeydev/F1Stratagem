@@ -189,6 +189,9 @@ def model_registry():
             # wet and mixed races read with a drying curve (x)
             "pace3wrqwx": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                               wet_races=True),
+            # wet targets forecast with the wet noise: against v3wrqwxy it isolates wet ability
+            "pace3wrqwxc": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                               wet_races=True, wet_forecast=True),
             "pace3wrqwxy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                wet_races=True, wet_ability=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
