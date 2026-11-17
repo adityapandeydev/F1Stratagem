@@ -80,8 +80,8 @@ from scipy.optimize import minimize
 from .forecast import Forecast
 from . import track
 from .baselines import seed_for
-from .laps import long_run_pace, push_pace, race_pace
-from .program import REFERENCE_TYPES, Recorder
+from .laps import WET as WET_COMPOUNDS, WET_SHARE, long_run_pace, push_pace, race_pace
+from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
 SEGMENTS = ("Q1", "Q2", "Q3")
@@ -103,7 +103,8 @@ OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
 class Hyper:
     noise: dict = field(default_factory=lambda: {"Q": 0.3, "SQ": 0.35, "FP1": 0.8, "FP2": 0.7, "FP3": 0.6,
                                                  "T": 1.2, "H": 0.3, "R": 0.5, "L": 0.5,
-                                                 "FP1P": 0.5, "FP2P": 0.5, "FP3P": 0.5})
+                                                 "FP1P": 0.5, "FP2P": 0.5, "FP3P": 0.5,
+                                                 "QW": 0.8, "SQW": 0.8, "FP1W": 1.0, "FP2W": 1.0, "FP3W": 1.0})
     car_drift: float = 0.05     # variances added per 14 days
     driver_drift: float = 0.01
     offset_drift: float = 0.005
@@ -136,7 +137,7 @@ class Hyper:
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations; the
         car and driver priors only if a lineage or a driver first appears in the data."""
-        offsets = any(t not in REFERENCE_TYPES for t in types)
+        offsets = any(base_type(t) not in REFERENCE_TYPES for t in types)
         return ("car_drift", "driver_drift", *(("offset_drift",) if offsets else ()),
                 *(("car_prior",) if new_cars else ()), *(("driver_prior",) if new_drivers else ()),
                 *(("offset_prior",) if offsets else ()), *(("car_winter", "driver_winter") if winter else ()),
@@ -394,7 +395,7 @@ class PaceModel:
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
-                 race_estimates=False, knockout=False, failures=False):
+                 race_estimates=False, knockout=False, failures=False, wet_noise=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -420,6 +421,13 @@ class PaceModel:
         # drivers fail to set a time in a segment with a learned, driver-specific probability
         self.failures = failures
         self._failure_rows = {}
+        # sessions run in wet or mixed conditions are their own types ("QW", "FP2W") with their
+        # own noise: a compromised session widens uncertainty instead of moving long-run pace
+        self.wet_noise = wet_noise
+        self._wet = {}
+        if wet_noise:
+            self.session_types = self.session_types + tuple(
+                f"{t}{WET_SUFFIX}" for t in ("Q", "SQ", "FP1", "FP2", "FP3") if t in self.session_types)
         self._covariances = {}
         if long_runs and "L" not in self.session_types:
             self.session_types = self.session_types + ("L",)
@@ -441,6 +449,12 @@ class PaceModel:
         sessions = view.sessions[view.sessions.session_type.isin(self.session_types)]
         if self.history:
             sessions = pd.concat([self._history_sessions(view), sessions], ignore_index=True)
+        if self.wet_noise:
+            sessions = sessions.copy()
+            dry = sessions.session_type.isin(("Q", "SQ", "FP1", "FP2", "FP3"))
+            sessions.loc[dry, "session_type"] = [
+                f"{row.session_type}{WET_SUFFIX}" if self._wet_session(view, row.session_id) else row.session_type
+                for row in sessions[dry].itertuples()]
         long = None
         if self.long_runs:                        # from the practice sessions as they are
             practice = sessions[sessions.session_type.isin(PRACTICE)]
@@ -501,10 +515,20 @@ class PaceModel:
                 self._covariances[session.session_id] = covariances
             return self._observations[session.session_id]
         if session.session_id not in self._observations:
-            laps = view.laps(session.session_id) if session.session_type not in SEGMENTED else None
+            kind = base_type(session.session_type)
+            laps = view.laps(session.session_id) if kind not in SEGMENTED else None
             self._observations[session.session_id] = session_observations(
-                session.session_type, view.results(session.session_id), laps, view.entrants(session.session_id))
+                kind, view.results(session.session_id), laps, view.entrants(session.session_id))
         return self._observations[session.session_id]
+
+    def _wet_session(self, view, session_id):
+        """Wet or mixed: wet-weather tyres on more than WET_SHARE of the session's timed laps."""
+        if session_id not in self._wet:
+            laps = view.laps(session_id)
+            timed = laps[laps.LapTime.notna()] if "LapTime" in laps else laps.iloc[0:0]
+            compound = timed.Compound.fillna("").astype(str).str.upper() if "Compound" in timed else pd.Series(dtype=str)
+            self._wet[session_id] = bool(len(compound)) and float(compound.isin(WET_COMPOUNDS).mean()) > WET_SHARE
+        return self._wet[session_id]
 
     def failure_rates(self, view, example):
         """Per entrant and segment, the probability of setting no time, from every
@@ -813,7 +837,7 @@ class PaceModel:
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
-                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures,
+                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 

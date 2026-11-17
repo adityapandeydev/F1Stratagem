@@ -1041,3 +1041,19 @@ def test_failures_do_not_change_the_lap_draws():
     plain = knockout_positions(pace, 0.5, np.random.default_rng(7))
     zero = knockout_positions(pace, 0.5, np.random.default_rng(7), np.zeros((20, 3)), np.random.default_rng(8))
     assert (plain == zero).all()
+
+
+def test_wet_sessions_have_their_own_noise_and_share_offsets(tmp_path, monkeypatch):
+    from predictor.program import base_type
+    assert base_type("FP2W") == "FP2" and base_type("QW") == "Q" and base_type("Q") == "Q"
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    monkeypatch.setattr(PaceModel, "_wet_session", lambda self, view, sid: sid == "2021-02-1")
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, wet_noise=True)
+    sessions = model.sessions(view)
+    assert sessions.set_index("session_id").session_type["2021-02-1"] == "FP1W"
+    recorder = model.record(view, sessions, True, False)
+    offsets = [key for kind, key in recorder.keys if kind == "offset"]
+    assert all(t == "FP1" for _, t in offsets)                      # the wet FP1 shares the FP1 offsets
+    hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
+    assert "FP1W" in model.last_fit["fitted"]

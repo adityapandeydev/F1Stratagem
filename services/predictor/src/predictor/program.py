@@ -26,6 +26,14 @@ except ImportError as error:   # pragma: no cover - the build step is part of in
 
 KINDS = ("car", "driver", "offset", "weekend", "affinity", "form", "skill", "season_skill")
 REFERENCE_TYPES = ("Q", "H")  # session types read without an offset: qualifying and historical qualifying
+WET_SUFFIX = "W"               # a session in wet or mixed conditions: "QW", "FP2W" (own noise, shared offsets)
+
+
+def base_type(session_type):
+    """The dry session type a wet one belongs to ("FP2W" -> "FP2")."""
+    if session_type.endswith(WET_SUFFIX) and session_type[:-1] in ("Q", "SQ", "FP1", "FP2", "FP3", "T"):
+        return session_type[:-1]
+    return session_type
 DAY_SCALE = 14.0  # drift variances are per 14 days
 
 # opcodes; every op is one row of `ops` (code, track, a, b, c) plus optional slices of the shared arrays
@@ -226,10 +234,11 @@ class Recorder:
         rows = []
         for car, driver in zip(cars, drivers):
             row = [self.column(car, "car", track), self.column(driver, "driver", track)]
-            if session_type not in REFERENCE_TYPES:
-                row.append(self.column((car, session_type), "offset", track))
-                if session_type in self.driver_offsets:
-                    row.append(self.column((driver, session_type), "offset", track))
+            base = base_type(session_type)
+            if base not in REFERENCE_TYPES:
+                row.append(self.column((car, base), "offset", track))
+                if base in self.driver_offsets:
+                    row.append(self.column((driver, base), "offset", track))
             if self.weekend and session_type != "H":   # a historical session is its weekend's only one
                 row.append(self.column(car, "weekend", track))
             if self.form:
