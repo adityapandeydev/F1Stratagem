@@ -1001,3 +1001,18 @@ def test_a_screen_inherits_and_freezes_the_estimate_scale(tmp_path, monkeypatch)
     dropped = PaceModel(WITH_RACES, "pace:dropped", winter=True, weekend=True)
     with pytest.raises(ValueError, match="race estimates"):
         dropped._check_extends(base)
+
+
+def test_knockout_positions_follow_q1_q2_q3():
+    from predictor.pace import knockout_cuts, knockout_positions
+    assert knockout_cuts(20) == (5, 5) and knockout_cuts(22) == (6, 6) and knockout_cuts(19) == (5, 4)
+    assert knockout_cuts(8) == (0, 0)
+    rng = np.random.default_rng(0)
+    pace = np.tile(np.arange(20, dtype=float), (500, 1))          # driver i is i tenths slower
+    positions = knockout_positions(pace, 1e-6, rng)
+    assert (positions == np.arange(1, 21)).all()                   # no noise: the order of pace
+    assert all(sorted(row) == list(range(1, 21)) for row in knockout_positions(pace, 3.0, rng))
+    noisy = knockout_positions(pace, 3.0, rng)
+    # with lap noise a midfield driver sometimes falls in Q1 (P16-20) and sometimes reaches Q3
+    assert (noisy[:, 9] >= 16).mean() > 0 and (noisy[:, 9] <= 10).mean() > 0
+    assert (noisy[:, 0] <= 10).mean() > 0.9

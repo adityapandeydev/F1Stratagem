@@ -250,6 +250,42 @@ LONG_RUN_PREFIX = "long:"
 PUSH_TYPES = ("FP1P", "FP2P", "FP3P")
 
 
+Q3_CARS = 10
+
+
+def knockout_cuts(size):
+    """(cars out after Q1, cars out after Q2): ten reach Q3, the rest leave in two
+    halves, the first the larger (20 cars: 5 and 5; 22: 6 and 6)."""
+    out = max(size - Q3_CARS, 0)
+    first = -(-out // 2)
+    return first, out - first
+
+
+def knockout_positions(pace, noise, rng):
+    """Positions from Q1, Q2 and Q3: per draw (rows of `pace`) every driver sets a lap
+    per segment he takes part in (pace + independent noise); the slowest leave after Q1
+    and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten."""
+    draws, size = pace.shape
+    first, second = knockout_cuts(size)
+    positions = np.zeros((draws, size), dtype=int)
+    alive = np.ones((draws, size), dtype=bool)
+    rows = np.arange(draws)[:, None]
+    for out, start in ((first, size - first + 1), (second, size - first - second + 1)):
+        if out == 0:
+            continue
+        lap = np.where(alive, pace + noise * rng.standard_normal(pace.shape), np.inf)
+        order = np.argsort(lap, axis=1)
+        running = alive.sum(axis=1)[0]
+        leaving = order[:, running - out:running]                # the slowest `out` of those still running
+        positions[rows, leaving] = start + np.arange(out)[None, :]
+        alive[rows, leaving] = False
+    lap = np.where(alive, pace + noise * rng.standard_normal(pace.shape), np.inf)
+    order = np.argsort(lap, axis=1)
+    finalists = alive.sum(axis=1)[0]
+    positions[rows, order[:, :finalists]] = np.arange(1, finalists + 1)[None, :]
+    return positions
+
+
 def _pace_group(pace, entrants, slow_cutoff=None):
     """One observation group from a per-driver pace table (`laps` module), or [].
     With `slow_cutoff`, drivers slower than that ratio of the group's best are left
@@ -306,7 +342,7 @@ class PaceModel:
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
-                 race_estimates=False):
+                 race_estimates=False, knockout=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -327,6 +363,8 @@ class PaceModel:
         # each race's pace estimation covariance enters its observation noise, scaled by a
         # fitted estimate_scale (laps within a stint are correlated, so the raw errors are small)
         self.race_estimates = race_estimates
+        # forecasts simulate Q1, Q2 and Q3 (eliminations, a lap per segment) instead of one draw
+        self.knockout = knockout
         self._covariances = {}
         if long_runs and "L" not in self.session_types:
             self.session_types = self.session_types + ("L",)
@@ -705,7 +743,7 @@ class PaceModel:
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
-                "long_runs": self.long_runs, "race_estimates": self.race_estimates,
+                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
@@ -789,10 +827,17 @@ class PaceModel:
         size = len(mean)
         seed = seed_for(example)              # shared by every model: common random numbers
         rng = np.random.default_rng(seed)
-        samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
-        order = np.argsort(samples, axis=1)
-        positions = np.empty_like(order)
-        positions[np.arange(draws)[:, None], order] = np.arange(1, size + 1)
+        if self.knockout:
+            # weekend pace without lap noise, then each segment's laps with their own noise
+            noise = self.hyper.noise["Q"]
+            pace = rng.multivariate_normal(mean, cov - noise ** 2 * np.eye(size) + 1e-9 * np.eye(size), size=draws,
+                                           method="cholesky")
+            positions = knockout_positions(pace, noise, rng)
+        else:
+            samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
+            order = np.argsort(samples, axis=1)
+            positions = np.empty_like(order)
+            positions[np.arange(draws)[:, None], order] = np.arange(1, size + 1)
         return Forecast.from_draws(
             positions=positions, season=example.season, session_type=example.session_type,
             event_key=example.event_key, cutoff_label=example.cutoff_label, cutoff_time=example.cutoff_time.isoformat(),
