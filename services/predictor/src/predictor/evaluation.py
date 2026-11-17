@@ -76,7 +76,8 @@ def score(forecast, example):
 def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False, form=False,
                 skills=(), season_skills=(), races=False, driver_race=False, push=False, long_runs=False,
                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
-                wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False):
+                wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False,
+                wet_segments=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, WITH_RACES, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
@@ -86,7 +87,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
         + ("r" if races else "") + ("d" if driver_race else "") \
         + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "") + ("w" if wet_noise else "") + ("t" if robust else "") \
         + ("p" if push else "") + ("n" if push == "own" else "") \
-        + ("x" if wet_races else "") + ("e" if wet_evolution else "")
+        + ("x" if wet_races else "") + ("e" if wet_evolution else "") + ("g" if wet_segments else "")
     forecast = ("c" if wet_forecast and not wet_ability else "") + ("y" if wet_ability else "")
     model = PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
@@ -94,7 +95,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
                      practice_push=push, long_runs=long_runs, race_estimates=race_estimates,
                      knockout=knockout, failures=failures, wet_noise=wet_noise, robust=robust,
                      wet_forecast=wet_forecast, wet_ability=wet_ability, wet_races=wet_races,
-                     wet_evolution=wet_evolution)
+                     wet_evolution=wet_evolution, wet_segments=wet_segments)
     # the wet forecast mode changes no fit: a model with it shares the fits of the one without
     if forecast == "c":
         model.fit_name = model.name
@@ -205,6 +206,9 @@ def model_registry():
                                                robust=True, wet_forecast=True),
             "pace3wrqwtxy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                 robust=True, wet_races=True, wet_ability=True),
+            # each segment of a wet qualifying typed by the tyres its times were set on (g)
+            "pace3wrqwtgc": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                robust=True, wet_segments=True, wet_forecast=True),
             # wet qualifying read at one track per segment (e)
             "pace3wrqwec": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                wet_evolution=True, wet_forecast=True),

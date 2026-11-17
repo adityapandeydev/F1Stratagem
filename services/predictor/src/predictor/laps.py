@@ -461,3 +461,29 @@ def qualifying_trend(laps, results):
             continue                                            # condition differences not estimable
         out[segment] = dict(zip(names, (contrasts @ beta).tolist()))
     return out
+
+
+def segment_wet_shares(laps, results):
+    """{segment: share of its segment times set on wet-weather tyres} for one
+    qualifying, over the times found among the laps (a segment with none is left
+    out). A wet qualifying often dries: Q1 on intermediates, Q3 on slicks."""
+    if any(c not in laps for c in ("LapTime", "DriverNumber", "Compound")):
+        return {}
+    timed = laps[laps.LapTime.notna()]
+    seconds = timed.LapTime.dt.total_seconds().to_numpy()
+    numbers = timed.DriverNumber.astype(str).to_numpy()
+    wet = timed.Compound.fillna("").astype(str).str.upper().isin(WET).to_numpy()
+    out = {}
+    for segment in SEGMENTS_Q:
+        if segment not in results:
+            continue
+        found = []
+        for number, value in zip(results.DriverNumber.astype(str), pd.to_timedelta(results[segment]).dt.total_seconds()):
+            if pd.isna(value):
+                continue
+            match = np.flatnonzero((numbers == number) & (np.abs(seconds - value) < MATCH_SECONDS))
+            if len(match) == 1:
+                found.append(bool(wet[match[0]]))
+        if found:
+            out[segment] = float(np.mean(found))
+    return out

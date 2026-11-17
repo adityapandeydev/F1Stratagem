@@ -80,7 +80,7 @@ from scipy.optimize import minimize
 from .forecast import Forecast
 from . import track
 from .baselines import seed_for
-from .laps import long_run_pace, push_pace, qualifying_trend, race_pace, wet_race, wet_session
+from .laps import long_run_pace, push_pace, qualifying_trend, race_pace, segment_wet_shares, wet_race, wet_session
 from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
@@ -225,6 +225,7 @@ def _lap_groups(session_type, results, laps, trends=None):
             if trends and segment in trends and frame.number.isin(list(trends[segment])).all():
                 shift = frame.number.map(trends[segment]).to_numpy(dtype=float)
                 frame["seconds"] = frame.seconds.to_numpy() * np.exp(-shift / 100)
+            frame.attrs["segment"] = segment
             if len(frame) >= 2:
                 yield frame
         return
@@ -247,8 +248,9 @@ def _group_observation(cars, drivers, seconds):
             100 * np.log(seconds[keep]))
 
 
-def session_observations(session_type, results, laps, entrants, trends=None):
-    """[(car keys, driver keys, log times x 100)] for one session."""
+def session_observations(session_type, results, laps, entrants, trends=None, segments=None):
+    """[(car keys, driver keys, log times x 100)] for one session. `segments`: a list
+    that receives each group's segment ("Q1".., None for an unsegmented session)."""
     ids = entrants.set_index("driver_number")
     observations = []
     for frame in _lap_groups(session_type, results, laps, trends):
@@ -257,6 +259,8 @@ def session_observations(session_type, results, laps, entrants, trends=None):
         group = _group_observation(cars, drivers, frame.seconds.to_numpy())
         if group is not None:
             observations.append(group)
+            if segments is not None:
+                segments.append(frame.attrs.get("segment"))
     return observations
 
 
@@ -427,7 +431,8 @@ class PaceModel:
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
                  race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
-                 wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False):
+                 wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False,
+                 wet_segments=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -474,6 +479,12 @@ class PaceModel:
             raise ValueError("track evolution in wet qualifying needs wet sessions as their own types")
         self.wet_evolution = wet_evolution
         self._evolution = {}
+        # in a wet qualifying, each segment is typed by the tyres its times were set on:
+        # a segment run on slicks is dry evidence with the dry noise ("Q", not "QW")
+        if wet_segments and not wet_noise:
+            raise ValueError("wet segments need wet sessions as their own types")
+        self.wet_segments = wet_segments
+        self._group_types = {}
         if wet_races:
             self.session_types = self.session_types + (f"R{WET_SUFFIX}",)
         if wet_noise:
@@ -607,9 +618,18 @@ class PaceModel:
             if self.wet_evolution and kind in SEGMENTED and session.session_type != kind:
                 trends = qualifying_trend(view.laps(session.session_id), results)
                 self._evolution[session.session_id] = [list(v.values()) for v in trends.values()]
+            segments = []
             self._observations[session.session_id] = session_observations(
-                kind, results, laps, view.entrants(session.session_id), trends)
+                kind, results, laps, view.entrants(session.session_id), trends, segments)
+            if self.wet_segments and kind in SEGMENTED and session.session_type != kind:
+                shares = segment_wet_shares(view.laps(session.session_id), results)
+                self._group_types[session.session_id] = [
+                    kind if shares.get(segment, 1.0) <= 0.5 else session.session_type for segment in segments]
         return self._observations[session.session_id]
+
+    def group_types(self, session, count):
+        """The session type each of a session's `count` groups is read as."""
+        return self._group_types.get(session.session_id) or [session.session_type] * count
 
     def evolution_variance(self, view):
         """The variance of track condition between the segment times of a wet qualifying,
@@ -755,16 +775,17 @@ class PaceModel:
                 for cars, drivers, values in groups:
                     recorder.update(cars, drivers, values, session.session_type, counted=False)
                 continue
+            types = self.group_types(session, len(groups))
             if objective == "qualifying" and base_type(session.session_type) == "Q":
                 # wet qualifying (QW) counts as qualifying and keeps its own noise
                 recorder.advance(session.scheduled_start_utc, track=1)
-                for cars, drivers, values in groups:
-                    recorder.update(cars, drivers, values, session.session_type, track=1)
-                    recorder.update(cars, drivers, values, session.session_type)
+                for (cars, drivers, values), kind in zip(groups, types):
+                    recorder.update(cars, drivers, values, kind, track=1)
+                    recorder.update(cars, drivers, values, kind)
                 continue
             covariances = self._covariances.get(session.session_id, []) if self.race_estimates else []
             for index, (cars, drivers, values) in enumerate(groups):
-                recorder.update(cars, drivers, values, session.session_type, counted=objective == "all",
+                recorder.update(cars, drivers, values, types[index], counted=objective == "all",
                                 covariance=covariances[index] if index < len(covariances) else None)
         return recorder
 
@@ -950,6 +971,8 @@ class PaceModel:
             problems.append("wet races")
         if base.wet_evolution and not self.wet_evolution:
             problems.append("wet evolution")
+        if base.wet_segments and not self.wet_segments:
+            problems.append("wet segments")
         if base.practice_push and base.practice_push != self.practice_push:
             problems.append("practice push mode")
         if base.history and base.history != self.history:
@@ -981,6 +1004,7 @@ class PaceModel:
                 "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures, "wet_noise": self.wet_noise, "robust": self.robust,
                 "wet_ability": self.wet_ability, "wet_races": self.wet_races,
                 **({"wet_evolution": True} if self.wet_evolution else {}),
+                **({"wet_segments": True} if self.wet_segments else {}),
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 

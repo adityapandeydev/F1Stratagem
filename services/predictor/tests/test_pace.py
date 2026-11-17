@@ -1251,3 +1251,27 @@ def test_the_track_spread_is_normal_beside_a_student_t_lap_noise():
     positions = knockout_positions(pace, 1e-9, rng, dof=3.0, track=track)
     # the Student-t scale of the lap noise does not multiply the track's variance
     assert np.mean(positions[:, 1] < positions[:, 0]) == pytest.approx(stats.norm.sf(1.0), abs=0.005)
+
+
+def test_a_wet_qualifying_reads_a_segment_run_on_slicks_as_dry():
+    import types as pytypes
+    from predictor.pace import WITH_RACES
+    numbers = [str(n) for n in range(1, 13)]
+    q1 = pd.to_timedelta(np.linspace(95, 97, 12), unit="s")      # on intermediates
+    q2 = pd.to_timedelta(np.linspace(90, 92, 12), unit="s")      # on slicks, ten drivers
+    results = pd.DataFrame({"DriverNumber": numbers, "Q1": q1, "Q2": q2, "Q3": pd.to_timedelta([None] * 12)})
+    results.loc[10:, "Q2"] = pd.NaT
+    laps = pd.DataFrame({"DriverNumber": numbers * 2, "LapTime": q1.append(q2),
+                         "Compound": ["INTERMEDIATE"] * 12 + ["SOFT"] * 12})
+    entrants = pd.DataFrame({"driver_number": numbers, "driver_id": numbers, "lineage_id": numbers})
+    view = pytypes.SimpleNamespace(laps=lambda sid: laps, results=lambda sid: results, entrants=lambda sid: entrants)
+    session = pytypes.SimpleNamespace(session_id="s", session_type="QW")
+    model = PaceModel(WITH_RACES, wet_noise=True, wet_segments=True)
+    groups = model.observations(view, session)
+    assert len(groups) == 2 and model.group_types(session, 2) == ["QW", "Q"]
+    plain = PaceModel(WITH_RACES, wet_noise=True)
+    plain.observations(view, session)
+    assert plain.group_types(session, 2) == ["QW", "QW"]
+    assert model.options()["wet_segments"] and "wet_segments" not in plain.options()
+    with pytest.raises(ValueError):
+        PaceModel(WITH_RACES, wet_segments=True)

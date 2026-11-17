@@ -260,3 +260,11 @@ def test_a_qualifying_left_with_too_few_laps_of_any_class_has_no_trend():
     laps, results, _, _ = _drying_qualifying()
     laps = laps.iloc[:27].assign(Compound=["INTERMEDIATE", "WET", "SOFT"] * 9)
     assert L.qualifying_trend(laps, results) == {}
+
+
+def test_each_segment_knows_the_tyres_its_times_were_set_on():
+    laps, results, _, best = _drying_qualifying()
+    assert L.segment_wet_shares(laps, results) == {"Q1": 1.0}
+    slicks = laps.assign(Compound="SOFT")
+    assert L.segment_wet_shares(slicks, results) == {"Q1": 0.0}
+    assert L.segment_wet_shares(laps.drop(columns="Compound"), results) == {}
