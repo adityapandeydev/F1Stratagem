@@ -111,8 +111,11 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
 # v3wrqwc: wet calibration 0.75-0.79 -> 0.88-0.92 coverage against 0.86 predicted, RPS
 # within noise on 15 wet events. v3wrqwtc: wet RPS 0.1370 -> 0.1328 (2019-23) and
 # 0.1400 -> 0.1373 (2024) against v3wrqwt, coverage 0.76 -> 0.90 against 0.87.
-CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqw",
-             "pre_weekend_wet": "pace3wrqwtc", "after_session_wet": "pace3wrqwc"}
+# After a session the robust models serve too: v3wrqwtc against v3wrqwc at the last
+# cutoff -0.00125 [-0.00225, -0.00020] on 2019-23 (15+ better), -0.00226 on 2024
+# (15+ not worse), 2024 coverage 0.90 against 0.87 (v3wrqwc 0.93 against 0.87).
+CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
+             "pre_weekend_wet": "pace3wrqwtc", "after_session_wet": "pace3wrqwtc"}
 
 
 class ChampionRouter:
