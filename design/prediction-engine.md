@@ -657,6 +657,32 @@ flowchart TB
     promo -->|"no"| stay["Current version stays"]
 ```
 
+### After the holdout check (planned)
+
+The 2025–2026 seasons are opened once, to score the frozen champions. After that:
+
+1. **They become training data.** The model is walk-forward, so every forecast
+   trains on all sessions before it; from the 2027 season on that includes
+   2025–2026, wet races among them.
+2. **One re-test batch, fixed in advance.** Features kept in the code but not
+   adopted for lack of evidence are re-tested once, walk-forward over 2019–2026,
+   under a rule written down before the run (the per-horizon promotion rule; wet
+   features judged on wet events and on interval calibration):
+   - wet and mixed races read with a drying curve and the tyre-class crossover
+     (`wet_races`, the "x" variants);
+   - driver wet ability (`wet_ability`, the "y" variants);
+   - per-driver practice push pace (`practice_push`, v3wrqwp), which passed
+     development and failed 2024 validation;
+   - any wet feature that was within noise before the holdout.
+
+   These features are short of data (about 15 wet qualifying sessions in
+   2019–2024), which is why they wait for the extra seasons.
+3. **Shadow mode from the 2027 season.** No unseen history remains once the
+   holdout is used, so re-testing on the same seasons again would select winners
+   by chance. Candidates instead forecast every live weekend alongside the
+   champions without being shown, and are promoted once they beat a champion on
+   races that did not exist when they were chosen.
+
 ### Results since the native filter (2026-11-13 to 2026-11-17)
 
 Promotion now follows **per-horizon champions**: each forecast moment (before the
