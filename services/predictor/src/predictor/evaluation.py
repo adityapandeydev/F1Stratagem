@@ -95,7 +95,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
 # Before the weekend: no session of the event has run. Once any has, the last-cutoff
 # champion serves; after FP1 and after FP2 that routing is provisional until those
 # cutoffs have been evaluated.
-CHAMPIONS = {"pre_weekend": "pace3wr", "after_session": "pace3wr"}
+CHAMPIONS = {"pre_weekend": "pace3wrq", "after_session": "pace3wrq"}
 
 
 class ChampionRouter:
