@@ -300,13 +300,17 @@ def qualifying_failures(results):
     return rows
 
 
-def knockout_positions(pace, noise, rng, failures=None):
+def knockout_positions(pace, noise, rng, failures=None, failure_rng=None):
     """Positions from Q1, Q2 and Q3: per draw (rows of `pace`) every driver sets a lap
     per segment he takes part in (pace + independent noise); the slowest leave after Q1
     and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten.
     `failures` (drivers x 3): probability of setting no time in each segment; a driver
-    who fails is behind everyone who set a time in that segment."""
+    who fails is behind everyone who set a time in that segment. Failures draw from
+    `failure_rng`, so the lap noise is the same with or without them (models compared
+    on shared random draws stay paired)."""
     draws, size = pace.shape
+    if failures is not None and failure_rng is None:
+        failure_rng = np.random.default_rng(0)        # never the lap-noise stream
     first, second = knockout_cuts(size)
     positions = np.zeros((draws, size), dtype=int)
     alive = np.ones((draws, size), dtype=bool)
@@ -314,8 +318,8 @@ def knockout_positions(pace, noise, rng, failures=None):
     def segment_lap(index):
         lap = pace + noise * rng.standard_normal(pace.shape)
         if failures is not None:
-            failed = rng.random(pace.shape) < failures[None, :, index]
-            lap = np.where(failed, 1e6 + rng.random(pace.shape), lap)     # behind every time set
+            failed = failure_rng.random(pace.shape) < failures[None, :, index]
+            lap = np.where(failed, 1e6 + failure_rng.random(pace.shape), lap)     # behind every time set
         return np.where(alive, lap, np.inf)
 
     for index, (out, start) in enumerate(((first, size - first + 1), (second, size - first - second + 1))):
@@ -899,7 +903,7 @@ class PaceModel:
             pace = rng.multivariate_normal(mean, cov - noise ** 2 * np.eye(size) + 1e-9 * np.eye(size), size=draws,
                                            method="cholesky")
             failures = self.failure_rates(view, example) if self.failures else None
-            positions = knockout_positions(pace, noise, rng, failures)
+            positions = knockout_positions(pace, noise, rng, failures, np.random.default_rng([seed, 1]))
         else:
             samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
             order = np.argsort(samples, axis=1)

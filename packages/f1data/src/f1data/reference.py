@@ -301,7 +301,7 @@ def entry_lists(root, events, driver_table, entrants, sessions):
     "Zhou Guanyu"). Unmatched names keep an empty driver ID."""
     path = root / "external" / "fia" / "tables" / "entry_lists.parquet"
     if not path.is_file():
-        return pd.DataFrame(columns=["event_key", "season", "driver_id", "driver_name", "role", "team",
+        return pd.DataFrame(columns=["event_key", "season", "driver_id", "driver_name", "raw_number", "role", "team",
                                      "published_utc", "doc_number"])
     lists = pd.read_parquet(path)
     lists["season"] = lists.season.astype(int)
@@ -327,7 +327,8 @@ def entry_lists(root, events, driver_table, entrants, sessions):
         return chosen[0] if len(chosen) == 1 else None
 
     lists["driver_id"] = [resolve(n, s) for n, s in zip(lists.driver_name, lists.season)]
-    columns = ["event_key", "season", "driver_id", "driver_name", "role", "team", "published_utc", "doc_number"]
+    columns = ["event_key", "season", "driver_id", "driver_name", "raw_number", "role", "team", "published_utc",
+               "doc_number"]
     return lists[columns].sort_values(["published_utc", "doc_number"]).reset_index(drop=True)
 
 

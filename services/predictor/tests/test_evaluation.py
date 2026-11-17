@@ -160,3 +160,21 @@ def test_the_entry_list_published_before_the_cutoff_is_the_roster():
     assert roster.set_index("driver_id").loc["a", "position"] == 2
     earlier = _roster_at_cutoff(archive, "e", t - pd.Timedelta(hours=3), target)
     assert list(earlier.driver_id) == ["a", "c", "s"]          # before the list was published
+
+
+def test_a_listed_drivers_seat_is_known_at_the_cutoff():
+    """No later session decides a withdrawn driver's seat; a driver with no archived
+    seat yet keeps his place on the roster with the number printed on the list."""
+    import types
+    import pandas as pd
+    from predictor.evaluation import _latest_seat
+    t = pd.Timestamp("2022-10-28 12:00", tz="UTC")
+    sessions = pd.DataFrame({"session_id": ["old", "later"], "available_at_utc": [t - pd.Timedelta(days=7),
+                                                                               t + pd.Timedelta(days=2)]})
+    entrants = pd.DataFrame({"session_id": ["old", "later"], "driver_number": ["2", "2"], "driver_id": ["b", "b"],
+                             "lineage_id": ["x", "future_team"]})
+    archive = types.SimpleNamespace(sessions=sessions, entrants=entrants)
+    assert _latest_seat(archive, "b", t) == ("2", "x")                      # not the later team
+    assert _latest_seat(archive, "rookie", t, "631") == ("63", None)         # footnote marker removed
+    assert _latest_seat(archive, "rookie", t, "44") == ("44", None)
+    assert _latest_seat(archive, "rookie", t) is None

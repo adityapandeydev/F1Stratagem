@@ -220,9 +220,9 @@ def _roster_at_cutoff(archive, event_key, cutoff_time, target):
         rows = _substitutions_seen(archive, event_key, cutoff_time, target)
     else:
         rows = [row._asdict() for row in target.itertuples(index=False) if row.driver_id in entered]
-        missing = entered - set(target.driver_id)
+        missing = set(entered) - set(target.driver_id)
         for driver in sorted(missing):
-            seat = _latest_seat(archive, driver, event_key)
+            seat = _latest_seat(archive, driver, cutoff_time, entered[driver])
             if seat is not None:
                 rows.append({**{c: None for c in target.columns}, "session_id": target.session_id.iloc[0],
                              "driver_number": seat[0], "driver_id": driver, "lineage_id": seat[1],
@@ -235,8 +235,9 @@ def _roster_at_cutoff(archive, event_key, cutoff_time, target):
 
 
 def _entry_list_at(archive, event_key, cutoff_time):
-    """Race drivers of the event's latest entry list published at or before the
-    cutoff; None without one or when a name on it is unresolved."""
+    """{driver ID: number printed on the list} of the race drivers of the event's latest
+    entry list published at or before the cutoff; None without one or when a name on
+    it is unresolved."""
     lists = getattr(archive, "entry_lists", None)
     if lists is None:
         return None
@@ -247,21 +248,24 @@ def _entry_list_at(archive, event_key, cutoff_time):
     race = latest[latest.role == "race"]
     if race.driver_id.isna().any() or len(race) < 10:
         return None
-    return set(race.driver_id)
+    numbers = race.raw_number if "raw_number" in race else pd.Series([None] * len(race), index=race.index)
+    return dict(zip(race.driver_id, numbers))
 
 
-def _latest_seat(archive, driver_id, event_key):
-    """(driver number, lineage) of a driver's latest session at or before the event."""
+def _latest_seat(archive, driver_id, cutoff_time, printed=None):
+    """(driver number, lineage) of a listed driver as known at the cutoff: his latest
+    archived session available by then; the number printed on the entry list when he
+    has none (footnote markers follow the number: "631" is car 63), lineage unknown."""
     seen = archive.entrants[archive.entrants.driver_id == driver_id].drop(columns=["event_key"], errors="ignore").merge(
-        archive.sessions[["session_id", "event_key", "available_at_utc"]], on="session_id")
-    event_sessions = archive.sessions[archive.sessions.event_key == event_key]
-    if not event_sessions.empty:
-        seen = seen[seen.available_at_utc <= event_sessions.available_at_utc.max()]
-    seen = seen.sort_values("available_at_utc")
-    if seen.empty:
+        archive.sessions[["session_id", "available_at_utc"]], on="session_id")
+    seen = seen[seen.available_at_utc <= cutoff_time].sort_values("available_at_utc")
+    if not seen.empty:
+        last = seen.iloc[-1]
+        return str(last.driver_number), last.lineage_id
+    if printed is None or pd.isna(printed):
         return None
-    last = seen.iloc[-1]
-    return str(last.driver_number), last.lineage_id
+    digits = str(printed)
+    return (digits[:-1] if len(digits) > 2 or int(digits) > 99 else digits), None
 
 
 def _substitutions_seen(archive, event_key, cutoff_time, target):

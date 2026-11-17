@@ -1031,3 +1031,13 @@ def test_failures_are_learned_per_driver_and_drop_a_driver_in_the_segment():
     always = np.zeros((20, 3)); always[0, 0] = 1.0              # the fastest driver never sets a Q1 time
     positions = knockout_positions(pace, 1e-6, np.random.default_rng(0), always)
     assert (positions[:, 0] == 20).all()                        # last of those out in Q1
+
+
+def test_failures_do_not_change_the_lap_draws():
+    """With zero failure probability the simulated orders equal those without failures:
+    failures draw from their own stream."""
+    from predictor.pace import knockout_positions
+    pace = np.random.default_rng(1).normal(size=(2000, 20))
+    plain = knockout_positions(pace, 0.5, np.random.default_rng(7))
+    zero = knockout_positions(pace, 0.5, np.random.default_rng(7), np.zeros((20, 3)), np.random.default_rng(8))
+    assert (plain == zero).all()
