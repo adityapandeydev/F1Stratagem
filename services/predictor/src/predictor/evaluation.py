@@ -90,6 +90,52 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
                      practice_push=push, long_runs=long_runs, race_estimates=race_estimates)
 
 
+# The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
+# Before the weekend: no session of the event has run. Once any has, the last-cutoff
+# champion serves; after FP1 and after FP2 that routing is provisional until those
+# cutoffs have been evaluated.
+CHAMPIONS = {"pre_weekend": "pace3wr", "after_session": "pace3wr"}
+
+
+class ChampionRouter:
+    """Serves each forecast with the champion of its forecast moment: one model
+    instance per champion, fitted and asked only for the examples it serves."""
+
+    name = "champion"
+
+    def __init__(self, champions=None, registry=None):
+        self.champions = dict(champions or CHAMPIONS)
+        registry = registry or model_registry()
+        self.models = {key: registry[name]() for key, name in self.champions.items()}
+        if self.champions["pre_weekend"] == self.champions["after_session"]:
+            self.models["after_session"] = self.models["pre_weekend"]      # one fit serves both
+
+    @property
+    def fit_cache(self):
+        return getattr(self.models["pre_weekend"], "fit_cache", None)
+
+    @fit_cache.setter
+    def fit_cache(self, cache):
+        for model in self.models.values():
+            if hasattr(model, "fit_cache"):
+                model.fit_cache = cache
+
+    def route(self, example):
+        return "pre_weekend" if example.cutoff_label == "pre_weekend" else "after_session"
+
+    def fit(self, history, view_for):
+        for model in {id(m): m for m in self.models.values()}.values():
+            model.fit(history, view_for)
+        return self
+
+    def predict(self, view, example, **kwargs):
+        forecast = self.models[self.route(example)].predict(view, example, **kwargs)
+        if forecast is not None:
+            forecast.metadata = {**(forecast.metadata or {}), "served_by": self.champions[self.route(example)]}
+            forecast.model = self.name
+        return forecast
+
+
 def model_registry():
     return {**{name: (lambda name=name: RankBaseline(name)) for name in RANKERS},
             "pace": lambda: _pace_model(1), "pace2": lambda: _pace_model(2),
@@ -112,6 +158,7 @@ def model_registry():
             "pace3wrpn": lambda: _pace_model(3, weekend=True, races=True, push="own"),
             "pace3wrl": lambda: _pace_model(3, weekend=True, races=True, long_runs=True),
             "pace3wru": lambda: _pace_model(3, weekend=True, races=True, race_estimates=True),
+            "champion": lambda: ChampionRouter(),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 

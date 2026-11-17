@@ -67,3 +67,28 @@ def test_a_repeated_position_is_repaired_without_misaligned_rows():
                             "Q1": pd.to_timedelta([92.0, 90.0, 91.2, 91.0], unit="s")})
     frame = classify(results, 2024, "Q").set_index("driver_number")
     assert frame.position.to_dict() == {"1": 4, "2": 1, "3": 3, "4": 2}
+
+
+def test_the_champion_router_serves_each_cutoff_with_its_champion():
+    import types
+    from predictor.evaluation import ChampionRouter
+
+    class Stub:
+        def __init__(self, name):
+            self.name, self.fitted = name, 0
+
+        def fit(self, history, view_for):
+            self.fitted += 1
+
+        def predict(self, view, example, **kwargs):
+            return types.SimpleNamespace(model=self.name, metadata={})
+
+    registry = {"a": lambda: Stub("a"), "b": lambda: Stub("b")}
+    router = ChampionRouter({"pre_weekend": "a", "after_session": "b"}, registry)
+    router.fit([], None)
+    assert all(m.fitted == 1 for m in router.models.values())
+    for label, served in (("pre_weekend", "a"), ("after_FP1", "b"), ("last", "b")):
+        forecast = router.predict(None, types.SimpleNamespace(cutoff_label=label))
+        assert forecast.metadata["served_by"] == served and forecast.model == "champion"
+    same = ChampionRouter({"pre_weekend": "a", "after_session": "a"}, registry)
+    assert same.models["pre_weekend"] is same.models["after_session"]
