@@ -261,25 +261,73 @@ def knockout_cuts(size):
     return first, out - first
 
 
-def knockout_positions(pace, noise, rng):
+FAILURE_PRIOR_SEGMENTS = 40.0   # weight of the field's failure rate in a driver's own
+
+
+def failure_rates(records, drivers):
+    """Probability per driver and segment (Q1, Q2, Q3) of setting no time: each
+    segment's rate in the field times the driver's own tendency, his failures over
+    his segments shrunk towards the field rate with FAILURE_PRIOR_SEGMENTS of weight.
+    `records`: (driver, segment, failed) rows from earlier qualifying sessions."""
+    if records.empty:
+        return np.zeros((len(drivers), 3))
+    overall = records.failed.mean()
+    segment = records.groupby("segment").failed.mean().reindex(["Q1", "Q2", "Q3"]).fillna(overall).to_numpy()
+    own = records.groupby("driver").failed.agg(["sum", "count"])
+    rates = []
+    for driver in drivers:
+        fails, count = (own.loc[driver, "sum"], own.loc[driver, "count"]) if driver in own.index else (0, 0)
+        tendency = (fails + FAILURE_PRIOR_SEGMENTS * overall) / (count + FAILURE_PRIOR_SEGMENTS) / max(overall, 1e-9)
+        rates.append(np.clip(segment * tendency, 0.0, 0.5))
+    return np.array(rates)
+
+
+def qualifying_failures(results):
+    """(driver number, segment, failed) of one qualifying: a driver took part in Q1,
+    in Q2 if classified in its places, in Q3 if in the top ten, and failed a segment he
+    took part in when he set no time in it."""
+    position = pd.to_numeric(results.Position, errors="coerce")
+    size = len(results)
+    first, second = knockout_cuts(size)
+    rows = []
+    for segment, limit in (("Q1", size), ("Q2", size - first), ("Q3", Q3_CARS)):
+        if segment not in results:
+            continue
+        times = pd.to_timedelta(results[segment])
+        for number, place, time in zip(results.DriverNumber.astype(str), position, times):
+            if pd.notna(place) and place <= limit:
+                rows.append((number, segment, bool(pd.isna(time))))
+    return rows
+
+
+def knockout_positions(pace, noise, rng, failures=None):
     """Positions from Q1, Q2 and Q3: per draw (rows of `pace`) every driver sets a lap
     per segment he takes part in (pace + independent noise); the slowest leave after Q1
-    and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten."""
+    and Q2 and are placed by the lap that eliminated them, Q3 orders the top ten.
+    `failures` (drivers x 3): probability of setting no time in each segment; a driver
+    who fails is behind everyone who set a time in that segment."""
     draws, size = pace.shape
     first, second = knockout_cuts(size)
     positions = np.zeros((draws, size), dtype=int)
     alive = np.ones((draws, size), dtype=bool)
     rows = np.arange(draws)[:, None]
-    for out, start in ((first, size - first + 1), (second, size - first - second + 1)):
+    def segment_lap(index):
+        lap = pace + noise * rng.standard_normal(pace.shape)
+        if failures is not None:
+            failed = rng.random(pace.shape) < failures[None, :, index]
+            lap = np.where(failed, 1e6 + rng.random(pace.shape), lap)     # behind every time set
+        return np.where(alive, lap, np.inf)
+
+    for index, (out, start) in enumerate(((first, size - first + 1), (second, size - first - second + 1))):
         if out == 0:
             continue
-        lap = np.where(alive, pace + noise * rng.standard_normal(pace.shape), np.inf)
+        lap = segment_lap(index)
         order = np.argsort(lap, axis=1)
         running = alive.sum(axis=1)[0]
         leaving = order[:, running - out:running]                # the slowest `out` of those still running
         positions[rows, leaving] = start + np.arange(out)[None, :]
         alive[rows, leaving] = False
-    lap = np.where(alive, pace + noise * rng.standard_normal(pace.shape), np.inf)
+    lap = segment_lap(2)
     order = np.argsort(lap, axis=1)
     finalists = alive.sum(axis=1)[0]
     positions[rows, order[:, :finalists]] = np.arange(1, finalists + 1)[None, :]
@@ -342,7 +390,7 @@ class PaceModel:
     def __init__(self, session_types=QUALIFYING_ONLY, name="pace:v1", winter=False, objective="all",
                  weekend=False, shared_from_qualifying=False, affinity=False, history=False, form=False,
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
-                 race_estimates=False, knockout=False):
+                 race_estimates=False, knockout=False, failures=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -365,6 +413,9 @@ class PaceModel:
         self.race_estimates = race_estimates
         # forecasts simulate Q1, Q2 and Q3 (eliminations, a lap per segment) instead of one draw
         self.knockout = knockout
+        # drivers fail to set a time in a segment with a learned, driver-specific probability
+        self.failures = failures
+        self._failure_rows = {}
         self._covariances = {}
         if long_runs and "L" not in self.session_types:
             self.session_types = self.session_types + ("L",)
@@ -450,6 +501,21 @@ class PaceModel:
             self._observations[session.session_id] = session_observations(
                 session.session_type, view.results(session.session_id), laps, view.entrants(session.session_id))
         return self._observations[session.session_id]
+
+    def failure_rates(self, view, example):
+        """Per entrant and segment, the probability of setting no time, from every
+        qualifying available at the cutoff (`failure_rates`)."""
+        rows = []
+        for session in view.sessions[view.sessions.session_type == "Q"].itertuples():
+            if session.session_id not in self._failure_rows:
+                ids = view.entrants(session.session_id).set_index("driver_number").driver_id
+                self._failure_rows[session.session_id] = [
+                    (ids.get(number), segment, failed)
+                    for number, segment, failed in qualifying_failures(view.results(session.session_id))]
+            rows += self._failure_rows[session.session_id]
+        records = pd.DataFrame(rows, columns=["driver", "segment", "failed"]).dropna(subset=["driver"])
+        drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
+        return failure_rates(records, drivers)
 
     def _push_covers(self, view, session):
         """Whether a practice session's push pace covers at least half the drivers of its
@@ -743,7 +809,7 @@ class PaceModel:
                 "affinity": self.affinity, "history": self.history, "form": self.form,
                 "skills": list(self.skills), "season_skills": list(self.season_skills),
                 "driver_offsets": list(self.driver_offsets), "practice_push": self.practice_push,
-                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout,
+                "long_runs": self.long_runs, "race_estimates": self.race_estimates, "knockout": self.knockout, "failures": self.failures,
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
@@ -832,7 +898,8 @@ class PaceModel:
             noise = self.hyper.noise["Q"]
             pace = rng.multivariate_normal(mean, cov - noise ** 2 * np.eye(size) + 1e-9 * np.eye(size), size=draws,
                                            method="cholesky")
-            positions = knockout_positions(pace, noise, rng)
+            failures = self.failure_rates(view, example) if self.failures else None
+            positions = knockout_positions(pace, noise, rng, failures)
         else:
             samples = rng.multivariate_normal(mean, cov + 1e-9 * np.eye(size), size=draws, method="cholesky")
             order = np.argsort(samples, axis=1)

@@ -1016,3 +1016,18 @@ def test_knockout_positions_follow_q1_q2_q3():
     # with lap noise a midfield driver sometimes falls in Q1 (P16-20) and sometimes reaches Q3
     assert (noisy[:, 9] >= 16).mean() > 0 and (noisy[:, 9] <= 10).mean() > 0
     assert (noisy[:, 0] <= 10).mean() > 0.9
+
+
+def test_failures_are_learned_per_driver_and_drop_a_driver_in_the_segment():
+    from predictor.pace import failure_rates, knockout_positions, qualifying_failures
+    records = pd.DataFrame([("a", "Q1", False)] * 95 + [("a", "Q1", True)] * 5
+                           + [("b", "Q1", False)] * 100, columns=["driver", "segment", "failed"])
+    rates = failure_rates(records, ["a", "b", "new"])
+    assert rates[0, 0] > rates[2, 0] > rates[1, 0]              # a fails more, a new driver gets the field rate
+    results = pd.DataFrame({"DriverNumber": ["1", "2", "3"], "Position": [1.0, 2.0, 3.0],
+                            "Q1": pd.to_timedelta([90.0, None, 91.0], unit="s")})
+    assert ("2", "Q1", True) in qualifying_failures(results)
+    pace = np.tile(np.arange(20, dtype=float), (300, 1))
+    always = np.zeros((20, 3)); always[0, 0] = 1.0              # the fastest driver never sets a Q1 time
+    positions = knockout_positions(pace, 1e-6, np.random.default_rng(0), always)
+    assert (positions[:, 0] == 20).all()                        # last of those out in Q1

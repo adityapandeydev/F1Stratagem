@@ -75,7 +75,7 @@ def score(forecast, example):
 
 def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=False, history=False, form=False,
                 skills=(), season_skills=(), races=False, driver_race=False, push=False, long_runs=False,
-                race_estimates=False, knockout=False):
+                race_estimates=False, knockout=False, failures=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, WITH_RACES, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
@@ -83,12 +83,12 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
         + ("a" if affinity else "") + ("h" if history else "") \
         + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "") + ("k" if skills else "") + ("b" if season_skills else "") \
         + ("r" if races else "") + ("d" if driver_race else "") + ("p" if push else "") + ("n" if push == "own" else "") \
-        + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "")
+        + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "")
     return PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
                      skills=skills, season_skills=season_skills, driver_offsets=("R",) if driver_race else (),
                      practice_push=push, long_runs=long_runs, race_estimates=race_estimates,
-                     knockout=knockout)
+                     knockout=knockout, failures=failures)
 
 
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
@@ -161,6 +161,7 @@ def model_registry():
             "pace3wru": lambda: _pace_model(3, weekend=True, races=True, race_estimates=True),
             "champion": lambda: ChampionRouter(),
             "pace3wrq": lambda: _pace_model(3, weekend=True, races=True, knockout=True),
+            "pace3wrqf": lambda: _pace_model(3, weekend=True, races=True, knockout=True, failures=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
