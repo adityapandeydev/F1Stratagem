@@ -94,7 +94,7 @@ data/
     open-meteo/tables/*.parquet         observed_hourly, forecast_runs_hourly (long)
     fia/index/<season>.json             every listed document: event, number, title, category, time
     fia/pdf/<season>/<event>/doc-NNN-<title>.pdf
-    fia/tables/*.parquet                pu_usage, rnc_usage, car_updates, tyre_nominations
+    fia/tables/*.parquet                pu_usage, rnc_usage, car_updates, tyre_nominations, entry_lists
 ```
 
 - Session ID: `<year>-<round>-<slot>` (`2023-12-3`); testing `<year>-T<n>-<slot>`.
