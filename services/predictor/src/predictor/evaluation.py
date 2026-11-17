@@ -105,11 +105,13 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
 # Before the weekend: no session of the event has run. Once any has, the last-cutoff
 # champion serves; after FP1 and after FP2 that routing is provisional until those
 # cutoffs have been evaluated. A forecast for a wet qualifying (the wet side of the
-# dry/wet toggle) is served by the "_wet" champion of its moment: v3wrqwc forecasts with
-# the fitted wet qualifying noise (dry forecasts identical to v3wrqw; wet calibration
-# 0.75-0.79 -> 0.88-0.92 coverage against 0.86 predicted, RPS within noise on 15 wet events).
+# dry/wet toggle) is served by the "_wet" champion of its moment: the moment's dry
+# champion forecasting with the fitted wet qualifying noise (dry forecasts identical).
+# v3wrqwc: wet calibration 0.75-0.79 -> 0.88-0.92 coverage against 0.86 predicted, RPS
+# within noise on 15 wet events. v3wrqwtc: wet RPS 0.1370 -> 0.1328 (2019-23) and
+# 0.1400 -> 0.1373 (2024) against v3wrqwt, coverage 0.76 -> 0.90 against 0.87.
 CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqw",
-             "pre_weekend_wet": "pace3wrqwc", "after_session_wet": "pace3wrqwc"}
+             "pre_weekend_wet": "pace3wrqwtc", "after_session_wet": "pace3wrqwc"}
 
 
 class ChampionRouter:
@@ -194,6 +196,11 @@ def model_registry():
                                                wet_races=True, wet_forecast=True),
             "pace3wrqwxy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                wet_races=True, wet_ability=True),
+            # the robust (Student-t) pre-weekend champion with the wet toggle
+            "pace3wrqwtc": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                               robust=True, wet_forecast=True),
+            "pace3wrqwtxy": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                robust=True, wet_races=True, wet_ability=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
