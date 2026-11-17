@@ -61,6 +61,10 @@ class Archive:
         self.entrants = pd.read_parquet(reference / "entrants.parquet")
         history = reference / "qualifying_history.parquet"
         self.qualifying_history = pd.read_parquet(history) if history.exists() else None
+        lists = reference / "entry_lists.parquet"
+        self.entry_lists = pd.read_parquet(lists) if lists.exists() else None
+        if self.entry_lists is not None:
+            self.entry_lists["published_utc"] = pd.to_datetime(self.entry_lists.published_utc, utc=True)
         if self.qualifying_history is not None:
             self.qualifying_history["available_at_utc"] = (self.qualifying_history.start_utc + NOMINAL_DURATION["Q"]
                                                            + PUBLICATION_DELAY["Q"])

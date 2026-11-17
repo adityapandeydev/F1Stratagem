@@ -206,34 +206,86 @@ def _roster_at_cutoff(archive, event_key, cutoff_time, target):
     """The drivers a forecast is made for, as known at the cutoff, aligned with their
     actual results.
 
-    The roster is the event's entry list; the archive has none, so the target's own
-    entrants stand in for it (an archive proxy: the published entry list names the
-    drivers before the weekend). A substitution counts only once it is visible at the
-    cutoff: when a car's entered driver has not run any session of the event yet and
-    the car's regular driver (who drove it at the previous event) ran its latest
-    session instead, the regular driver is the one known at the cutoff (Stroll at the
-    2020 Eifel GP, before Hulkenberg was called in). Practice-only stand-ins never
-    replace the entered driver, and a driver who missed practice stays entered.
+    The roster is the event's latest FIA entry list published before the cutoff (its
+    race drivers): a target driver it does not list is a late substitute and is not
+    forecast, and a listed driver without a classification withdrew and is forecast
+    but not scored. Without such a list (or with a name it could not resolve) the
+    target's entrants stand in for it, corrected by `_substitutions_seen`.
 
     Actual classification positions are kept as they are (absolute positions are what
-    a forecast is scored against); a roster driver without a classification is
-    excluded from scoring."""
+    a forecast is scored against)."""
     target = target.assign(driver_number=target.driver_number.astype(str))
+    entered = _entry_list_at(archive, event_key, cutoff_time)
+    if entered is None:
+        rows = _substitutions_seen(archive, event_key, cutoff_time, target)
+    else:
+        rows = [row._asdict() for row in target.itertuples(index=False) if row.driver_id in entered]
+        missing = entered - set(target.driver_id)
+        for driver in sorted(missing):
+            seat = _latest_seat(archive, driver, event_key)
+            if seat is not None:
+                rows.append({**{c: None for c in target.columns}, "session_id": target.session_id.iloc[0],
+                             "driver_number": seat[0], "driver_id": driver, "lineage_id": seat[1],
+                             "position": np.nan, "outcome": None, "excluded": True})
+    roster = pd.DataFrame(rows, columns=target.columns)
+    roster = roster.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
+    roster["excluded"] = roster.excluded.fillna(False).astype(bool) | roster.position.isna()
+    roster["position"] = roster.position.fillna(0).astype(int)        # 0: not scored (excluded)
+    return roster
+
+
+def _entry_list_at(archive, event_key, cutoff_time):
+    """Race drivers of the event's latest entry list published at or before the
+    cutoff; None without one or when a name on it is unresolved."""
+    lists = getattr(archive, "entry_lists", None)
+    if lists is None:
+        return None
+    published = lists[(lists.event_key == event_key) & (lists.published_utc <= cutoff_time)]
+    if published.empty:
+        return None
+    latest = published[published.doc_number == published.sort_values(["published_utc", "doc_number"]).doc_number.iloc[-1]]
+    race = latest[latest.role == "race"]
+    if race.driver_id.isna().any() or len(race) < 10:
+        return None
+    return set(race.driver_id)
+
+
+def _latest_seat(archive, driver_id, event_key):
+    """(driver number, lineage) of a driver's latest session at or before the event."""
+    seen = archive.entrants[archive.entrants.driver_id == driver_id].drop(columns=["event_key"], errors="ignore").merge(
+        archive.sessions[["session_id", "event_key", "available_at_utc"]], on="session_id")
+    event_sessions = archive.sessions[archive.sessions.event_key == event_key]
+    if not event_sessions.empty:
+        seen = seen[seen.available_at_utc <= event_sessions.available_at_utc.max()]
+    seen = seen.sort_values("available_at_utc")
+    if seen.empty:
+        return None
+    last = seen.iloc[-1]
+    return str(last.driver_number), last.lineage_id
+
+
+def _substitutions_seen(archive, event_key, cutoff_time, target):
+    """Rows of the target's entrants, a car's entered driver replaced by its regular
+    driver when the substitution is visible at the cutoff: the entered driver has run
+    no session of the event yet and a regular of the car (`_regular_drivers`) ran its
+    latest session instead (Stroll at the 2020 Eifel GP, before Hulkenberg was called
+    in). Practice-only reserves are never regulars, and a driver who missed practice
+    stays entered."""
     sessions = archive.sessions
     run = sessions[(sessions.event_key == event_key) & (sessions.available_at_utc <= cutoff_time)]
     if run.empty or "lineage_id" not in target:
-        return target
+        return [row._asdict() for row in target.itertuples(index=False)]
     entrants = archive.entrants
     ran = set(entrants[entrants.session_id.isin(run.session_id)].driver_id.dropna())
     latest = run.sort_values("available_at_utc").iloc[-1]
     in_latest = entrants[entrants.session_id == latest.session_id]
-    previous = _previous_event_drivers(archive, event_key)
+    regulars = _regular_drivers(archive, event_key)
     rows = []
     for row in target.itertuples(index=False):
         replacement = None
         if row.driver_id not in ran and pd.notna(row.lineage_id):
             stand = in_latest[(in_latest.lineage_id == row.lineage_id) & ~in_latest.driver_id.isin(set(target.driver_id))]
-            regular = stand[stand.driver_id.isin(previous.get(row.lineage_id, set()))]
+            regular = stand[stand.driver_id.isin(regulars.get(row.lineage_id, set()))]
             if not regular.empty:
                 replacement = regular.iloc[0]
         if replacement is None:
@@ -241,32 +293,32 @@ def _roster_at_cutoff(archive, event_key, cutoff_time, target):
         else:
             rows.append({**row._asdict(), "driver_number": str(replacement.driver_number),
                          "driver_id": replacement.driver_id, "position": np.nan, "outcome": None, "excluded": True})
-    roster = pd.DataFrame(rows)
-    roster = roster.sort_values("driver_number", key=lambda s: s.astype(int)).reset_index(drop=True)
-    roster["excluded"] = roster.excluded.astype(bool) | roster.position.isna()
-    roster["position"] = roster.position.fillna(0).astype(int)        # 0: not scored (excluded)
-    return roster
+    return rows
 
 
-COMPETITIVE_SESSIONS = ("Q", "SQ", "S", "R")
+REGULAR_SESSIONS = ("FP2", "FP3", "Q", "SQ", "S", "R")     # first practice is where reserves drive
 
 
-def _previous_event_drivers(archive, event_key):
-    """lineage -> drivers who drove it in a competitive session (qualifying, sprint
-    qualifying, sprint, race) at the previous championship event of the season: a
-    practice-only reserve is not a regular driver."""
+def _regular_drivers(archive, event_key):
+    """lineage -> its regular drivers: those who drove it in second or third practice
+    or a competitive session at the car's most recent earlier event of the season
+    (reserves drive first practice only). Looking back to the car's latest event, not
+    a fixed one, follows a replacement from its first full weekend on."""
     events = archive.events[~archive.events.is_testing].sort_values(["season", "round"]).reset_index(drop=True)
     keys = list(events.event_key)
-    if event_key not in keys or keys.index(event_key) == 0:
+    if event_key not in keys:
         return {}
     here = keys.index(event_key)
-    if events.season.iloc[here - 1] != events.season.iloc[here]:
-        return {}                                 # a season's first event: no previous regulars
-    before = keys[here - 1]
-    sessions = archive.sessions[(archive.sessions.event_key == before)
-                                & archive.sessions.session_type.isin(COMPETITIVE_SESSIONS)].session_id
-    entrants = archive.entrants[archive.entrants.session_id.isin(sessions)]
-    return entrants.groupby("lineage_id").driver_id.apply(lambda d: set(d.dropna())).to_dict()
+    season = events.season.iloc[here]
+    earlier = [keys[i] for i in range(here - 1, -1, -1) if events.season.iloc[i] == season]
+    sessions = archive.sessions[archive.sessions.event_key.isin(earlier)
+                                & archive.sessions.session_type.isin(REGULAR_SESSIONS)][["session_id", "event_key"]]
+    entrants = archive.entrants.drop(columns=["event_key"], errors="ignore").merge(sessions, on="session_id")
+    regulars = {}
+    for event in earlier:                                 # most recent first
+        for lineage, drivers in entrants[entrants.event_key == event].groupby("lineage_id").driver_id:
+            regulars.setdefault(lineage, set(drivers.dropna()))
+    return regulars
 
 
 def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, screen_base=None):

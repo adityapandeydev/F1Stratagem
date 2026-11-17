@@ -127,3 +127,36 @@ def test_too_few_events_give_no_block_verdict():
             for i, d in enumerate([-0.004, -0.001, 0.002, -0.003], start=1) for m in ("a", "b")]
     result = evaluation.compare(pd.DataFrame(rows), "a").iloc[0]
     assert np.isnan(result.block_90_low) and not result.better_beyond_noise and not result.within_margin
+
+
+def test_the_entry_list_published_before_the_cutoff_is_the_roster():
+    import types
+    import numpy as np
+    import pandas as pd
+    from predictor.evaluation import _roster_at_cutoff
+    t = pd.Timestamp("2022-10-28 12:00", tz="UTC")
+    sessions = pd.DataFrame({"session_id": ["p-4", "e-4"], "event_key": ["p", "e"], "session_type": ["Q", "Q"],
+                             "available_at_utc": [t - pd.Timedelta(days=7), t + pd.Timedelta(days=1)]})
+    entrants = pd.DataFrame({"session_id": ["p-4"] * 3, "driver_number": ["1", "2", "3"],
+                             "driver_id": ["a", "b", "c"], "lineage_id": ["x", "x", "y"]})
+    lists = pd.DataFrame({"event_key": "e", "driver_id": ["a", "b", "c", "r"] + ["z"] * 10,
+                          "role": ["race"] * 3 + ["practice"] + ["race"] * 10,
+                          "published_utc": t - pd.Timedelta(hours=2), "doc_number": 10})
+    lists.loc[4:, "event_key"] = "other"
+    archive = types.SimpleNamespace(sessions=sessions, entrants=entrants, entry_lists=lists,
+                                    events=pd.DataFrame({"event_key": ["p", "e"], "season": 2022, "round": [1, 2],
+                                                         "is_testing": False}))
+    target = pd.DataFrame({"session_id": "e-4", "driver_number": ["1", "3", "9"], "driver_id": ["a", "c", "s"],
+                           "lineage_id": ["x", "y", "x"], "position": [2, 3, 1], "outcome": None, "excluded": False})
+    # the list for "e" has 3 race drivers: below 10, so it is not trusted and the proxy is used
+    proxy = _roster_at_cutoff(archive, "e", t, target)
+    assert list(proxy.driver_id) == ["a", "c", "s"]
+    lists["event_key"] = "e"
+    lists["driver_id"] = ["a", "b", "c", "r"] + [f"d{i}" for i in range(10)]
+    roster = _roster_at_cutoff(archive, "e", t, target)
+    assert "s" not in set(roster.driver_id)                    # a late substitute is not forecast
+    assert "r" not in set(roster.driver_id)                    # a practice-only driver is not entered
+    assert roster.set_index("driver_id").loc["b", "excluded"]  # entered, then withdrew: forecast, not scored
+    assert roster.set_index("driver_id").loc["a", "position"] == 2
+    earlier = _roster_at_cutoff(archive, "e", t - pd.Timedelta(hours=3), target)
+    assert list(earlier.driver_id) == ["a", "c", "s"]          # before the list was published
