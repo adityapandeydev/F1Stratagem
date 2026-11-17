@@ -111,15 +111,18 @@ def test_beta_reflects_informative_ranks(monkeypatch):
 
 
 def test_paired_comparison_uses_common_events_and_flags_clear_improvements():
+    events = [f"e{i:02d}" for i in range(12)]          # enough for three independent blocks
     scores = pd.DataFrame({
-        "event_key": ["a", "b", "c", "d", "a", "b", "c", "d", "a"],
+        "event_key": events + events + ["e00"],
         "season": 2023, "beta": 0.0,
-        "model": ["baseline:uniform"] * 4 + ["baseline:qualifying"] * 4 + ["baseline:practice"],
-        "rps": [0.2, 0.2, 0.2, 0.2, 0.1, 0.11, 0.09, 0.1, 0.05],
+        "model": ["baseline:uniform"] * 12 + ["baseline:qualifying"] * 12 + ["baseline:practice"],
+        "rps": [0.2] * 12 + [0.1, 0.11, 0.09, 0.1] * 3 + [0.05],
     })
     result = compare(scores, "uniform").set_index("model")
-    assert result.loc["baseline:qualifying", "better_beyond_noise"]
-    assert "baseline:practice" not in result.index or result.loc["baseline:practice", "events"] == 1
+    # all three models share one event: too few for a verdict (the old zero-width interval said "better")
+    assert result.loc["baseline:qualifying", "events"] == 1 and not result.loc["baseline:qualifying", "better_beyond_noise"]
+    two = compare(scores[scores.model != "baseline:practice"], "uniform").set_index("model")
+    assert two.loc["baseline:qualifying", "events"] == 12 and two.loc["baseline:qualifying", "better_beyond_noise"]
 
 
 def test_reviewed_causes_replace_generic_retirements(archive, monkeypatch):

@@ -10,6 +10,7 @@ def test_the_roster_is_known_at_the_cutoff():
     from predictor.evaluation import _roster_at_cutoff
     t = pd.Timestamp("2021-07-09 12:00", tz="UTC")
     sessions = pd.DataFrame({"session_id": ["p-4", "e-1", "e-4"], "event_key": ["p", "e", "e"],
+                             "session_type": ["Q", "FP1", "Q"],
                              "available_at_utc": [t - pd.Timedelta(days=7), t, t + pd.Timedelta(days=1)]})
     entrants = pd.DataFrame({
         "session_id": ["p-4"] * 3 + ["e-1"] * 3,
@@ -92,3 +93,37 @@ def test_the_champion_router_serves_each_cutoff_with_its_champion():
         assert forecast.metadata["served_by"] == served and forecast.model == "champion"
     same = ChampionRouter({"pre_weekend": "a", "after_session": "a"}, registry)
     assert same.models["pre_weekend"] is same.models["after_session"]
+
+
+def test_a_practice_only_reserve_is_not_a_regular_driver():
+    """A reserve who runs FP1 at consecutive weekends does not displace the entered
+    driver: regulars come from the previous event's competitive sessions."""
+    import types
+    import pandas as pd
+    from predictor.evaluation import _roster_at_cutoff
+    t = pd.Timestamp("2022-10-21 12:00", tz="UTC")
+    sessions = pd.DataFrame({"session_id": ["p-1", "p-4", "e-1", "e-4"], "event_key": ["p", "p", "e", "e"],
+                             "session_type": ["FP1", "Q", "FP1", "Q"],
+                             "available_at_utc": [t - pd.Timedelta(days=8), t - pd.Timedelta(days=7), t,
+                                                  t + pd.Timedelta(days=1)]})
+    entrants = pd.DataFrame({
+        "session_id": ["p-1", "p-4", "e-1"],
+        "driver_number": ["2", "6", "2"], "driver_id": ["reserve", "regular", "reserve"],
+        "lineage_id": ["w", "w", "w"]})
+    archive = types.SimpleNamespace(sessions=sessions, entrants=entrants,
+                                    events=pd.DataFrame({"event_key": ["p", "e"], "season": [2022, 2022],
+                                                         "round": [19, 20], "is_testing": False}))
+    target = pd.DataFrame({"session_id": "e-4", "driver_number": ["6"], "driver_id": ["regular"],
+                           "lineage_id": ["w"], "position": [1], "outcome": None, "excluded": False})
+    roster = _roster_at_cutoff(archive, "e", t + pd.Timedelta(hours=1), target)
+    assert list(roster.driver_id) == ["regular"] and not roster.excluded.any()
+
+
+def test_too_few_events_give_no_block_verdict():
+    import numpy as np
+    import pandas as pd
+    from predictor import evaluation
+    rows = [{"event_key": f"2021-{i:02d}", "season": 2021, "model": m, "rps": 0.1 + (d if m == "b" else 0.0)}
+            for i, d in enumerate([-0.004, -0.001, 0.002, -0.003], start=1) for m in ("a", "b")]
+    result = evaluation.compare(pd.DataFrame(rows), "a").iloc[0]
+    assert np.isnan(result.block_90_low) and not result.better_beyond_noise and not result.within_margin

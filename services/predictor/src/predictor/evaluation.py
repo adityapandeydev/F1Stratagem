@@ -247,8 +247,13 @@ def _roster_at_cutoff(archive, event_key, cutoff_time, target):
     return roster
 
 
+COMPETITIVE_SESSIONS = ("Q", "SQ", "S", "R")
+
+
 def _previous_event_drivers(archive, event_key):
-    """lineage -> drivers who drove it at the previous championship event of the season."""
+    """lineage -> drivers who drove it in a competitive session (qualifying, sprint
+    qualifying, sprint, race) at the previous championship event of the season: a
+    practice-only reserve is not a regular driver."""
     events = archive.events[~archive.events.is_testing].sort_values(["season", "round"]).reset_index(drop=True)
     keys = list(events.event_key)
     if event_key not in keys or keys.index(event_key) == 0:
@@ -257,7 +262,8 @@ def _previous_event_drivers(archive, event_key):
     if events.season.iloc[here - 1] != events.season.iloc[here]:
         return {}                                 # a season's first event: no previous regulars
     before = keys[here - 1]
-    sessions = archive.sessions[archive.sessions.event_key == before].session_id
+    sessions = archive.sessions[(archive.sessions.event_key == before)
+                                & archive.sessions.session_type.isin(COMPETITIVE_SESSIONS)].session_id
     entrants = archive.entrants[archive.entrants.session_id.isin(sessions)]
     return entrants.groupby("lineage_id").driver_id.apply(lambda d: set(d.dropna())).to_dict()
 
@@ -323,6 +329,7 @@ def summarise(scores):
 
 BLOCK_EVENTS = 4             # consecutive events resampled together (shared team form and model state)
 DEGRADATION_MARGIN = 3e-4    # RPS: a model is "not acceptably worse" if its 90% upper bound is below this
+MIN_BLOCKS = 3               # fewer independent blocks than this: the block interval is withheld
 
 
 def _block_means(diff, resamples, rng, block):
@@ -356,13 +363,16 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
         rng = np.random.default_rng(seed)
         events = rng.choice(diff, size=(resamples, diff.size)).mean(axis=1)
         low, high = np.quantile(events, [0.05, 0.95])
-        blocks = _block_means(diff, resamples, np.random.default_rng(seed), min(BLOCK_EVENTS, diff.size))
-        block_low, block_high = np.quantile(blocks, [0.05, 0.95])
+        if diff.size >= MIN_BLOCKS * BLOCK_EVENTS:
+            blocks = _block_means(diff, resamples, np.random.default_rng(seed), BLOCK_EVENTS)
+            block_low, block_high = np.quantile(blocks, [0.05, 0.95])
+        else:                         # too few independent blocks: no block verdict
+            block_low = block_high = np.nan
         rows.append({"model": model, "reference": base, "metric": metric, "events": diff.size,
                      "mean_difference": diff.mean(), "interval_90_low": low, "interval_90_high": high,
                      "block_90_low": block_low, "block_90_high": block_high,
                      "better_beyond_noise": bool(block_high < 0), "worse_beyond_noise": bool(block_low > 0),
-                     "within_margin": bool(block_high < DEGRADATION_MARGIN),
+                     "within_margin": bool(block_high < DEGRADATION_MARGIN),     # NaN compares False: no verdict
                      "share_of_events_better": float(np.mean(diff < 0))})
     return pd.DataFrame(rows)
 

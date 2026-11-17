@@ -495,13 +495,13 @@ def test_weighted_history_noise_reaches_the_objective_only_through_the_state(tmp
 
 def test_stage_comparison_reports_each_stage_of_the_season():
     from predictor import evaluation
-    rows = [{"event_key": f"2021-{r:02d}", "season": 2021, "model": m,
+    rows = [{"event_key": f"{season}-{r:02d}", "season": season, "model": m,
              "rps": 0.1 + (0.01 if m == "b" and r >= 15 else 0) + 0.001 * (r % 3)}
-            for r in range(1, 23) for m in ("a", "b")]
+            for season in (2021, 2022) for r in range(1, 23) for m in ("a", "b")]
     stages = evaluation.stage_comparison(pd.DataFrame(rows), "a")
-    assert list(stages.stage) == ["4-8", "9-14", "15+"]          # rounds 1-3: fewer than five events
+    assert list(stages.stage) == ["1-3", "4-8", "9-14", "15+"]
     late = stages[stages.stage == "15+"].iloc[0]
-    assert late.worse_beyond_noise and late.events == 8
+    assert late.worse_beyond_noise and late.events == 16
 
 
 def test_history_noise_is_fitted_above_its_floor(tmp_path):
