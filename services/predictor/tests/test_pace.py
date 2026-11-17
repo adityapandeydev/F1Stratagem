@@ -1121,3 +1121,22 @@ def test_split_practice_gives_a_push_group_and_a_best_lap_group_of_the_rest(tmp_
     assert model.observations(view, push)[0][1] == ["a", "b", "c"]
     hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
     assert "FP1P" in model.last_fit["fitted"]
+
+
+def test_robust_forecast_noise_shares_one_scale_per_segment():
+    """Two drivers' lap difference under the forecast draws follows the fitted
+    multivariate Student-t: its tail matches the t density, not independent t draws."""
+    from scipy import stats
+    rng = np.random.default_rng(5)
+    dof, draws = 4.0, 400000
+    z = rng.standard_normal((draws, 2)) * np.sqrt(dof / rng.chisquare(dof, (draws, 1)))
+    gap = (z[:, 1] - z[:, 0]) / np.sqrt(2)
+    assert np.mean(np.abs(gap) > 2.0) == pytest.approx(2 * stats.t.sf(2.0, dof), abs=0.003)
+
+
+def test_a_wet_practice_gives_no_push_group(tmp_path, monkeypatch):
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, practice_push="split")
+    monkeypatch.setattr(PaceModel, "_wet_session", lambda self, view, sid: True)
+    assert model._push_group(view, "2021-01-1") == []

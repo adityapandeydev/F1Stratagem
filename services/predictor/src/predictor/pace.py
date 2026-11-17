@@ -310,8 +310,9 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.
     `failures` (drivers x 3): probability of setting no time in each segment; a driver
     who fails is behind everyone who set a time in that segment. Failures draw from
     `failure_rng`, so the lap noise is the same with or without them (models compared
-    on shared random draws stay paired). With `dof` > 0 the lap noise is Student-t
-    (scale `noise`), as the robust filter assumes."""
+    on shared random draws stay paired). With `dof` > 0 the lap noise of a segment is
+    multivariate Student-t as the robust filter fits it: one chi-squared scale per draw
+    and segment shared by every driver, times independent normal draws."""
     draws, size = pace.shape
     if failures is not None and failure_rng is None:
         failure_rng = np.random.default_rng(0)        # never the lap-noise stream
@@ -320,7 +321,9 @@ def knockout_positions(pace, noise, rng, failures=None, failure_rng=None, dof=0.
     alive = np.ones((draws, size), dtype=bool)
     rows = np.arange(draws)[:, None]
     def segment_lap(index):
-        draw = rng.standard_t(dof, pace.shape) if dof > 0 else rng.standard_normal(pace.shape)
+        draw = rng.standard_normal(pace.shape)
+        if dof > 0:
+            draw = draw * np.sqrt(dof / rng.chisquare(dof, (pace.shape[0], 1)))
         lap = pace + noise * draw
         if failures is not None:
             failed = failure_rng.random(pace.shape) < failures[None, :, index]
@@ -579,11 +582,12 @@ class PaceModel:
         return failure_rates(records, drivers)
 
     def _push_group(self, view, session_id):
-        """The push-pace group of a practice session (cached), or [] (wet, too few drivers)."""
+        """The push-pace group of a practice session (cached), or [] for a wet or mixed
+        session (its dry laps are not dry pace) or with too few drivers."""
         key = PUSH_PREFIX + session_id
         if key not in self._push_groups:
-            self._push_groups[key] = _pace_group(push_pace(view.laps(session_id)), view.entrants(session_id),
-                                                 SLOW_CUTOFF)
+            self._push_groups[key] = [] if self._wet_session(view, session_id) else _pace_group(
+                push_pace(view.laps(session_id)), view.entrants(session_id), SLOW_CUTOFF)
         return self._push_groups[key]
 
     def _push_covers(self, view, session):
