@@ -250,6 +250,7 @@ def session_observations(session_type, results, laps, entrants):
 PRACTICE = ("FP1", "FP2", "FP3")
 LONG_RUN_PREFIX = "long:"
 PUSH_TYPES = ("FP1P", "FP2P", "FP3P")
+PUSH_PREFIX = "push:"           # a practice session's push-pace group (practice_push "split")
 
 
 Q3_CARS = 10
@@ -436,9 +437,11 @@ class PaceModel:
         self._covariances = {}
         if long_runs and "L" not in self.session_types:
             self.session_types = self.session_types + ("L",)
-        if practice_push == "own":
+        if practice_push in ("own", "split"):
+            # "split": every practice session gives a push-pace group (drivers with push laps,
+            # types FP1P-FP3P) and a best-lap group of the other drivers (FP1-FP3)
             self.session_types = self.session_types + tuple(f"{t}P" for t in PRACTICE if t in self.session_types)
-        self._profiles, self._shares, self._push = {}, {}, {}
+        self._profiles, self._shares, self._push, self._push_groups = {}, {}, {}, {}
         self._layout_index = self._event_start = self._layout_sessions = None
         self.history = history
         self._circuits = None
@@ -454,6 +457,11 @@ class PaceModel:
         sessions = view.sessions[view.sessions.session_type.isin(self.session_types)]
         if self.history:
             sessions = pd.concat([self._history_sessions(view), sessions], ignore_index=True)
+        push = None
+        if self.practice_push == "split":
+            practice = sessions[sessions.session_type.isin(PRACTICE)]
+            push = practice.assign(session_id=PUSH_PREFIX + practice.session_id,
+                                   session_type=practice.session_type + "P")
         if self.wet_noise:
             sessions = sessions.copy()
             dry = sessions.session_type.isin(("Q", "SQ", "FP1", "FP2", "FP3"))
@@ -472,6 +480,8 @@ class PaceModel:
                 for row in sessions[practice].itertuples()]
         if long is not None:
             sessions = pd.concat([sessions, long], ignore_index=True)
+        if push is not None:
+            sessions = pd.concat([sessions, push], ignore_index=True)
         if before is not None:
             sessions = sessions[sessions.available_at_utc < before]
         return sessions.sort_values("scheduled_start_utc", kind="stable")
@@ -498,6 +508,24 @@ class PaceModel:
                 practice = session.session_id[len(LONG_RUN_PREFIX):]
                 self._observations[session.session_id] = _pace_group(
                     long_run_pace(view.laps(practice)), view.entrants(practice), SLOW_CUTOFF)
+            return self._observations[session.session_id]
+        if session.session_id.startswith(PUSH_PREFIX):
+            if session.session_id not in self._observations:
+                practice = session.session_id[len(PUSH_PREFIX):]
+                self._observations[session.session_id] = self._push_group(view, practice)
+            return self._observations[session.session_id]
+        if self.practice_push == "split" and base_type(session.session_type) in PRACTICE:
+            if session.session_id not in self._observations:
+                pushed = {d for group in self._push_group(view, session.session_id) for d in group[1]}
+                raw = session_observations(base_type(session.session_type), view.results(session.session_id),
+                                           view.laps(session.session_id), view.entrants(session.session_id))
+                rest = []
+                for cars, drivers, values in raw:
+                    keep = [d not in pushed for d in drivers]
+                    if sum(keep) >= 2:
+                        rest.append(([c for c, k in zip(cars, keep) if k], [d for d, k in zip(drivers, keep) if k],
+                                     np.asarray(values)[keep]))
+                self._observations[session.session_id] = rest
             return self._observations[session.session_id]
         if session.session_type in PUSH_TYPES:
             self._push_covers(view, session)
@@ -549,6 +577,14 @@ class PaceModel:
         records = pd.DataFrame(rows, columns=["driver", "segment", "failed"]).dropna(subset=["driver"])
         drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
         return failure_rates(records, drivers)
+
+    def _push_group(self, view, session_id):
+        """The push-pace group of a practice session (cached), or [] (wet, too few drivers)."""
+        key = PUSH_PREFIX + session_id
+        if key not in self._push_groups:
+            self._push_groups[key] = _pace_group(push_pace(view.laps(session_id)), view.entrants(session_id),
+                                                 SLOW_CUTOFF)
+        return self._push_groups[key]
 
     def _push_covers(self, view, session):
         """Whether a practice session's push pace covers at least half the drivers of its

@@ -1102,3 +1102,22 @@ def test_robust_forecasts_draw_heavy_tailed_laps():
     assert not (normal == heavy).all()
     gaussian = knockout_positions(pace, 0.3, np.random.default_rng(3), dof=0.0)
     assert (normal == gaussian).all()                          # dof 0: the Gaussian draws, unchanged
+
+
+def test_split_practice_gives_a_push_group_and_a_best_lap_group_of_the_rest(tmp_path, monkeypatch):
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-01-01", tz=UTC))
+    pushers = [("fast", "a"), ("fast", "b"), ("mid", "c")]
+    monkeypatch.setattr(PaceModel, "_push_group", lambda self, view, sid: [
+        ([c for c, _ in pushers], [d for _, d in pushers], np.array([0.0, 0.3, 1.0]))])
+    model = PaceModel(ALL_SESSIONS, winter=True, weekend=True, practice_push="split")
+    sessions = model.sessions(view)
+    assert {"FP1", "FP1P"} <= set(sessions.session_type)
+    practice = sessions[sessions.session_type == "FP1"].iloc[0]
+    push = sessions[sessions.session_id == "push:" + practice.session_id].iloc[0]
+    assert push.session_type == "FP1P"
+    rest = model.observations(view, practice)
+    assert rest and not {"a", "b", "c"} & set(rest[0][1])         # pushers are not in the best-lap group
+    assert model.observations(view, push)[0][1] == ["a", "b", "c"]
+    hyper = model.fit_hyper(view, sessions, Hyper(**GOLDEN_SETTINGS | NO_AFFINITY))
+    assert "FP1P" in model.last_fit["fitted"]

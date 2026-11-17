@@ -82,7 +82,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     suffix = ("q" if objective == "qualifying" else "") + ("w" if weekend else "") + ("s" if shared else "") \
         + ("a" if affinity else "") + ("h" if history else "") \
         + {"noise": "n", "state": "s", "weighted": "w"}.get(history, "") + ("f" if form else "") + ("k" if skills else "") + ("b" if season_skills else "") \
-        + ("r" if races else "") + ("d" if driver_race else "") + ("p" if push else "") + ("n" if push == "own" else "") \
+        + ("r" if races else "") + ("d" if driver_race else "") + ("p" if push else "") + ("n" if push == "own" else "") + ("s" if push == "split" else "") \
         + ("l" if long_runs else "") + ("u" if race_estimates else "") + ("q" if knockout else "") + ("f" if failures else "") + ("w" if wet_noise else "") + ("t" if robust else "")
     return PaceModel(WITH_RACES if races else ALL_SESSIONS, f"pace:v{stage}{suffix}", winter=stage >= 3, objective=objective,
                      weekend=weekend, shared_from_qualifying=shared, affinity=affinity, history=history, form=form,
@@ -164,6 +164,7 @@ def model_registry():
             "pace3wrqf": lambda: _pace_model(3, weekend=True, races=True, knockout=True, failures=True),
             "pace3wrqw": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True),
             "pace3wrqwt": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True),
+            "pace3wrqwp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, push="split"),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
