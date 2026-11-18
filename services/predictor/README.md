@@ -20,7 +20,7 @@ stages of the race model.
 | `laps.py` | Lap-level corrections: corrected race pace (tyres, tyre age, fuel; drying races lap by lap) with its estimation covariance; practice push laps and long runs; wet track evolution and segment wetness in qualifying; green-lap pass counts. |
 | `race.py` | Race model: race pace and grid draws from the pace model, the grid known at the cutoff, retirements, settings fitted per season and cutoff by RPS; the lap-by-lap variant. |
 | `race_sim.py` | Battles from position data, the battle (pass) model, race length and lap reference, the lap-by-lap simulation driver. |
-| `race_native/` | One race lap for every draw in Rust (`predictor_race_native`): ordering, lap times, passes. Python supplies the random numbers, so results equal the NumPy version it replaced. |
+| `race_native/` | The race simulation in Rust (`predictor_race_native`): start, laps, passes and their random numbers, one generator per draw, draws in parallel. |
 | `track.py` | Corners and track profiles from telemetry; the circuit layout table (`circuit_layouts.csv`). |
 | `fitcache.py` | Fitted settings saved per model and season under a key covering model, start, code and data; reused across cutoffs and runs. |
 | `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons (event and block bootstrap), results by stage of the season, quick screens. |

@@ -1,16 +1,22 @@
 //! Native lap-by-lap race simulation for the race model (`predictor.race_sim`).
 //!
-//! Python draws the random numbers (so a forecast is reproducible from its seed and
-//! the same as the reference NumPy implementation) and calls `race_lap` once per
-//! lap; this module runs the lap for every draw: order the cars, add each car's lap
-//! time, then front to back let a car within `battle_gap` of the car ahead pass with
-//! the battle model's probability, else hold it at least `min_follow` behind. At
-//! most one place gained per car per lap. Draws run in parallel (rayon); each
-//! draw's arithmetic is sequential, so results do not depend on the thread count.
+//! `simulate` runs whole races: for every draw, the start (grid spacing plus start
+//! noise), then every lap: order the cars, add each car's lap time, then front to
+//! back let a car within `battle_gap` of the car ahead pass with the battle model's
+//! probability, else hold it at least `min_follow` behind. At most one place gained
+//! per car per lap.
+//!
+//! Random numbers are drawn here: each draw has its own PCG64 generator, its state
+//! spread from the forecast's seed and the draw index, so a forecast is
+//! reproducible from its seed and does not depend on the number of threads. Draws
+//! run in parallel (rayon).
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadwriteArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rand::{Rng, SeedableRng};
+use rand_distr::StandardNormal;
+use rand_pcg::Pcg64;
 use rayon::prelude::*;
 
 /// P(the car behind is ahead after the lap): logistic on [1, gap, ln gap, delta,
@@ -31,7 +37,8 @@ fn coefficients(coef: &[f64]) -> PyResult<[f64; 6]> {
 }
 
 /// One lap of one draw. `time`: each car's race time so far (updated in place);
-/// `seconds`, `noise`: per car (by entrant index); `luck`: per position.
+/// `seconds`, `noise`: per car (by entrant index); `luck`: per position in the
+/// running order.
 #[allow(clippy::too_many_arguments)]
 fn lap_of_draw(
     time: &mut [f64],
@@ -89,57 +96,111 @@ fn lap_of_draw(
     }
 }
 
-/// Runs one lap for every draw, updating `time` (draws x entrants) in place.
-/// `noise`: standard normal lap noise, scaled by `scale` s; `luck`: uniform draws
-/// deciding passes (indexed by position in the running order).
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-fn race_lap(
-    mut time: PyReadwriteArray2<f64>,
-    seconds: PyReadonlyArray2<f64>,
-    noise: PyReadonlyArray2<f64>,
-    luck: PyReadonlyArray2<f64>,
-    coef: PyReadonlyArray1<f64>,
+/// Settings of one simulated race, shared by all its draws.
+struct Race {
+    coef: [f64; 6],
     term: f64,
     shift: f64,
+    laps: usize,
+    start_noise: f64,
+    start_spacing: f64,
     scale: f64,
     battle_gap: f64,
     min_follow: f64,
-) -> PyResult<()> {
-    let coef = coefficients(coef.as_slice()?)?;
-    let shape = time.as_array().shape().to_vec();
-    for other in [seconds.as_array().shape(), noise.as_array().shape(), luck.as_array().shape()] {
-        if other != shape.as_slice() {
-            return Err(PyValueError::new_err("time, seconds, noise and luck must have one shape"));
+}
+
+/// One draw: the race from the grid to the flag; writes finishing positions (1 =
+/// first) into `positions`.
+fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, positions: &mut [i64]) {
+    let n = seconds.len();
+    let mut time: Vec<f64> = grid
+        .iter()
+        .map(|&slot| race.start_spacing * (slot - 1.0) + race.start_noise * rng.sample::<f64, _>(StandardNormal))
+        .collect();
+    let (mut noise, mut luck) = (vec![0.0; n], vec![0.0; n]);
+    let (mut order, mut before, mut after, mut own) =
+        (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    for _ in 0..race.laps {
+        for value in noise.iter_mut() {
+            *value = rng.sample(StandardNormal);
         }
+        for value in luck.iter_mut() {
+            *value = rng.gen::<f64>();
+        }
+        lap_of_draw(
+            &mut time,
+            seconds,
+            &noise,
+            &luck,
+            &race.coef,
+            race.term,
+            race.shift,
+            race.scale,
+            race.battle_gap,
+            race.min_follow,
+            &mut order,
+            &mut before,
+            &mut after,
+            &mut own,
+        );
     }
-    let n = shape[1];
-    let time = time.as_slice_mut()?;
-    let (seconds, noise, luck) = (seconds.as_slice()?, noise.as_slice()?, luck.as_slice()?);
-    // draws are independent: run them in parallel (the result does not depend on it)
-    time.par_chunks_mut(n).enumerate().for_each_init(
-        || (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n)),
-        |(order, before, after, own), (d, row)| {
+    order.clear();
+    order.extend(0..n);
+    order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
+    for (position, &car) in order.iter().enumerate() {
+        positions[car] = position as i64 + 1;
+    }
+}
+
+/// Finishing positions (draws x entrants, 1 = first) of `laps` laps. `seconds`:
+/// each draw's race pace in s per lap against the field's reference; `grid`: grid
+/// slots per draw; `scale`: s of lap noise per unit normal; `seed`: the forecast's.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn simulate<'py>(
+    py: Python<'py>,
+    seconds: PyReadonlyArray2<f64>,
+    grid: PyReadonlyArray2<f64>,
+    coef: PyReadonlyArray1<f64>,
+    term: f64,
+    shift: f64,
+    laps: usize,
+    start_noise: f64,
+    start_spacing: f64,
+    scale: f64,
+    battle_gap: f64,
+    min_follow: f64,
+    seed: u64,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let shape = seconds.as_array().shape().to_vec();
+    if grid.as_array().shape() != shape.as_slice() {
+        return Err(PyValueError::new_err("seconds and grid must have one shape"));
+    }
+    let (draws, n) = (shape[0], shape[1]);
+    let race = Race {
+        coef: coefficients(coef.as_slice()?)?,
+        term,
+        shift,
+        laps,
+        start_noise,
+        start_spacing,
+        scale,
+        battle_gap,
+        min_follow,
+    };
+    let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
+    let mut positions = vec![0i64; draws * n];
+    py.allow_threads(|| {
+        positions.par_chunks_mut(n).enumerate().for_each(|(d, out)| {
+            // one generator per draw, its state spread from (seed, draw) (no correlated streams)
+            let mut rng = Pcg64::seed_from_u64(seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let cars = d * n..(d + 1) * n;
-            lap_of_draw(
-                row,
-                &seconds[cars.clone()],
-                &noise[cars.clone()],
-                &luck[cars],
-                &coef,
-                term,
-                shift,
-                scale,
-                battle_gap,
-                min_follow,
-                order,
-                before,
-                after,
-                own,
-            );
-        },
-    );
-    Ok(())
+            race_of_draw(&race, &seconds[cars.clone()], &grid[cars], &mut rng, out);
+        });
+    });
+    numpy::ndarray::Array2::from_shape_vec((draws, n), positions)
+        .map(|a| a.into_pyarray_bound(py))
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// The battle model's pass probability for each (gap, delta) pair.
@@ -163,7 +224,7 @@ fn pass_probability<'py>(
 
 #[pymodule]
 fn predictor_race_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(race_lap, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate, m)?)?;
     m.add_function(wrap_pyfunction!(pass_probability, m)?)?;
     Ok(())
 }

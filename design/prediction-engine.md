@@ -22,7 +22,7 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Race forecasts from the pace model: race pace, grid at the cutoff, retirements (stage 1a) | Implemented; last-cutoff race champion (race:v1a) |
 | Grid slot weighted by circuit overtaking difficulty (stage 1b) | Tested, not adopted |
 | Lap-by-lap race simulation with a battle model learned from position data (stage 2a) | Implemented; pre-weekend race champion (race:v2a) |
-| Native race lap (Rust, PyO3) | Implemented (identical results; 3.8–6.1× faster) |
+| Native race simulation (Rust, PyO3) | Implemented (same forecasts; 27–41× faster) |
 | Forecast roster from the FIA entry list known at the cutoff | Implemented |
 | Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance, Student-t updates | Implemented |
 | Fit cache (fits reused across cutoffs and runs) and quick screens | Implemented |
@@ -332,7 +332,7 @@ stay in the tests. Two modules exist:
 | Module | Role | Why Rust |
 |---|---|---|
 | `predictor_native` (`services/predictor/native`) | Kalman filter replay for the pace model | Fits replay the filter thousands of times: 4.3–6.4× faster fits |
-| `predictor_race_native` (`services/predictor/race_native`) | One lap of the race simulation for every draw | The lap loop was 90% of a race-model evaluation: 3.8–6.1× faster |
+| `predictor_race_native` (`services/predictor/race_native`) | The race simulation for every draw, random numbers included | The lap loop was 90% of a race-model evaluation: 27–41× faster |
 
 They are separate because the fit cache fingerprints `predictor_native`:
 rebuilding it invalidates every cached pace fit (hours of refitting), so race
@@ -342,9 +342,6 @@ Planned moves:
 
 - **Race model:** later stages (safety cars, tyres and strategy, championship
   simulation) are written in Rust from the start, in `predictor_race_native`.
-  The random numbers move to Rust with the next race gate (stage 2b): it is faster,
-  but it changes the random streams, so the gate is the check rather than
-  identical outputs.
 - **Qualifying model:** the Q1/Q2/Q3 simulation, the sampling of forecast draws
   and the recording of the filter program are candidates. They are moved together
   in one rebuild of `predictor_native` when the race work is carried back into
@@ -391,13 +388,13 @@ flowchart LR
         opt["scipy optimiser<br/>settings fit"]
         fc["Forecast: joint draws,<br/>Q1/Q2/Q3 simulation"]
         race["race.py<br/>race settings fit, context"]
-        sim["race_sim.py<br/>battle model, random numbers"]
+        sim["race_sim.py<br/>battle model, race length and lap"]
     end
     subgraph rs["predictor_native (Rust, PyO3)"]
         kf["Kalman filter replay"]
     end
     subgraph rrs["predictor_race_native (Rust, PyO3)"]
-        lap["Race lap for every draw:<br/>order, lap times, passes"]
+        lap["Race for every draw:<br/>start, laps, passes, random numbers"]
     end
     arch --> pace --> rec
     rec -->|"program (numpy arrays)"| kf
@@ -406,21 +403,26 @@ flowchart LR
     kf -->|"mean, covariance"| fc
     fc -->|"race pace and grid draws"| race
     race --> sim
-    sim -->|"times, pace, noise, luck"| lap
-    lap -->|"updated race times"| sim
+    sim -->|"pace, grid, battle model, seed"| lap
+    lap -->|"finishing orders"| sim
 ```
 
-The native race lap, against the NumPy version it replaced (20 cars, 57 laps;
-identical finishing orders):
+The native race simulation, against the NumPy version it replaced (20 cars, 57
+laps):
 
-| Simulated races | NumPy | Rust | Speed-up |
-|---|---:|---:|---:|
-| 1,000 | 0.095 s | 0.025 s | 3.8× |
-| 10,000 | 1.115 s | 0.182 s | 6.1× |
+| Simulated races | NumPy | Rust, NumPy random numbers | Rust | Speed-up |
+|---|---:|---:|---:|---:|
+| 1,000 | 0.10 s | 0.025 s | 0.004 s | 27× |
+| 10,000 | 1.3 s | 0.18 s | 0.032 s | 41× |
 
-Draws run in parallel across cores; each draw's arithmetic is sequential, so
-results do not depend on the number of threads. What remains is mostly NumPy
-drawing the random numbers.
+It moved in two steps. First the lap alone, fed NumPy's random numbers, so the
+finishing orders were identical to the NumPy version. Then the random numbers:
+each draw has its own PCG64 generator seeded from the forecast's seed and the
+draw index, so a forecast is reproducible and does not depend on the number of
+threads (draws run in parallel). Its races differ from NumPy's draw by draw but
+not in distribution: on 100,000 simulated races, position probabilities differ
+by no more than two NumPy runs with different seeds (z-scores of the differences
+spread 0.87, none beyond 2.4, mean −0.03).
 
 - Car and driver strength are latent states that evolve over time, not fixed
   per-season constants. Each new session (testing, FP, qualifying, race) updates the

@@ -101,7 +101,7 @@ shared by every service, and each dataset in it has exactly one writer.
 | Frontend | `frontend/` | React 19, TypeScript, Vite, Bun, Tailwind CSS, ECharts, Three.js |
 | API | `api/` | Go, PostgreSQL (pgx) |
 | Analysis service | `services/analysis/` | Python, FastAPI, FastF1, pandas |
-| Prediction engine | `services/predictor/` | Python, NumPy, SciPy; Rust (PyO3) for the pace model's Kalman filter and the race simulation's lap |
+| Prediction engine | `services/predictor/` | Python, NumPy, SciPy; Rust (PyO3) for the pace model's Kalman filter and the race simulation |
 | Data archive | `packages/f1data/` | Python, Parquet, DuckDB |
 
 Under consideration, adopted only where they prove their value: Redis for

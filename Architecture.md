@@ -41,7 +41,7 @@ use-case notation, so those views are drawn as flowcharts.
 | Decision | Choice | Rationale |
 |---|---|---|
 | API language | Go | Concurrency, mature HTTP/Postgres ecosystem. Public entry point and orchestrator of all services. |
-| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Components move to Rust extension modules (PyO3, built with maturin) inside the same service when that makes them faster or better with the same forecasts; Python stays for optimisers, data handling and evaluation. In place: the pace model's Kalman filter (4.3–6.4× faster fits) and the race simulation's lap (3.8–6.1×), both with identical forecasts. The rest of the race simulator and the championship simulation are built in Rust. |
+| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Components move to Rust extension modules (PyO3, built with maturin) inside the same service when that makes them faster or better with the same forecasts; Python stays for optimisers, data handling and evaluation. In place: the pace model's Kalman filter (4.3–6.4× faster fits) and the race simulation (27–41×), with the same forecasts (identical for the filter; the same distribution for the simulation, which draws its own random numbers). The rest of the race simulator and the championship simulation are built in Rust. |
 | Repository | Monorepo, independently deployable services | Shared contracts and data code; separate processes and deploys. |
 | F1 timing, telemetry, documents | Parquet archive queried with DuckDB | Columnar, compressed, partition-scanned; hundreds of millions of telemetry rows. SQLite rejected. |
 | Application data | PostgreSQL (local in development) | Users, calendars, community content, small reference tables they join to. |
@@ -676,7 +676,7 @@ apply to an upcoming race are confirmed by an operator before publication.
 
 The engine is one Python service. Its hot loops are Rust extension modules that
 the service imports like any Python package: the pace model's Kalman filter
-(`predictor_native`) and the race simulation's lap (`predictor_race_native`).
+(`predictor_native`) and the race simulation (`predictor_race_native`).
 They run in the service's process, so the deployment diagrams show the service
 only; the Go API sees only the service.
 

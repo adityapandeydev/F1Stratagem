@@ -158,24 +158,15 @@ def circuit_propensity(frame, base):
 
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0):
-    """Finishing order (draws x entrants, 1 = first) of `laps` laps.
+    """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
+    (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
     `pace`: race pace draws (% of a lap, lower is faster); `grid`: slots, one row or
     one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
     added to every pass's log-odds."""
-    draws, n = pace.shape
     seconds = np.ascontiguousarray(pace * lap_seconds / 100, dtype=float)   # s per lap against the field's reference
-    grid = np.broadcast_to(grid, pace.shape)
-    time = np.ascontiguousarray(START_SPACING * (grid - 1) + start_noise * rng.standard_normal(pace.shape), dtype=float)
-    rows = np.arange(draws)
-    coef = np.asarray(passes.coef, dtype=float)
-    scale = LAP_NOISE * lap_seconds / 100
-    for _ in range(laps):       # the lap itself runs natively (predictor_race_native.race_lap)
-        noise = rng.standard_normal(pace.shape)
-        luck = rng.random((draws, n))
-        predictor_race_native.race_lap(time, seconds, noise, luck, coef, float(circuit_term), float(pass_shift),
-                                       float(scale), BATTLE_GAP, MIN_FOLLOW)
-    order = np.argsort(time, axis=1, kind="stable")
-    positions = np.empty_like(order)
-    positions[rows[:, None], order] = np.arange(1, n + 1)
-    return positions
+    grid = np.ascontiguousarray(np.broadcast_to(grid, pace.shape), dtype=float)
+    seed = int(rng.integers(0, 2 ** 63))
+    return predictor_race_native.simulate(seconds, grid, np.asarray(passes.coef, dtype=float), float(circuit_term),
+                                          float(pass_shift), int(laps), float(start_noise), START_SPACING,
+                                          float(LAP_NOISE * lap_seconds / 100), BATTLE_GAP, MIN_FOLLOW, seed)
