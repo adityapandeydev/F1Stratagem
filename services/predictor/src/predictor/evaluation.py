@@ -238,6 +238,9 @@ def model_registry():
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
             "race2a": lambda: _race_model("pace3wrqwt", "race:v2a", simulated=True),
             "race2as": lambda: _race_model("pace3wrqwt", "race:v2as", simulated=True, pass_shift=True),
+            "race2af": lambda: _race_model("pace3wrqwt", "race:v2af", simulated=True, forecast_battles=True),
+            "race2afs": lambda: _race_model("pace3wrqwt", "race:v2afs", simulated=True, forecast_battles=True,
+                                            pass_shift=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 

@@ -631,6 +631,9 @@ the race lap by lap:
   latest earlier dry race with at least 10 such laps, same layout first.
 - **Fitted per season and cutoff:** start noise and race-day noise (and, in
   `race:v2as`, a shift of every pass's log-odds) by ranked probability score.
+- **Battle model input (v2af).** Each battle's pace difference can be taken from
+  the forecast at the cutoff instead of the race's own measured pace; the measured
+  pace comes from the same race, so a car held up looks slower than it was.
 
 **Next stages:**
 
@@ -958,6 +961,8 @@ Races (2019–2024, 128 races):
 | race:v1b: grid weight by circuit overtaking | +0.00002 | −0.00004 | not adopted (noise) |
 | race:v2a: lap-by-lap simulation | −0.00030, better beyond noise; 2024 −0.00029 | +0.00073, worse beyond noise | **pre-weekend race champion** |
 | race:v2as: v2a + a fitted shift of every pass's log-odds | +0.00006 (noise) | −0.00020 (noise); 2024 −0.00105 | not adopted |
+| race:v2af: v2a with the battle model fitted on forecast pace differences | −0.00012 (noise); +0.00018 against v2a (noise) | −0.00026 (noise); −0.00099 against v2a, better beyond noise; winner log loss 1.36 → 1.32 | not a champion; **base of the next stage** |
+| race:v2afs: v2af + pass shift | −0.00001 (noise) | −0.00040 (noise) | not adopted |
 
 Differences are against race:v1a. The first v2a results were discarded: a
 shortened race could set the next year's race length and lap time (fixed before
@@ -968,8 +973,11 @@ noise 0.45–0.6%. At the last cutoff, v2as fits a pass shift of −1.5 to −3 
 every season: the battle model passes too easily when the grid is known. It
 learns from each race's measured pace, which is taken from the same race (a car
 stuck behind looks slower because it was stuck), while the simulation feeds it
-forecast pace. The next step fits the battle model on the pace difference
-forecast at the cutoff, the input it gets in the simulation.
+forecast pace. Fitting the battle model on the pace difference forecast at the
+cutoff (v2af: for each battle, 10 draws of that race's forecast, the input the
+simulation gives it) halves the fitted shift (−0.5 to −1.5) and improves the
+simulation at the last cutoff beyond noise; some over-passing remains. Stage 2b
+builds on v2af.
 
 ## Known constraints
 

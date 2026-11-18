@@ -148,8 +148,11 @@ class RaceModel:
         """Settings without any earlier race to fit them on."""
         return {"kappa": 0.0, "sigma": 0.0, **({"gamma": 0.0} if self.overtaking else {})}
 
-    def prepare_season(self, season):
-        """Anything fitted per season before the settings (nothing here)."""
+    def prepare_season(self, season, cutoff):
+        """Anything fitted per season and cutoff before the settings (nothing here)."""
+
+    def select(self, key):
+        """Use what `prepare_season` fitted for `key` (nothing here)."""
 
     def context(self, view, example):
         """What a forecast needs from the archive besides the draws."""
@@ -214,8 +217,9 @@ class RaceModel:
         self._archive = view.archive
         key = (example.season, example.cutoff_label)
         if key not in self.settings:
-            self.prepare_season(example.season)
+            self.prepare_season(*key)
             self._fit_season(*key)
+        self.select(key)
         chosen = self.settings[key]
         seed = seed_for(example)
         race, grid = self.draws(view, example, draws, seed)
@@ -241,17 +245,25 @@ def scheduled_laps(earlier, layout):
 START_NOISES = (0.0, 0.25, 0.5, 1.0, 2.0)   # s: start noise of a car's time
 SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)     # % of a lap: race-day pace noise beyond the pace model's
 PASS_SHIFTS = (-3.0, -2.0, -1.5, -1.0, -0.5, 0.0)   # log-odds added to every pass (pass_shift option)
+BATTLE_DRAWS = 10       # forecast draws per battle pair when the battle model reads forecast pace
 
 
 class SimulatedRace(RaceModel):
     """Stage 2: the race run lap by lap (`race_sim.simulate`): start, racing laps,
     passes from the battle model. Fitted per season: the battle model on the dry
-    races of earlier seasons; then lap-1 noise and race-day noise by mean RPS."""
+    races of earlier seasons; then lap-1 noise and race-day noise by mean RPS.
 
-    def __init__(self, pace, name, pass_shift=False):
+    `forecast_battles`: the battle model reads, for each pair, the pace difference
+    the model forecast at the cutoff (BATTLE_DRAWS draws of its race pace, the input
+    the simulation gives it) instead of the race's own measured pace, which is
+    taken from the same race and so is slowed by being held up."""
+
+    def __init__(self, pace, name, pass_shift=False, forecast_battles=False):
         super().__init__(pace, name)
         self.pass_shift = pass_shift
+        self.forecast_battles = forecast_battles
         self.passes = race_sim.PassModel()
+        self._pass_models = {}      # (season, cutoff) -> PassModel
         self._battles, self._race_shape = {}, {}
         self._archive = None
 
@@ -274,7 +286,7 @@ class SimulatedRace(RaceModel):
         if race.session_id not in self._battles:
             frame = race_sim.battles(view.laps(race.session_id))
             self._battles[race.session_id] = frame.assign(circuit=self.pace.circuit(view, race.event_key),
-                                                          season=int(race.season))
+                                                          season=int(race.season), event_key=race.event_key)
         return self._battles[race.session_id]
 
     def _battles_in(self, view, exclude=None):
@@ -282,11 +294,47 @@ class SimulatedRace(RaceModel):
         frames = [self._race_battles(view, race) for race in races.itertuples()]
         frames = [f for f in frames if not f.empty]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
-            columns=["gap", "delta", "passed", "circuit", "season"])
+            columns=["gap", "delta", "passed", "ahead", "behind", "lap", "circuit", "season", "event_key"])
 
-    def prepare_season(self, season):
-        """The battle model from the races before `season`; each pair's circuit term
-        from the other seasons' battles."""
+    def select(self, key):
+        self.passes = self._pass_models[key]
+
+    def _forecast_deltas(self, frame, term, season, cutoff):
+        """The battle pairs of races forecast from `cutoff` in earlier seasons, each
+        repeated BATTLE_DRAWS times with the pace difference of one forecast draw;
+        (frame, term, weights)."""
+        parts, terms = [], []
+        for example in (e for e in self._history if e.season < season and e.cutoff_label == cutoff):
+            rows = np.flatnonzero((frame.event_key == example.event_key).to_numpy())
+            if not len(rows):
+                continue
+            key = (example.event_key, example.cutoff_label, season)
+            if key not in self._draws:
+                view = self._view_for(example)
+                self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)), self.context(view, example))
+            race = self._draws[key][0]
+            column = {str(n): i for i, n in enumerate(example.driver_numbers)}
+            pairs = frame.iloc[rows]
+            known = (pairs.ahead.map(column).notna() & pairs.behind.map(column).notna()).to_numpy()
+            pairs, rows = pairs[known], rows[known]
+            if pairs.empty:
+                continue
+            ahead = pairs.ahead.map(column).to_numpy(int)
+            behind = pairs.behind.map(column).to_numpy(int)
+            pick = np.random.default_rng([seed_for(example), 11]).integers(0, len(race), (len(pairs), BATTLE_DRAWS))
+            delta = (race[pick, behind[:, None]] - race[pick, ahead[:, None]]) * pairs.lap.to_numpy(float)[:, None] / 100
+            parts.append(pd.DataFrame({"gap": np.repeat(pairs.gap.to_numpy(float), BATTLE_DRAWS),
+                                       "delta": delta.ravel(),
+                                       "passed": np.repeat(pairs.passed.to_numpy(bool), BATTLE_DRAWS)}))
+            terms.append(np.repeat(term[rows], BATTLE_DRAWS))
+        if not parts:
+            return frame.iloc[:0], term[:0], None
+        expanded = pd.concat(parts, ignore_index=True)
+        return expanded, np.concatenate(terms), np.full(len(expanded), 1.0 / BATTLE_DRAWS)
+
+    def prepare_season(self, season, cutoff):
+        """The battle model for `season` at `cutoff`, from the races before the
+        season; each pair's circuit term from the other seasons' battles."""
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         frame = self._battles_in(view)
         term = np.zeros(len(frame))
@@ -298,7 +346,10 @@ class SimulatedRace(RaceModel):
                 propensity = race_sim.circuit_propensity(other, float(other.passed.mean()))
                 rows = (frame.season == year).to_numpy()
                 term[rows] = frame[rows].circuit.map(propensity).fillna(0.0).to_numpy(float)
-        self.passes.fit(frame, term)
+        weights = None
+        if self.forecast_battles:
+            frame, term, weights = self._forecast_deltas(frame, term, season, cutoff)
+        self._pass_models[(season, cutoff)] = self.passes = race_sim.PassModel().fit(frame, term, weights)
 
     def context(self, view, example):
         """The circuit's pass propensity; the scheduled race length (`scheduled_laps`)

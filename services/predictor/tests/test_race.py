@@ -196,3 +196,21 @@ def test_race_champions_route_by_forecast_moment():
     after = types.SimpleNamespace(cutoff_label="last")
     assert router.models[router.route(before)].name == "race:v2a"
     assert router.models[router.route(after)].name == "race:v1a"
+
+
+def test_the_battle_model_can_read_forecast_pace_differences():
+    from predictor.race import BATTLE_DRAWS, SimulatedRace
+    model = SimulatedRace.__new__(SimulatedRace)
+    example = types.SimpleNamespace(event_key="e", season=2020, cutoff_label="last", driver_numbers=["1", "2", "3"],
+                                    session_type="R")
+    model._history = [example]
+    race = np.tile([[0.0, 1.0, -1.0]], (50, 1))            # forecast: car 3 fastest, car 2 slowest (% of a lap)
+    model._draws = {("e", "last", 2021): (race, None, None)}
+    frame = pd.DataFrame({"gap": [0.5, 1.0, 0.8], "delta": [9.0, 9.0, 9.0], "passed": [True, False, True],
+                          "ahead": ["1", "2", "9"], "behind": ["2", "3", "1"], "lap": [100.0] * 3,
+                          "event_key": ["e", "e", "e"]})
+    out, term, weights = model._forecast_deltas(frame, np.array([0.1, 0.2, 0.3]), 2021, "last")
+    assert len(out) == 2 * BATTLE_DRAWS                     # the pair with an unknown driver is left out
+    assert np.allclose(out.delta[:BATTLE_DRAWS], 1.0) and np.allclose(out.delta[BATTLE_DRAWS:], -2.0)
+    assert np.allclose(term, [0.1] * BATTLE_DRAWS + [0.2] * BATTLE_DRAWS) and np.allclose(weights, 1 / BATTLE_DRAWS)
+    assert list(out.passed[::BATTLE_DRAWS]) == [True, False]

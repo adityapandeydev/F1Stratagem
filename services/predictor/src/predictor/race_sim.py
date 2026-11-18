@@ -65,10 +65,11 @@ def race_shape(laps):
 
 def battles(laps):
     """Battle pairs of a dry race: DataFrame gap, delta (s per lap, car behind minus
-    car ahead; negative: the car behind is faster), passed. Empty for a wet race or
-    one without race pace."""
+    car ahead, from the race's own measured pace; negative: the car behind is
+    faster), passed, ahead and behind (driver numbers), lap (the race's green lap,
+    s). Empty for a wet race or one without race pace."""
     columns = ("Position", "LapNumber", "DriverNumber", "PitInTime", "PitOutTime", "TrackStatus", "Time", "LapTime")
-    empty = pd.DataFrame(columns=["gap", "delta", "passed"])
+    empty = pd.DataFrame(columns=["gap", "delta", "passed", "ahead", "behind", "lap"])
     if any(c not in laps for c in columns) or wet_session(laps):
         return empty
     pace = race_pace(laps)
@@ -102,8 +103,8 @@ def battles(laps):
             if not 0 < gap < BATTLE_GAP or pd.isna(following.Position[behind]) or pd.isna(following.Position[ahead]):
                 continue
             rows.append((gap, (pace[behind] - pace[ahead]) * reference / 100,
-                         bool(following.Position[behind] < following.Position[ahead])))
-    return pd.DataFrame(rows, columns=["gap", "delta", "passed"]) if rows else empty
+                         bool(following.Position[behind] < following.Position[ahead]), ahead, behind, reference))
+    return pd.DataFrame(rows, columns=list(empty.columns)) if rows else empty
 
 
 def _features(gap, delta):
@@ -118,21 +119,23 @@ class PassModel:
         self.coef = np.zeros(6)
         self.base = 0.0           # typical pass share of battle pairs
 
-    def fit(self, frame, term):
+    def fit(self, frame, term, weights=None):
         """`frame`: battles; `term`: each pair's circuit log pass propensity, from
-        races other than its own season's (`circuit_propensity`)."""
+        races other than its own season's (`circuit_propensity`); `weights`: per
+        pair (default 1)."""
         if frame.empty:
             self.coef = np.array([-10.0, 0, 0, 0, 0, 0])      # no battles seen: no passes
             return self
         x = np.column_stack([_features(frame.gap.to_numpy(float), frame.delta.to_numpy(float)),
                              np.asarray(term, dtype=float)])
         y = frame.passed.to_numpy(float)
+        w = np.ones(len(y)) if weights is None else np.asarray(weights, dtype=float)
 
         def loss(b):
             z = x @ b
-            return float(np.sum(np.logaddexp(0, z) - y * z))
+            return float(np.sum(w * (np.logaddexp(0, z) - y * z)))
         self.coef = minimize(loss, np.zeros(x.shape[1]), method="BFGS").x
-        self.base = float(y.mean())
+        self.base = float(np.sum(w * y) / np.sum(w))
         return self
 
     def probability(self, gap, delta, circuit_term=0.0, shift=0.0):
