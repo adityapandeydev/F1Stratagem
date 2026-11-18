@@ -50,3 +50,22 @@ def test_applied_retirements_go_behind_the_finishers():
     retired = outcomes == 4                              # incident_or_other
     assert 0.35 < retired.mean() < 0.65
     assert all((final[d][retired[d]] > final[d][~retired[d]].max(initial=0)).all() for d in range(200))
+
+
+def test_refitting_on_history_without_circuit_differences_clears_old_factors():
+    circuits = {"e0": "monaco", "e1": "c1"}
+    skewed = [_race(2020, "e0", ["incident_or_other"] * 4, list("abcd")),
+              _race(2020, "e1", ["other_points"] * 4, list("abcd"))]
+    model = DetailedRetirements(circuits).fit(skewed)
+    assert model.circuit_factor
+    balanced = [_race(2020, e, ["incident_or_other", "other_points", "other_points", "other_points"], list("abcd"))
+                for e in ("e0", "e1")]
+    assert model.fit(balanced).circuit_factor == DetailedRetirements(circuits).fit(balanced).circuit_factor == {}
+
+
+def test_a_race_model_with_detailed_retirements_forecasts_without_history():
+    from predictor.race import RaceModel
+    model = RaceModel.__new__(RaceModel)
+    RaceModel.__init__(model, None, "race:test", detailed_retirements=True)
+    incident, mechanical = model.retirements.chances(_race(2020, "e", [None] * 3, list("abc")))
+    assert np.allclose(incident, 0.0) and np.allclose(mechanical, 0.0)

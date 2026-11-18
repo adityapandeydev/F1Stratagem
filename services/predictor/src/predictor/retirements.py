@@ -88,6 +88,8 @@ class DetailedRetirements:
                     continue
                 rows.append((e.season, e.event_key, self.circuits.get(e.event_key), lineage, outcome))
         if not rows:
+            self.incident_rate = self.mechanical_rate = self.retire_rate = 0.0
+            self.circuit_factor, self.team_factor = {}, {}
             return self
         starts = pd.DataFrame(rows, columns=["season", "event", "circuit", "lineage", "outcome"])
         latest = sorted(starts.season.unique())[-RECENT_SEASONS:]
@@ -106,6 +108,7 @@ class DetailedRetirements:
         return self
 
     def _fit_circuits(self, starts):
+        self.circuit_factor = {}            # neutral unless this history supports differences
         labelled = starts[starts.outcome != "retired_unknown"]
         newer = (labelled.assign(incident=(labelled.outcome == "incident_or_other").astype(int))
                  .groupby(["season", "circuit"]).agg(starts=("incident", "size"), incidents=("incident", "sum"))

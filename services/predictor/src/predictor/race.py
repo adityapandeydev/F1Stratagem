@@ -75,7 +75,7 @@ class RaceModel:
         self.overtaking = overtaking
         self.detailed_retirements = detailed_retirements
         self._passes = {}           # race session -> race_passes(...)
-        self.retirements = RetirementModel()
+        self.retirements = DetailedRetirements() if detailed_retirements else RetirementModel()
         self.settings = {}          # (season, cutoff label) -> {"kappa", "sigma", "rps", ...}
         self._history, self._view_for = [], None
         self._draws = {}            # (event, cutoff, season) -> draws(...) at FIT_DRAWS, while fitting
@@ -91,7 +91,7 @@ class RaceModel:
     def fit(self, history, view_for):
         self._history = [e for e in history if e.session_type == "R"]
         self._view_for = view_for
-        if self.detailed_retirements and history and not isinstance(self.retirements, DetailedRetirements):
+        if self.detailed_retirements and history and not self.retirements.circuits:
             archive = view_for(history[0]).archive     # circuits are reference data; older results end in 2017
             self.retirements = DetailedRetirements(dict(zip(archive.events.event_key, archive.events.circuit_id)),
                                                    history_incidents(archive.root))
