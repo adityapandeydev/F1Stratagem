@@ -41,6 +41,40 @@ def test_filter_recovers_car_and_driver_pace_from_qualifying_segments():
     assert np.allclose(relative, truth - truth.mean(), atol=0.06)
 
 
+def _career_run(retire=None):
+    """Drivers 'b' and 'mid' car retire halfway; 'g' arrives; affinities park and resume.
+    Recorded with both tracks (qualifying objective) and every term that parks or resets."""
+    rng = np.random.default_rng(7)
+    state = Recorder(("Q", "FP2"), weekend=True, affinity=True, driver_affinity=True, form=True, retire=retire)
+    time = pd.Timestamp("2021-03-01", tz=UTC)
+    for event in range(12):
+        lineup = LINEUP if event < 6 else [("a", "fast"), ("g", "fast"), ("e", "slow"), ("f", "slow")]
+        cars, drivers = [c for _, c in lineup], [d for d, _ in lineup]
+        time += pd.Timedelta(weeks=7)
+        state.advance(time)
+        state.start_event(event, ("monza", "imola")[event % 2])
+        state.snapshot()
+        state.update(cars, drivers, rng.normal(90, 0.5, len(lineup)), "FP2")
+        state.advance(time + pd.Timedelta(days=1), track=1)
+        state.update(cars, drivers, rng.normal(90, 0.5, len(lineup)), "Q", track=1)
+        state.update(cars, drivers, rng.normal(90, 0.5, len(lineup)), "Q")
+    return state
+
+
+def test_dropping_states_after_their_last_use_leaves_the_likelihood_unchanged():
+    hyper = Hyper(noise={"Q": 0.3, "FP2": 0.6}, car_drift=1e-3, driver_drift=1e-3, car_prior=1.0, driver_prior=0.3,
+                  offset_prior=0.3, offset_drift=1e-3, weekend_prior=0.2, affinity_prior=0.2, affinity_drift=1e-4,
+                  affinity_winter=0.01, driver_affinity_prior=0.1, driver_affinity_drift=1e-4,
+                  driver_affinity_winter=0.01, form_prior=0.1, car_winter=0.1, driver_winter=0.01)
+    full = _career_run()
+    lean = _career_run(retire=full.last_use)
+    assert any(op[0] == 6 for op in lean.ops)                        # something was dropped
+    a, b = full.replay(hyper), lean.replay(hyper)
+    assert b.objective == pytest.approx(a.objective, rel=1e-12)
+    assert b.horizons == pytest.approx(a.horizons, rel=1e-12)
+    assert ("driver", "b") in a.keys and ("driver", "b") not in b.keys
+
+
 def write_archive(root, later_time_q1):
     """Two qualifying sessions; the second one is after the forecast cutoff."""
     reference = root / "reference"

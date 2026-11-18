@@ -45,6 +45,7 @@ PARK = 2      # a = start in ints, b = count: pairs (state index, slot); the sta
 RESET = 3     # a = start in ints, b = count, c = kind: state indices returned to that kind's prior
 UPDATE = 4    # a = group index, b = 1 if its log-likelihood counts towards the objective
 SNAPSHOT = 5  # track 1 becomes a copy of track 0 (state and parked affinities)
+DROP = 6      # a = start in ints, b = count: state indices removed (never read again)
 
 
 @dataclass
@@ -135,7 +136,7 @@ class Recorder:
     weekend / affinity switches. `columns` adds the states a forecast reads."""
 
     def __init__(self, noise_types, weekend=False, affinity=False, form=False, skills=(), season_skills=(),
-                 driver_offsets=(), wet_ability=False, driver_affinity=False):
+                 driver_offsets=(), wet_ability=False, driver_affinity=False, retire=None):
         self.weekend, self.affinity, self.form = weekend, affinity, form
         # a driver's own affinity for a circuit (against his teammates), kept between visits
         self.driver_affinity = driver_affinity
@@ -149,6 +150,16 @@ class Recorder:
         # they qualify), as the car has
         self.driver_offsets = tuple(driver_offsets)
         self.noise_types = list(noise_types)
+        # the last group that reads each state ((kind, key) -> group index), as recorded
+        self.last_use = {}
+        # retire: a previous recording's `last_use` of the same run; each state is then
+        # removed from track 0 after the last group that reads it. Marginalising out a
+        # state nothing reads again is exact: the log-likelihood is unchanged, the filter
+        # smaller (retired drivers and teams). Only for a likelihood: the final state then
+        # lacks those states.
+        self._retire_at = {}
+        for key, group in (retire or {}).items():
+            self._retire_at.setdefault(group, []).append(key)
         self.tracks = [_Track()]
         self.slot_of = {}
         self.event, self.circuit = None, None
@@ -172,6 +183,7 @@ class Recorder:
 
     def column(self, key, kind, track=0):
         t = self.tracks[track]
+        self.last_use[(kind, key)] = len(self.groups)
         if (kind, key) not in t.index:
             slot, accrual = -1, -1
             if kind in PARKED and (kind, key) in t.parked:
@@ -282,6 +294,23 @@ class Recorder:
             offset = len(self.floats)
             self.floats += [float(v) for v in np.asarray(covariance, dtype=float).ravel()]
         self.groups.append((first_row, len(cars), self.noise_types.index(session_type), offset))
+        if len(self.groups) - 1 in self._retire_at:
+            self._drop(self._retire_at[len(self.groups) - 1])
+
+    def _drop(self, keys, track=0):
+        """Remove `keys` (those present) from a track's state."""
+        t = self.tracks[track]
+        present = sorted(t.index[key] for key in keys if key in t.index)
+        if not present:
+            return
+        start = len(self.ints)
+        self.ints += present
+        self._op(DROP, track, start, len(present), 0)
+        removed = set(present)
+        ordered = sorted(t.index, key=t.index.get)
+        keep = [i for i in range(len(t.kind)) if i not in removed]
+        t.index = {ordered[i]: position for position, i in enumerate(keep)}
+        t.kind = [t.kind[i] for i in keep]
 
     @property
     def keys(self):

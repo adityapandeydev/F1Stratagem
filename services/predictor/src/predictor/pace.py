@@ -762,14 +762,14 @@ class PaceModel:
         return track.layout_profile(profiles)
 
     def record(self, view, sessions, weekend, affinity, objective=None, form=False, skills=False,
-               season_skills=False, driver_affinity=False):
+               season_skills=False, driver_affinity=False, retire=None):
         """The filter run over `sessions`, recorded (see `program.Recorder`). With the
         qualifying objective, track 1 is the filter as it stood before each weekend and
         sees only that weekend's qualifying; only qualifying updates count."""
         objective = objective or self.objective
         recorder = Recorder(self.session_types, weekend, affinity, form, self.skills if skills else (),
                             self.season_skills if season_skills else (), self.driver_offsets, self.wet_ability,
-                            driver_affinity)
+                            driver_affinity, retire)
         event = None
         for session in sessions.itertuples():
             recorder.advance(session.scheduled_start_utc)
@@ -809,11 +809,14 @@ class PaceModel:
 
     def objective_function(self, view, sessions, like):
         """hyper -> objective over `sessions`, for settings with the same weekend and
-        affinity switches as `like`: recorded once, replayed for every candidate."""
-        return self.record(view, sessions, like.weekend_prior > 0, like.affinity_prior > 0,
-                           form=like.form_prior > 0, skills=like.skill_prior > 0,
-                           season_skills=like.season_skill_prior > 0,
-                           driver_affinity=like.driver_affinity_prior > 0).objective
+        affinity switches as `like`: recorded once, replayed for every candidate. The
+        replayed program drops each state after its last use (retired drivers and
+        teams), which leaves the objective unchanged and the filter smaller."""
+        switches = dict(form=like.form_prior > 0, skills=like.skill_prior > 0,
+                        season_skills=like.season_skill_prior > 0, driver_affinity=like.driver_affinity_prior > 0)
+        first = self.record(view, sessions, like.weekend_prior > 0, like.affinity_prior > 0, **switches)
+        return self.record(view, sessions, like.weekend_prior > 0, like.affinity_prior > 0, **switches,
+                           retire=first.last_use).objective
 
     def fit_hyper(self, view, sessions, start, frozen=()):
         """Fit the settings that affect the objective, except those named in `frozen`."""

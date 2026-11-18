@@ -20,6 +20,7 @@ const PARK: i64 = 2;
 const RESET: i64 = 3;
 const UPDATE: i64 = 4;
 const SNAPSHOT: i64 = 5;
+const DROP: i64 = 6;
 const TRACKS: usize = 2;
 const KINDS: usize = 10; // car, driver, offset, weekend, affinity, form, skill, season_skill, wet, driver_affinity
 
@@ -267,6 +268,11 @@ pub fn run(p: &Program, s: &Settings) -> Result<([f64; TRACKS], State), Failure>
                     parked[slot] = (st.mean[i], st.cov[i * st.cap + i]);
                     removed.push(i);
                 }
+                st.remove(&removed);
+            }
+            DROP => {
+                // states no later op reads: removing them is exact marginalisation
+                let removed: Vec<usize> = p.ints[a as usize..(a + b) as usize].iter().map(|&i| i as usize).collect();
                 st.remove(&removed);
             }
             RESET => {
