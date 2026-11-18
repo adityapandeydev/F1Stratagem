@@ -126,14 +126,19 @@ def _race_model(pace, name, simulated=False, **options):
 CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
              "pre_weekend_wet": "pace3wrqwtc", "after_session_wet": "pace3wrqwtc"}
 
+# Race champions (2019-24, 128 races, RPS against race:v1a). Before the weekend the
+# lap-by-lap simulation: race:v2a -0.00030 [-0.00049, -0.00011], 15+ within noise,
+# 2024 -0.00029. At the last cutoff it is worse beyond noise (+0.00073), and a fitted
+# pass shift (race:v2as) only reaches -0.00020 (noise): race:v1a stays.
+RACE_CHAMPIONS = {"pre_weekend": "race2a", "after_session": "race1a"}
+
 
 class ChampionRouter:
     """Serves each forecast with the champion of its forecast moment: one model
     instance per champion, fitted and asked only for the examples it serves."""
 
-    name = "champion"
-
-    def __init__(self, champions=None, registry=None):
+    def __init__(self, champions=None, registry=None, name="champion"):
+        self.name = name
         self.champions = dict(champions or CHAMPIONS)
         registry = registry or model_registry()
         instances = {name: registry[name]() for name in dict.fromkeys(self.champions.values())}
@@ -190,6 +195,7 @@ def model_registry():
             "pace3wrl": lambda: _pace_model(3, weekend=True, races=True, long_runs=True),
             "pace3wru": lambda: _pace_model(3, weekend=True, races=True, race_estimates=True),
             "champion": lambda: ChampionRouter(),
+            "race_champion": lambda: ChampionRouter(RACE_CHAMPIONS, name="race_champion"),
             "pace3wrq": lambda: _pace_model(3, weekend=True, races=True, knockout=True),
             "pace3wrqf": lambda: _pace_model(3, weekend=True, races=True, knockout=True, failures=True),
             "pace3wrqw": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True),

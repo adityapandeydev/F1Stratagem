@@ -186,3 +186,13 @@ def test_the_native_simulation_matches_the_numpy_reference():
     assert got[:2].tolist() == [[9, 1, 8, 7, 4, 6, 2, 5, 3, 10], [8, 3, 2, 6, 1, 7, 10, 4, 9, 5]]
     assert hashlib.sha256(got.astype(np.int64).tobytes()).hexdigest() == \
         "59eadef3931b82ba4fab920617eae66f5fce1cbf4c90b66b12bc5030c34a6642"
+
+
+def test_race_champions_route_by_forecast_moment():
+    from predictor.evaluation import RACE_CHAMPIONS, model_registry
+    router = model_registry()["race_champion"]()
+    assert router.name == "race_champion" and router.champions == RACE_CHAMPIONS
+    before = types.SimpleNamespace(cutoff_label="pre_weekend")
+    after = types.SimpleNamespace(cutoff_label="last")
+    assert router.models[router.route(before)].name == "race:v2a"
+    assert router.models[router.route(after)].name == "race:v1a"

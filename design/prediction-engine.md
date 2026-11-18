@@ -19,9 +19,9 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Wet races read with a drying curve and tyre-class crossover (x), driver wet ability (y), wet track evolution in qualifying (e), wet segments typed by tyres (g), driver × circuit affinity (i) | Tested, not adopted; kept for the re-test after the holdout check |
 | Champion router: a model per forecast moment and condition | Implemented |
 | Fits drop each state after its last use | Implemented (identical results; 2.3–2.5× faster fits with long history) |
-| Race forecasts from the pace model: race pace, grid at the cutoff, retirements (stage 1a) | Implemented; race champion (race:v1a) |
+| Race forecasts from the pace model: race pace, grid at the cutoff, retirements (stage 1a) | Implemented; last-cutoff race champion (race:v1a) |
 | Grid slot weighted by circuit overtaking difficulty (stage 1b) | Tested, not adopted |
-| Lap-by-lap race simulation with a battle model learned from position data (stage 2a) | Implemented; in evaluation (race:v2a, race:v2as) |
+| Lap-by-lap race simulation with a battle model learned from position data (stage 2a) | Implemented; pre-weekend race champion (race:v2a) |
 | Native race lap (Rust, PyO3) | Implemented (identical results; 3.8–6.1× faster) |
 | Forecast roster from the FIA entry list known at the cutoff | Implemented |
 | Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance, Student-t updates | Implemented |
@@ -607,7 +607,8 @@ pass rate of a circuit repeats from year to year (correlation 0.48 across
 seasons; Monaco 0.04 passes per lap pair against Spa 0.92), but scaling the grid
 weight by it was within noise and its exponent was unstable (0–2).
 
-**Stage 2a: lap-by-lap simulation (implemented; in evaluation).** Each draw runs
+**Stage 2a: lap-by-lap simulation (implemented; pre-weekend race champion
+`race:v2a`).** Each draw runs
 the race lap by lap:
 
 - **Start.** Cars leave the grid spaced 0.25 s per slot, shuffled by a fitted
@@ -953,12 +954,22 @@ Races (2019–2024, 128 races):
 |---|---:|---:|---|
 | Championship order | 0.143 | — | baseline |
 | Qualifying order | — | 0.135 | baseline |
-| race:v1a: race pace, grid, retirements | 0.121 | 0.112 | **race champion**; better in every stage of the season and every season, 2024 included |
+| race:v1a: race pace, grid, retirements | 0.121 | 0.112 | **last-cutoff race champion**; better than the baselines in every stage of the season and every season, 2024 included |
 | race:v1b: grid weight by circuit overtaking | +0.00002 | −0.00004 | not adopted (noise) |
-| race:v2a, race:v2as: lap-by-lap simulation | re-run | re-run | first results invalid: a shortened race could set the next year's race length and lap time (fixed) |
+| race:v2a: lap-by-lap simulation | −0.00030, better beyond noise; 2024 −0.00029 | +0.00073, worse beyond noise | **pre-weekend race champion** |
+| race:v2as: v2a + a fitted shift of every pass's log-odds | +0.00006 (noise) | −0.00020 (noise); 2024 −0.00105 | not adopted |
+
+Differences are against race:v1a. The first v2a results were discarded: a
+shortened race could set the next year's race length and lap time (fixed before
+the run above).
 
 v1a's fitted grid weight is 0.05–0.075% of a lap per grid slot and its race-day
-noise 0.45–0.6%.
+noise 0.45–0.6%. At the last cutoff, v2as fits a pass shift of −1.5 to −3 in
+every season: the battle model passes too easily when the grid is known. It
+learns from each race's measured pace, which is taken from the same race (a car
+stuck behind looks slower because it was stuck), while the simulation feeds it
+forecast pace. The next step fits the battle model on the pace difference
+forecast at the cutoff, the input it gets in the simulation.
 
 ## Known constraints
 

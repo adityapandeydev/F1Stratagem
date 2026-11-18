@@ -239,8 +239,8 @@ def scheduled_laps(earlier, layout):
 
 
 START_NOISES = (0.0, 0.25, 0.5, 1.0, 2.0)   # s: start noise of a car's time
-SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)
-PASS_SHIFTS = (-1.0, -0.5, 0.0, 0.5)     # log-odds added to every pass (pass_shift option)  # % of a lap: race-day pace noise beyond the pace model's
+SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)     # % of a lap: race-day pace noise beyond the pace model's
+PASS_SHIFTS = (-3.0, -2.0, -1.5, -1.0, -0.5, 0.0)   # log-odds added to every pass (pass_shift option)
 
 
 class SimulatedRace(RaceModel):
