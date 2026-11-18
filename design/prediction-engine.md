@@ -673,6 +673,9 @@ The 2025–2026 seasons are opened once, to score the frozen champions. After th
    - driver wet ability (`wet_ability`, the "y" variants);
    - per-driver practice push pace (`practice_push`, v3wrqwp), which passed
      development and failed 2024 validation;
+   - driver × circuit affinity (`driver_affinity`, the "i" variants): slightly
+     better in every comparison but within noise, with few visits per circuit to
+     learn from;
    - any wet feature that was within noise before the holdout.
 
    These features are short of data (about 15 wet qualifying sessions in
