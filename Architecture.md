@@ -41,7 +41,7 @@ use-case notation, so those views are drawn as flowcharts.
 | Decision | Choice | Rationale |
 |---|---|---|
 | API language | Go | Concurrency, mature HTTP/Postgres ecosystem. Public entry point and orchestrator of all services. |
-| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Hot spots that profiling proves slow move to Rust extension modules (PyO3, built with maturin) inside the same service; the pace model's Kalman filter is the first (4.3–6.4× faster fits, same forecasts). Race Monte Carlo and the lap simulator are candidates. |
+| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Components move to Rust extension modules (PyO3, built with maturin) inside the same service when that makes them faster or better with the same forecasts; Python stays for optimisers, data handling and evaluation. In place: the pace model's Kalman filter (4.3–6.4× faster fits) and the race simulation's lap (3.8–6.1×), both with identical forecasts. The rest of the race simulator and the championship simulation are built in Rust. |
 | Repository | Monorepo, independently deployable services | Shared contracts and data code; separate processes and deploys. |
 | F1 timing, telemetry, documents | Parquet archive queried with DuckDB | Columnar, compressed, partition-scanned; hundreds of millions of telemetry rows. SQLite rejected. |
 | Application data | PostgreSQL (local in development) | Users, calendars, community content, small reference tables they join to. |
@@ -218,7 +218,7 @@ F1Stratagem/
 ├── api/                      Go API (cmd/, internal/, migrations/)
 ├── services/
 │   ├── analysis/             FastAPI analysis service; own cache in data/ (git-ignored)
-│   ├── predictor/            Prediction engine (qualifying pace model, baselines, evaluation)
+│   ├── predictor/            Prediction engine (pace model, race model, evaluation; Rust in native/, race_native/)
 │   └── news/                 News and upgrade service (planned)
 ├── packages/
 │   └── f1data/               Archive collection, verification and readers; CLI `f1data`
@@ -251,8 +251,8 @@ F1Stratagem/
   are served from the archive instead; Postgres keeps reference tables.
 - The frontend and API predate the archive and prediction design and are being
   rebuilt around it.
-- The prediction engine forecasts qualifying from the archive and is evaluated
-  walk-forward; it does not serve forecasts over HTTP yet.
+- The prediction engine forecasts qualifying and races from the archive and is
+  evaluated walk-forward; it does not serve forecasts over HTTP yet.
 
 ---
 
@@ -674,9 +674,11 @@ consistent by construction. Every published forecast is frozen and hashed in the
 forecast ledger before its session starts. Grid penalties the model is about to
 apply to an upcoming race are confirmed by an operator before publication.
 
-The engine is one Python service. Its hot loop, the pace model's Kalman filter,
-is a Rust extension module (`predictor_native`) that the service imports like
-any Python package; the Go API sees only the service.
+The engine is one Python service. Its hot loops are Rust extension modules that
+the service imports like any Python package: the pace model's Kalman filter
+(`predictor_native`) and the race simulation's lap (`predictor_race_native`).
+They run in the service's process, so the deployment diagrams show the service
+only; the Go API sees only the service.
 
 Design, components (pace model, car envelope and lap simulator, run
 classification, learned race events, weather scenarios, grid penalties, tyre
@@ -795,7 +797,7 @@ archive, predictions and community features.
 |---|---|
 | 1 | Core analysis: session browser, telemetry comparison (in place, to be rebuilt) |
 | 1b | Monorepo and shared archive, canonical driver, team, circuit and lineage IDs (done); analysis on archive reads; typed contracts |
-| 2 | (In progress: qualifying pace model) Prediction engine, built one feature at a time: pace model, circuit and car profiles, envelope and lap simulator, qualifying and race simulators; forecasts published per cutoff; forecast ledger; championship forecast after every race |
+| 2 | (In progress: race model; qualifying pace model in place) Prediction engine, built one feature at a time: pace model, circuit and car profiles, envelope and lap simulator, qualifying and race simulators; forecasts published per cutoff; forecast ledger; championship forecast after every race |
 | 3 | Deep analytics: driver, car and circuit profiles, sharing the prediction engine's profile pipeline (corner classes, track mixes, car profiles) |
 | 4 | Calendar builder, accounts, community sharing and news feed; championship simulation on user calendars |
 | 5 | Replay and live forecasting; news service |

@@ -3,7 +3,8 @@
 The F1Stratagem prediction engine. Design:
 [design/prediction-engine.md](../../design/prediction-engine.md).
 
-Implemented: the evaluation foundation and the qualifying pace model.
+Implemented: the evaluation foundation, the qualifying pace model and the first
+stages of the race model.
 
 | Module | Role |
 |---|---|
@@ -13,10 +14,13 @@ Implemented: the evaluation foundation and the qualifying pace model.
 | `forecast.py` | The forecast object every model produces, built from joint simulation draws and checked for consistency. |
 | `simulate.py` | Plackett-Luce ranking draws and likelihood. |
 | `baselines.py` | Reference models: uniform, championship order, persistence, practice pace, qualifying order. |
-| `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinity and winter reset; settings fit; forecasts. |
+| `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinities, wet ability and winter reset; settings fit; qualifying forecasts (Q1/Q2/Q3 simulation); state draws for the race model. |
 | `program.py` | The filter's bookkeeping: records a run (which states exist, when they are added, parked, reset, observed) as a flat program. |
 | `native/` | The filter's arithmetic in Rust (`predictor_native`, built with maturin): replays a program for given settings and returns the log-likelihood and final state. |
-| `laps.py` | Lap-level corrections: corrected race pace (tyres, tyre age, fuel) with its estimation covariance; practice push laps and long runs. |
+| `laps.py` | Lap-level corrections: corrected race pace (tyres, tyre age, fuel; drying races lap by lap) with its estimation covariance; practice push laps and long runs; wet track evolution and segment wetness in qualifying; green-lap pass counts. |
+| `race.py` | Race model: race pace and grid draws from the pace model, the grid known at the cutoff, retirements, settings fitted per season and cutoff by RPS; the lap-by-lap variant. |
+| `race_sim.py` | Battles from position data, the battle (pass) model, race length and lap reference, the lap-by-lap simulation driver. |
+| `race_native/` | One race lap for every draw in Rust (`predictor_race_native`): ordering, lap times, passes. Python supplies the random numbers, so results equal the NumPy version it replaced. |
 | `track.py` | Corners and track profiles from telemetry; the circuit layout table (`circuit_layouts.csv`). |
 | `fitcache.py` | Fitted settings saved per model and season under a key covering model, start, code and data; reused across cutoffs and runs. |
 | `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons (event and block bootstrap), results by stage of the season, quick screens. |
@@ -31,10 +35,14 @@ Models (`predictor evaluate --models ...`):
 | `pace3w` | v3w: + weekend effect and winter reset |
 | `pace3wr` | v3wr: v3w + corrected race pace |
 | `pace3wrq` | v3wrq: + Q1/Q2/Q3 simulation |
-| `pace3wrqw` | v3wrqw: + wet sessions as their own evidence (last-cutoff champion) |
-| `pace3wrqwt` | v3wrqwt: + robust Student-t noise (pre-weekend champion) |
-| `pace3wrqwp` | v3wrqw + per-driver push pace in practice (in evaluation) |
-| `champion` | Router: the pre-weekend champion before the weekend, the last-cutoff champion after any session |
+| `pace3wrqw` | v3wrqw: + wet sessions as their own evidence |
+| `pace3wrqwt` | v3wrqwt: + robust Student-t noise (qualifying champion at both cutoffs) |
+| `pace3wrqwc`, `pace3wrqwtc` | Wet forecast mode (wet targets forecast with wet noise); `pace3wrqwtc` serves the wet toggle |
+| `champion` | Router: the champion of each forecast moment (before the weekend, after a session) and condition (dry, wet) |
+| `pace3wrqwx`, `pace3wrqwxc`, `pace3wrqwxy`, `pace3wrqwy`, `pace3wrqwtxy`, `pace3wrqwec`, `pace3wrqwtec`, `pace3wrqwtgc`, `pace3wrqwti`, `pace3wrqwtic`, `pace3wrqwp` | Tested, not adopted, kept for the re-test after the holdout check: drying curve (x), wet ability (y), wet track evolution (e), wet segments by tyres (g), driver × circuit affinity (i), practice push pace (p) |
+| `race1a` | race:v1a: race pace, grid at the cutoff, retirements (race champion) |
+| `race1b` | race:v1b: grid weight by circuit overtaking (tested, not adopted) |
+| `race2a`, `race2as` | race:v2a: lap-by-lap simulation with the battle model; v2as adds a fitted pass shift (in evaluation) |
 | `pace3wrpn`, `pace3wru`, `pace3wrqf` | Tested, not adopted (push pace challenger, race estimation covariance, failed laps) |
 | `pace3wa` | v3wa: v3w + car × circuit affinity (tested, not adopted) |
 | `pace3`, `pace2q`, `pace3q`, `pace2w`, `pace2s` | Development variants kept for comparison |
@@ -49,11 +57,16 @@ after the session; backtests built on them are retrospective (`archive_proxy`).
 ## Evaluation
 
 ```powershell
-make predictor-install                        # the package, then the native module (needs a Rust toolchain)
+make predictor-install                        # the package, then both native modules (needs a Rust toolchain)
 f1data reference build                        # canonical IDs, once per archive update
 predictor evaluate --session Q --cutoff pre_weekend --reference pace:v3w --models pace3w pace3wa
 predictor evaluate --session Q --cutoff last --reference pace:v3w --models pace3w pace3wa
+predictor evaluate --session R --cutoff last --seasons 2019 2020 2021 2022 2023 2024 --reference race:v1a --models race1a race2a
 ```
+
+Rebuild a native module after changing it: `make predictor-native`. Rebuilding
+`native/` changes the fit cache key, so every pace model refits; `race_native/`
+does not affect cached fits.
 
 `--cutoff` takes `pre_weekend`, `after_<session>` (e.g. `after_FP2`) or `last`
 (the latest cutoff before the target session). `--reference` names the model the

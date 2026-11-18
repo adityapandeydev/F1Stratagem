@@ -101,7 +101,7 @@ shared by every service, and each dataset in it has exactly one writer.
 | Frontend | `frontend/` | React 19, TypeScript, Vite, Bun, Tailwind CSS, ECharts, Three.js |
 | API | `api/` | Go, PostgreSQL (pgx) |
 | Analysis service | `services/analysis/` | Python, FastAPI, FastF1, pandas |
-| Prediction engine | `services/predictor/` | Python, NumPy, SciPy; Rust (PyO3) for the pace model's Kalman filter |
+| Prediction engine | `services/predictor/` | Python, NumPy, SciPy; Rust (PyO3) for the pace model's Kalman filter and the race simulation's lap |
 | Data archive | `packages/f1data/` | Python, Parquet, DuckDB |
 
 Under consideration, adopted only where they prove their value: Redis for
@@ -144,9 +144,10 @@ psql -d f1stratagem -f api/migrations/001_core_schema.up.sql
 uv pip install -e "packages/f1data[dev]"
 f1data verify                               # audit an existing archive in data/
 
-# prediction engine: the Python package, then its Rust module
+# prediction engine: the Python package, then its Rust modules
 uv pip install -e "services/predictor[dev]"
 cd services/predictor/native; maturin develop --release
+cd services/predictor/race_native; maturin develop --release
 
 # services, each in its own terminal
 cd api; go run ./cmd/server                                   # :8080

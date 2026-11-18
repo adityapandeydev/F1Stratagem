@@ -13,9 +13,16 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Pace model for qualifying: car, driver, team × session offsets, weekend effect, winter reset | Implemented (v3w) |
 | Corrected race pace as evidence (tyres, tyre age, fuel lap by lap) | Implemented (v3wr) |
 | Qualifying simulated through Q1, Q2 and Q3 (eliminations, a lap per segment) | Implemented (v3wrq) |
-| Wet and mixed sessions as their own evidence types (own noise) | Implemented; last-cutoff champion (v3wrqw) |
-| Robust Student-t observation noise | Implemented; pre-weekend champion (v3wrqwt), being re-checked after a forecast fix |
-| Champion router: a model per forecast moment | Implemented |
+| Wet and mixed sessions as their own evidence types (own noise) | Implemented (v3wrqw) |
+| Robust Student-t observation noise | Implemented; qualifying champion at both cutoffs (v3wrqwt) |
+| Wet forecast mode: wet qualifying forecast with wet-session noise | Implemented; serves the wet toggle (v3wrqwtc) |
+| Wet races read with a drying curve and tyre-class crossover (x), driver wet ability (y), wet track evolution in qualifying (e), wet segments typed by tyres (g), driver × circuit affinity (i) | Tested, not adopted; kept for the re-test after the holdout check |
+| Champion router: a model per forecast moment and condition | Implemented |
+| Fits drop each state after its last use | Implemented (identical results; 2.3–2.5× faster fits with long history) |
+| Race forecasts from the pace model: race pace, grid at the cutoff, retirements (stage 1a) | Implemented; race champion (race:v1a) |
+| Grid slot weighted by circuit overtaking difficulty (stage 1b) | Tested, not adopted |
+| Lap-by-lap race simulation with a battle model learned from position data (stage 2a) | Implemented; in evaluation (race:v2a, race:v2as) |
+| Native race lap (Rust, PyO3) | Implemented (identical results; 3.8–6.1× faster) |
 | Forecast roster from the FIA entry list known at the cutoff | Implemented |
 | Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance, Student-t updates | Implemented |
 | Fit cache (fits reused across cutoffs and runs) and quick screens | Implemented |
@@ -24,12 +31,13 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Race pace estimation uncertainty in the filter (v3wru), failed laps in qualifying (v3wrqf) | Tested, not adopted |
 | Qualifying history 1996–2017, driver season form, car × circuit affinity, driver corner skills | Tested, not adopted (see Training and evaluation) |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
-| Pace model for races, circuit/car profiles, hazards | Planned |
+| Safety cars, virtual safety cars, red flags and shortened races in the race simulation (stage 2b) | Next |
+| Tyres and strategy, grid penalties and weather in the race simulation (stages 3–4) | Planned |
+| Circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
 | Practice run classification, clean-air tagging | Planned |
 | Learned race events, weather scenarios, grid-penalty forecasts, tyre strategy | Planned |
-| Qualifying and race simulators | Planned |
-| Championship simulation (real and user-built calendars) | Planned |
+| Championship simulation (real and user-built calendars; stage 5 of the race model) | Planned |
 | Forecast ledger | Planned |
 | Live replay and live inference | Planned |
 
@@ -231,6 +239,13 @@ car(lineage, t) + driver(t) + offset(lineage, session type)
   visits weigh more and an earlier regulation era still counts. Only the current
   circuit's affinities are active in the joint state; others are parked with mean
   and variance and resume with the variance accrued while parked.
+- **Driver × circuit affinity (tested, not adopted).** The same structure per
+  driver and circuit, without the regulation multiplier (a driver's liking for a
+  track does not reset with the cars). Measured before modelling: a driver's
+  deviation from their usual teammate gap repeats at the next visit to the same
+  circuit (correlation 0.09, 90% interval 0.04–0.15; about 0.11% of a lap). The
+  fitted spread is small (0.05–0.06) and forecasts were slightly better at both
+  cutoffs but within noise; it waits for the re-test with more visits.
 - **Winter reset.** Each season start adds variance to cars and drivers, multiplied
   for cars in seasons that begin under new technical regulations (2014, 2017, 2022,
   2026). Early-season sessions therefore move estimates a lot and mid-season ones
@@ -252,6 +267,11 @@ car(lineage, t) + driver(t) + offset(lineage, session type)
   evaluations and the log-likelihood reached from each start.
 - **Forecast.** States are drawn jointly from the posterior (10,000 draws) with
   qualifying noise added, and each draw is ranked.
+- **Retired states.** A fit drops every state after its last use (a driver or
+  team that has left), so long histories do not carry dead states through every
+  update. Dropping a state at the right moment leaves the likelihood exactly
+  unchanged (tested); fits with qualifying history from 1996 run 2.3–2.5× faster.
+  Forecasts keep every state, since a driver can return.
 
 ```mermaid
 flowchart LR
@@ -299,7 +319,40 @@ Lessons from development:
 
 Not yet modelled: compound and tyre age, fuel, traffic, and races.
 
-**Python and Rust.** The filter is split in two. Which states exist, when they
+**Python and Rust.** Rust is chosen per component on function, not to grow its
+share of the code. A component moves to Rust when that makes the model faster or
+better and its forecasts stay the same: identical outputs where the same random
+numbers can be fed in, otherwise a walk-forward gate no worse at either cutoff.
+Equal performance is still enough, because a compiled language catches more
+mistakes before a run. Python stays where it is clearly the better tool:
+optimisers (SciPy), data handling (pandas), evaluation and tests. When Rust
+replaces Python, the Python version is deleted and reference values it produced
+stay in the tests. Two modules exist:
+
+| Module | Role | Why Rust |
+|---|---|---|
+| `predictor_native` (`services/predictor/native`) | Kalman filter replay for the pace model | Fits replay the filter thousands of times: 4.3–6.4× faster fits |
+| `predictor_race_native` (`services/predictor/race_native`) | One lap of the race simulation for every draw | The lap loop was 90% of a race-model evaluation: 3.8–6.1× faster |
+
+They are separate because the fit cache fingerprints `predictor_native`:
+rebuilding it invalidates every cached pace fit (hours of refitting), so race
+code changes must not touch it.
+
+Planned moves:
+
+- **Race model:** later stages (safety cars, tyres and strategy, championship
+  simulation) are written in Rust from the start, in `predictor_race_native`.
+  The random numbers move to Rust with the next race gate (stage 2b): it is faster,
+  but it changes the random streams, so the gate is the check rather than
+  identical outputs.
+- **Qualifying model:** the Q1/Q2/Q3 simulation, the sampling of forecast draws
+  and the recording of the filter program are candidates. They are moved together
+  in one rebuild of `predictor_native` when the race work is carried back into
+  qualifying, so the pace fits are refitted once and checked for identical
+  results. The settings optimiser stays in SciPy unless a Rust optimiser reaches
+  optima as good.
+
+The filter is split in two. Which states exist, when they
 are added, parked, reset or removed, and which states each observation touches
 depend on the sessions only, never on the settings. Python records that once
 as a flat program (`program.py`); a Rust extension module, `predictor_native`
@@ -336,17 +389,38 @@ flowchart LR
         pace["pace.py<br/>evidence, model variants"]
         rec["program.py<br/>Recorder: state bookkeeping"]
         opt["scipy optimiser<br/>settings fit"]
-        fc["Forecast: joint draws,<br/>ranking"]
+        fc["Forecast: joint draws,<br/>Q1/Q2/Q3 simulation"]
+        race["race.py<br/>race settings fit, context"]
+        sim["race_sim.py<br/>battle model, random numbers"]
     end
     subgraph rs["predictor_native (Rust, PyO3)"]
         kf["Kalman filter replay"]
+    end
+    subgraph rrs["predictor_race_native (Rust, PyO3)"]
+        lap["Race lap for every draw:<br/>order, lap times, passes"]
     end
     arch --> pace --> rec
     rec -->|"program (numpy arrays)"| kf
     opt -->|"candidate settings"| kf
     kf -->|"log-likelihood"| opt
     kf -->|"mean, covariance"| fc
+    fc -->|"race pace and grid draws"| race
+    race --> sim
+    sim -->|"times, pace, noise, luck"| lap
+    lap -->|"updated race times"| sim
 ```
+
+The native race lap, against the NumPy version it replaced (20 cars, 57 laps;
+identical finishing orders):
+
+| Simulated races | NumPy | Rust | Speed-up |
+|---|---:|---:|---:|
+| 1,000 | 0.095 s | 0.025 s | 3.8× |
+| 10,000 | 1.115 s | 0.182 s | 6.1× |
+
+Draws run in parallel across cores; each draw's arithmetic is sequential, so
+results do not depend on the number of threads. What remains is mostly NumPy
+drawing the random numbers.
 
 - Car and driver strength are latent states that evolve over time, not fixed
   per-season constants. Each new session (testing, FP, qualifying, race) updates the
@@ -509,7 +583,82 @@ simulations give the position distribution and intervals.
 
 ### 5. Race simulator
 
-Lap-level Monte Carlo over the whole field:
+The race model is built in stages, each gated walk-forward against the stage
+before (race cutoffs: before the weekend, and the last cutoff before the race).
+A race forecast is 10,000 simulated races; each uses its own luck (starts, lap
+noise, passes, retirements) from a seed fixed per race, so forecasts are
+reproducible and every model sees the same luck for the same race.
+
+**Stage 1a: race pace, grid, retirements (implemented; race champion
+`race:v1a`).** Each draw takes the pace model's race-pace state for every driver,
+plus race noise (Student-t when the model is robust). The grid is the qualifying
+classification once it is known at the cutoff (in 2021–2022 the sprint set the
+grid once it had run), with drivers missing from it at the back; before
+qualifying the grid is simulated jointly from the same draws through Q1, Q2 and
+Q3. A driver's race score is race pace + kappa × (grid slot − 1) + sigma × noise,
+and the order of scores is the finishing order; retirements come from the
+retirement model (historical rate and mechanical share). Kappa and sigma are
+fitted per season and cutoff by ranked probability score on earlier seasons'
+races forecast from the same cutoff. Race pace forecasts are calibrated as
+race-time predictions (slope 0.95, correlation 0.9 against measured race pace).
+
+**Stage 1b: overtaking difficulty by circuit (not adopted).** The green-lap
+pass rate of a circuit repeats from year to year (correlation 0.48 across
+seasons; Monaco 0.04 passes per lap pair against Spa 0.92), but scaling the grid
+weight by it was within noise and its exponent was unstable (0–2).
+
+**Stage 2a: lap-by-lap simulation (implemented; in evaluation).** Each draw runs
+the race lap by lap:
+
+- **Start.** Cars leave the grid spaced 0.25 s per slot, shuffled by a fitted
+  start noise; pace then acts through racing, so a fast car starting behind still
+  has to pass.
+- **Racing laps.** Every lap each car laps at its race pace plus lap noise (0.55%
+  of a lap). Front to back, a car within 2.5 s of the car ahead passes with the
+  battle model's probability, otherwise it is held at least 0.35 s behind; at
+  most one place per car per lap.
+- **Battle model.** Learned from real battles: every pair of consecutive cars
+  within 2.5 s at the end of a green lap on which neither pitted, and whether the
+  car behind was ahead after the next green lap (41,340 pairs and 2,362 passes in
+  dry races 2018–2023). It is a logistic regression on the gap, log gap, race-pace
+  difference and its product with the gap, plus the circuit's pass propensity
+  from other seasons (shrunk towards the typical circuit by 400 pairs; it raises
+  the held-out log-likelihood by 113). Fitted per season on earlier races.
+- **Race length and lap.** The scheduled length is the most laps completed in an
+  earlier race on the same layout (a shortened race only ever has fewer); the lap
+  time that converts pace into seconds is the median green racing lap of the
+  latest earlier dry race with at least 10 such laps, same layout first.
+- **Fitted per season and cutoff:** start noise and race-day noise (and, in
+  `race:v2as`, a shift of every pass's log-odds) by ranked probability score.
+
+**Next stages:**
+
+- **2b: neutralisations and shortened races.** Safety car and virtual safety car
+  as a per-lap hazard with the lap-1 spike (measured 2018–2023: 0.75 safety cars
+  per race, 24% of them on laps 1–2, per-lap hazard 0.0126), checked for circuit
+  persistence first; gaps close up and nobody passes while it is out. Red flags
+  and shortened races (stopped, time-limited, abandoned) as their own scenarios;
+  a shortened race never sets the scheduled distance.
+- **Lap time from the weekend's own sessions** once practice or qualifying has
+  run, so a first race on a new layout (2020 Sakhir, outer loop) does not inherit
+  another layout's lap; the earlier race stays the fallback before the weekend.
+- **3: tyres and strategy:** sets left, degradation-driven stop counts, pit loss,
+  undercut, and in wet races the crossover between tyre classes.
+- **4: grid penalties and weather scenarios.**
+- **5: championship simulation after every race.**
+- **2026 rules (2026–2029).** Under the 2026 power units, battery deployment
+  produced pass-and-repass battles early in the 2026 season: a car that passes
+  spends its energy and is repassed on the next lap, for the first laps of a stint
+  and again when cars rejoin close after stops, until the faster car settles
+  ahead; launch procedures also differed by team. The battle model above counts
+  a pass after one lap, so it would read such swaps as easy, lasting passes. The
+  plan: refit the battle model within the season, weighting races of the current
+  rules; model a repass chance that depends on the laps since the start or the
+  last stop; and give each team a start effect learned within the season. The
+  next engine rules are agreed in principle for 2030 (to be confirmed by the
+  World Motor Sport Council in December 2026), so these rules run four seasons.
+
+The full race simulator, once complete:
 
 - Lap time from pace state, tyre degradation, fuel, dirty-air penalty.
 - Overtaking probability from pace delta and circuit difficulty.
@@ -603,7 +752,9 @@ stateDiagram-v2
   order), practice pace, qualifying order.
 - Cutoffs evaluated for qualifying: `pre_weekend` (before the first session) and
   `last` (latest data before qualifying: after FP3, or after FP1 on sprint
-  weekends).
+  weekends). For races: `pre_weekend` and `last` (after qualifying, or after the
+  sprint where it sets the grid); race baselines are championship order before
+  the weekend and qualifying order at the last cutoff.
 - Metrics: log loss, Brier, ranked probability score, calibration, position MAE,
   interval coverage (an 80% interval should contain the result ~80% of the time),
   expected-points error, retirement calibration. Reported by season, circuit,
@@ -636,8 +787,8 @@ lower is better):
 | v3wa: v3w + car × circuit affinity (not adopted) | 0.104 | 0.099 |
 | v3wr: v3w + corrected race pace | 0.1035 | 0.0984 |
 | v3wrq: + Q1/Q2/Q3 simulation | 0.1027 | 0.0974 |
-| v3wrqw: + wet sessions as their own evidence (last-cutoff champion) | 0.1020 | 0.0960 |
-| v3wrqwt: + robust Student-t noise (pre-weekend champion) | 0.1012 | 0.0951 |
+| v3wrqw: + wet sessions as their own evidence | 0.1020 | 0.0960 |
+| v3wrqwt: + robust Student-t noise (champion at both cutoffs) | 0.1012 | 0.0951 |
 
 v3w's pole log loss is 1.61 at the last cutoff against 2.08 for championship
 order. Its 80% intervals contain the result 89–91% of the time against an
@@ -671,6 +822,8 @@ The 2025–2026 seasons are opened once, to score the frozen champions. After th
    - wet and mixed races read with a drying curve and the tyre-class crossover
      (`wet_races`, the "x" variants);
    - driver wet ability (`wet_ability`, the "y" variants);
+   - wet qualifying track evolution (`wet_evolution`, "e") and wet segments
+     typed by their tyres (`wet_segments`, "g");
    - per-driver practice push pace (`practice_push`, v3wrqwp), which passed
      development and failed 2024 validation;
    - driver × circuit affinity (`driver_affinity`, the "i" variants): slightly
@@ -680,7 +833,14 @@ The 2025–2026 seasons are opened once, to score the frozen champions. After th
 
    These features are short of data (about 15 wet qualifying sessions in
    2019–2024), which is why they wait for the extra seasons.
-3. **Shadow mode from the 2027 season.** No unseen history remains once the
+3. **How 2026 is read in the check.** 2026 is the first season of new rules,
+   and its first races raced differently (pass-and-repass battles, see the race
+   simulator). The check reports 2026 in two parts, roughly its first six races
+   and the rest, and judges the race model mainly on how it adapts within the
+   season. Early-2026 races that look like outliers do not on their own reverse
+   decisions made on 2019–2024; the answer to them is learning within the season,
+   which serves the rules through 2029.
+4. **Shadow mode from the 2027 season.** No unseen history remains once the
    holdout is used, so re-testing on the same seasons again would select winners
    by chance. Candidates instead forecast every live weekend alongside the
    champions without being shown, and are promoted once they beat a champion on
@@ -714,7 +874,7 @@ target's entrants stand in for it, with substitutions counted once visible).
 | Qualifying simulated through Q1, Q2 and Q3 (v3wrq) | −0.00084 and −0.00087, better beyond noise (also under the entry-list roster); 2024: −0.00204 and −0.00190 | **adopted at both cutoffs** |
 | Failed laps, driver-specific (v3wrqf) | worse beyond noise before the weekend (+0.00043): failures are mostly not driver traits | not adopted |
 | Wet and mixed sessions as their own types (v3wrqw) | −0.00053 and −0.00136, better beyond noise; 2024: −0.00144 and −0.00435 | **adopted at both cutoffs**; last-cutoff champion |
-| Robust Student-t noise (v3wrqwt) | −0.00074 before the weekend, better beyond noise; last cutoff within noise; 2024 before the weekend −0.00074 | **pre-weekend champion** (re-check pending after aligning its forecast draws with the fitted distribution) |
+| Robust Student-t noise (v3wrqwt) | −0.00074 before the weekend, better beyond noise; last cutoff within noise; 2024 before the weekend −0.00074 | **pre-weekend champion** (confirmed after aligning its forecast draws with the fitted distribution: −0.00074, 2024 −0.00073) |
 
 Lessons:
 
@@ -732,8 +892,8 @@ Lessons:
   predicted), while dry sessions are slightly underconfident (91% against 87%).
   A global spread change would therefore be wrong. Treating wet sessions as weaker
   evidence (v3wrqw) lowered the fitted dry qualifying noise from about 0.45 to
-  0.39 and improved every season; forecasts of wet qualifying are still made as if
-  dry, and a wet forecast mode and driver wet ability are next.
+  0.39 and improved every season. Wet qualifying is now forecast in its own mode
+  (see the results below).
 - Simulating qualifying segment by segment helped more than any evidence change:
   lap noise acts in each segment, which a single sorted draw understated.
 - Heavy-tailed noise fits lap data far better (log-likelihood +780 on data before
@@ -760,6 +920,46 @@ pace, compound offsets and wear per compound, with fuel burn a fixed constant
 than 20 clean laps and unseparable fits are left out. Corrected teammate gaps
 correlate 0.48 with qualifying teammate gaps, against 0.39 for raw laps.
 
+### Results 2026-11-17 to 2026-11-18
+
+Qualifying (development 2019–2023 unless stated; RPS difference, negative is
+better; "noise" means the 90% block interval spans zero):
+
+| Change | Result | Decision |
+|---|---|---|
+| Wet forecast mode: wet targets forecast with wet-session noise (v3wrqwc) | overall within noise (dry forecasts identical); on the 15 wet events 80% intervals cover 92% (before the weekend) and 88% (last cutoff) against 79% and 75% before, for about 86% predicted | **serves the wet toggle**; robust version (v3wrqwtc) at both cutoffs |
+| Driver wet ability (v3wrqwy) | within noise; slightly worse on 2024 dry events | not adopted; re-test |
+| Wet races read with a drying curve and the crossover between tyre classes (v3wrqwx) | all 11 wet races 2018–2023 now fitted; −0.00001 and −0.00006, within noise | not adopted; re-test |
+| Wet track evolution within qualifying (v3wrqwec) | +0.00018, worse beyond noise; wet events +0.002 | not adopted; re-test |
+| Robust noise at the last cutoff (v3wrqwt vs v3wrqw) | −0.00125, better beyond noise, better in rounds 15+; 2024 −0.00226 (noise), calibration gap halved (0.032 against 0.060) | **promoted at the last cutoff**: v3wrqwt is champion at both |
+| Wet segments typed by their tyres (v3wrqwtgc) | +0.00007 and +0.00010 (noise); worse in rounds 15+ before the weekend; 2024 +0.00034 | not adopted; re-test |
+| Missed FP1, first races in a new car (measured, no model) | missed FP1 (98 cases): +0.016% ± 0.038 of a lap against the teammate; first race in a new car +0.10% ± 0.13, later races none | no model change |
+| Driver × circuit affinity (v3wrqwti) | −0.00014 and −0.00013 (noise); 2024 −0.00044 and −0.00069 (noise) | not adopted; re-test |
+
+Lessons:
+
+- Wet data are few (15 wet qualifying sessions in 2019–2024), so wet features are
+  judged on wet events and calibration as well as overall; most wait for the
+  re-test with 2025–2026.
+- The timing feed's rainfall flag is unreliable (a dry Monaco race was flagged
+  wet on 83% of its laps); tyres are the better evidence. 9 of the 15 wet-typed
+  qualifying sessions have a segment run on slicks.
+- Missing FP1 or changing teams does not cost measurable qualifying pace, so no
+  penalty was added.
+
+Races (2019–2024, 128 races):
+
+| Model | Before the weekend | Last cutoff | Decision |
+|---|---:|---:|---|
+| Championship order | 0.143 | — | baseline |
+| Qualifying order | — | 0.135 | baseline |
+| race:v1a: race pace, grid, retirements | 0.121 | 0.112 | **race champion**; better in every stage of the season and every season, 2024 included |
+| race:v1b: grid weight by circuit overtaking | +0.00002 | −0.00004 | not adopted (noise) |
+| race:v2a, race:v2as: lap-by-lap simulation | re-run | re-run | first results invalid: a shortened race could set the next year's race length and lap time (fixed) |
+
+v1a's fitted grid weight is 0.05–0.075% of a lap per grid slot and its race-day
+noise 0.45–0.6%.
+
 ## Known constraints
 
 - Historical archive data has no verified publication timestamps; backtests on it
@@ -775,5 +975,8 @@ correlate 0.48 with qualifying teammate gaps, against 0.39 for raw laps.
 - A thorough settings fit takes minutes per season for v3w and up to about
   40 minutes for v3wa (before 2023, native filter); fits run once per season.
 - 2026 grid has 22 cars; entrant and points rules are versioned by season.
+- The race simulation takes its typical lap from an earlier race at the circuit,
+  so the first race on a new layout borrows another layout's lap (2020 Sakhir,
+  outer loop) until the weekend's own sessions are used.
 - Open: whether "open" means published methodology plus reproducible frozen
   forecasts, or also open-sourcing the model code.
