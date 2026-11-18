@@ -260,10 +260,19 @@ class SimulatedRace(RaceModel):
     taken from the same race and so is slowed by being held up.
 
     `neutralisations`: safety cars, virtual safety cars and red flags
-    (`race_sim.NeutralModel`, fitted per season on the races before it)."""
+    (`race_sim.NeutralModel`, fitted per season on the races before it).
 
-    def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False):
+    `weekend_lap`: once this weekend's qualifying has run (dry), the typical race
+    lap is its median best lap times the race-to-qualifying ratio of earlier races
+    (median 1.075, spread 1.5% over 2018-2024). It predicts the race's green lap to
+    1.0% (median; 2.0% at the 90th percentile), against 1.5% (10.8%) from the
+    latest earlier race at the circuit, which stays the source before qualifying."""
+
+    def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
+                 weekend_lap=False):
         super().__init__(pace, name)
+        self.weekend_lap = weekend_lap
+        self._qualifying, self._ratios = {}, {}
         self.pass_shift = pass_shift
         self.forecast_battles = forecast_battles
         self.neutralisations = neutralisations
@@ -312,6 +321,28 @@ class SimulatedRace(RaceModel):
             periods = race_sim.neutral_periods(table)
             self._periods[race.session_id] = None if periods is None else (int(table.LapNumber.max()), periods)
         return self._periods[race.session_id]
+
+    def _weekend_qualifying(self, view, event_key):
+        """This event's dry qualifying median best lap if classified at the cutoff."""
+        q = view.sessions[(view.sessions.event_key == event_key) & (view.sessions.session_type == "Q")]
+        if q.empty:
+            return None
+        session = q.session_id.iloc[0]
+        if session not in self._qualifying:
+            self._qualifying[session] = race_sim.qualifying_lap(view.laps(session))
+        return self._qualifying[session]
+
+    def _fit_ratio(self, season):
+        """Median green race lap / median best qualifying lap over the races before
+        `season`; RACE_TO_QUALIFYING without any."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        ratios = []
+        for race in view.sessions[view.sessions.session_type == "R"].itertuples():
+            _, green = self._shape(view, race)
+            qualifying = self._weekend_qualifying(view, race.event_key)
+            if green is not None and qualifying:
+                ratios.append(green / qualifying)
+        return float(np.median(ratios)) if ratios else race_sim.RACE_TO_QUALIFYING
 
     def _fit_neutral(self, season):
         """The neutralisation model for `season`, from the races before it."""
@@ -369,6 +400,8 @@ class SimulatedRace(RaceModel):
         if self.neutralisations and season not in self._neutral_models:
             self._neutral_models[season] = self._fit_neutral(season)
         self._neutral = self._neutral_models.get(season)
+        if self.weekend_lap and season not in self._ratios:
+            self._ratios[season] = self._fit_ratio(season)
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         frame = self._battles_in(view)
         term = np.zeros(len(frame))
@@ -406,6 +439,11 @@ class SimulatedRace(RaceModel):
             green_same = [seconds for name, _, seconds in shapes if seconds is not None and layout is not None
                           and name == layout]
             lap = (green_same or green or [lap])[-1]
+        if self.weekend_lap:
+            qualifying = self._weekend_qualifying(view, example.event_key)
+            if qualifying:
+                ratio = self._ratios.get(int(example.season), race_sim.RACE_TO_QUALIFYING)
+                lap = qualifying * ratio
         context = {"circuit_term": term, "laps": laps, "lap_seconds": lap}
         if self.neutralisations and self._neutral is not None:
             context["neutral"] = self._neutral.race(circuit, laps)

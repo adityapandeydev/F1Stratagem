@@ -131,7 +131,9 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # 2024 -0.00029. At the last cutoff it is worse beyond noise (+0.00073), and a fitted
 # pass shift (race:v2as) only reaches -0.00020 (noise): race:v1a stays.
 # Stage 2b (race:v2b, neutralisations) is level with race:v2af at both cutoffs and
-# not better than either champion; it is the simulation base for the next stages.
+# not better than either champion. race:v2bw (+ the lap from this weekend's
+# qualifying) is level with v2b at the last cutoff (-0.00004, noise) and the
+# simulation base for the next stages.
 RACE_CHAMPIONS = {"pre_weekend": "race2a", "after_session": "race1a"}
 
 
@@ -245,6 +247,8 @@ def model_registry():
                                             pass_shift=True),
             "race2b": lambda: _race_model("pace3wrqwt", "race:v2b", simulated=True, forecast_battles=True,
                                           neutralisations=True),
+            "race2bw": lambda: _race_model("pace3wrqwt", "race:v2bw", simulated=True, forecast_battles=True,
+                                           neutralisations=True, weekend_lap=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 

@@ -43,6 +43,7 @@ SC_GAP = 0.52           # s: median gap between consecutive cars when a safety c
 SLOW_LAP = 1.10         # a lap whose field median is this much slower than the race's typical lap is neutralised
 SLOW_FIRST_LAP = 1.25   # the same for lap 1, which includes the standing start
 RECENT_SEASONS = 3      # seasons the base neutralisation rate is taken from
+RACE_TO_QUALIFYING = 1.075   # typical green race lap / median best qualifying lap, without earlier races
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
 
@@ -58,6 +59,15 @@ def green_lap_seconds(laps):
     if laps.LapNumber[keep].nunique() < MIN_GREEN_LAPS:
         return None
     return float(laps.LapTime[keep].dt.total_seconds().median())
+
+
+def qualifying_lap(laps):
+    """Median of the drivers' best laps of a dry qualifying session (s); None for a
+    wet or mixed session or one without lap times."""
+    if laps.empty or "LapTime" not in laps or wet_session(laps):
+        return None
+    best = laps.dropna(subset=["LapTime"]).groupby("DriverNumber").LapTime.min().dt.total_seconds()
+    return float(best.median()) if len(best) else None
 
 
 def race_shape(laps):

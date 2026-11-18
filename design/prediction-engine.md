@@ -628,9 +628,15 @@ the race lap by lap:
   from other seasons (shrunk towards the typical circuit by 400 pairs; it raises
   the held-out log-likelihood by 113). Fitted per season on earlier races.
 - **Race length and lap.** The scheduled length is the most laps completed in an
-  earlier race on the same layout (a shortened race only ever has fewer); the lap
-  time that converts pace into seconds is the median green racing lap of the
-  latest earlier dry race with at least 10 such laps, same layout first.
+  earlier race on the same layout (a shortened race only ever has fewer). The lap
+  time that converts pace into seconds is, once this weekend's qualifying has run
+  dry (v2bw), its median best lap times the race-to-qualifying ratio of earlier
+  races (1.075, spread 1.5%, steady from 2018 to 2024); before that, the median
+  green racing lap of the latest earlier dry race with at least 10 such laps, same
+  layout first. Against the race's actual green lap the weekend lap is off by 1.0%
+  (median; 2.0% at the 90th percentile, 3.9% at most), the earlier race by 1.5%
+  (10.8%; 63% for 2020 Sakhir, the first race on the outer loop, and up to 29% at
+  first visits with no earlier race).
 - **Fitted per season and cutoff:** start noise and race-day noise (and, in
   `race:v2as`, a shift of every pass's log-odds) by ranked probability score.
 - **Battle model input (v2af).** Each battle's pace difference can be taken from
@@ -668,9 +674,6 @@ the race lap by lap:
 - **Result.** Level with the same simulation without neutralisations at both
   cutoffs: they matter for strategy (a cheap stop under a safety car), which
   stage 3 adds, more than for the finishing order alone.
-- **Lap time from the weekend's own sessions** once practice or qualifying has
-  run, so a first race on a new layout (2020 Sakhir, outer loop) does not inherit
-  another layout's lap; the earlier race stays the fallback before the weekend.
 - **3: tyres and strategy:** sets left, degradation-driven stop counts, pit loss,
   undercut, and in wet races the crossover between tyre classes.
 - **4: grid penalties and weather scenarios.**
@@ -988,7 +991,8 @@ Races (2019–2024, 128 races):
 | race:v2as: v2a + a fitted shift of every pass's log-odds | +0.00006 (noise) | −0.00020 (noise); 2024 −0.00105 | not adopted |
 | race:v2af: v2a with the battle model fitted on forecast pace differences | −0.00012 (noise); +0.00018 against v2a (noise) | −0.00026 (noise); −0.00099 against v2a, better beyond noise; winner log loss 1.36 → 1.32 | not a champion; **base of the next stage** |
 | race:v2afs: v2af + pass shift | −0.00001 (noise) | −0.00040 (noise) | not adopted |
-| race:v2b: v2af + safety cars, virtual safety cars and red flags | −0.00007 (noise); +0.00016 against v2af (noise) | −0.00029 (noise); −0.00099 against v2a, better beyond noise; −0.00003 against v2af (noise) | not a champion; **simulation base** (stages 3–4 need neutralisations) |
+| race:v2b: v2af + safety cars, virtual safety cars and red flags | −0.00007 (noise); +0.00016 against v2af (noise) | −0.00029 (noise); −0.00099 against v2a, better beyond noise; −0.00003 against v2af (noise) | not a champion (stages 3–4 need neutralisations) |
+| race:v2bw: v2b + the typical lap from this weekend's qualifying | identical to v2b (no session yet) | −0.00032 (noise); −0.00004 against v2b (noise) | not a champion; **simulation base** (more accurate lap at no cost) |
 
 Differences are against race:v1a. The first v2a results were discarded: a
 shortened race could set the next year's race length and lap time (fixed before
@@ -1020,8 +1024,8 @@ builds on v2af.
 - A thorough settings fit takes minutes per season for v3w and up to about
   40 minutes for v3wa (before 2023, native filter); fits run once per season.
 - 2026 grid has 22 cars; entrant and points rules are versioned by season.
-- The race simulation takes its typical lap from an earlier race at the circuit,
-  so the first race on a new layout borrows another layout's lap (2020 Sakhir,
-  outer loop) until the weekend's own sessions are used.
+- Before the weekend the race simulation takes its typical lap from an earlier
+  race at the circuit, so a first race on a new layout borrows another layout's
+  lap until its qualifying has run.
 - Open: whether "open" means published methodology plus reproducible frozen
   forecasts, or also open-sourcing the model code.

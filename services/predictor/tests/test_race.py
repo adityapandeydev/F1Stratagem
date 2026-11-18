@@ -292,3 +292,12 @@ def test_hazards_count_only_laps_on_which_a_neutralisation_could_start():
     assert np.isclose(later.later, 2 / 50) and later.early == 0.0     # laps 3-60 less 2 x 4 continuation laps
     early = NeutralModel().fit(empty, [(2020, 60, [(1, "sc", 4)])])
     assert early.early == 1.0                                          # lap 2 continues lap 1's: only lap 1 counts
+
+
+def test_the_qualifying_lap_is_the_median_of_the_drivers_best_laps_when_dry():
+    from predictor.race_sim import qualifying_lap
+    laps = pd.DataFrame({"DriverNumber": ["1", "1", "2", "3"], "Compound": ["SOFT"] * 4,
+                         "LapTime": pd.to_timedelta([80.0, 79.0, 80.0, 81.0], unit="s")})
+    assert qualifying_lap(laps) == 80.0
+    wet = laps.assign(Compound="WET")
+    assert qualifying_lap(wet) is None
