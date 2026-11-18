@@ -107,7 +107,7 @@ class _Passing:
     def __init__(self, chance):
         self.chance = chance
 
-    def probability(self, gap, delta, circuit_term=0.0):
+    def probability(self, gap, delta, circuit_term=0.0, shift=0.0):
         return np.where(delta < 0, self.chance, 0.0)
 
 
@@ -144,3 +144,30 @@ def test_the_battle_model_learns_that_faster_closer_cars_pass():
     close_fast = model.probability(np.array([0.3]), np.array([-1.0]))[0]
     far_slow = model.probability(np.array([2.0]), np.array([0.5]))[0]
     assert close_fast > 0.4 and far_slow < 0.01
+
+
+def test_a_shortened_race_does_not_shorten_the_next_one():
+    from predictor.race import scheduled_laps
+    earlier = [("spa/2019", 44), ("spa/2019", 3)]            # the second was stopped after three laps
+    assert scheduled_laps(earlier, "spa/2019") == 44
+    assert scheduled_laps([("spa/2019", 44), ("spa/2022", 3)], "spa/2022") == 3     # same layout first
+    assert scheduled_laps([("spa/2019", 44)], "spa/2022") == 44                      # else the circuit
+    assert scheduled_laps([], "spa/2022") is None
+
+
+def test_the_lap_reference_skips_laps_behind_the_safety_car():
+    from predictor.race_sim import green_lap_seconds
+    laps = _race_laps({}, laps=20)
+    laps.loc[laps.LapNumber <= 4, "TrackStatus"] = "4"
+    laps.loc[laps.LapNumber <= 4, "LapTime"] = pd.Timedelta(seconds=150)
+    assert green_lap_seconds(laps) == 90.0
+    laps.loc[laps.LapNumber <= 12, "TrackStatus"] = "4"        # too few racing laps left
+    assert green_lap_seconds(laps) is None
+    laps["TrackStatus"] = "4"
+    assert green_lap_seconds(laps) is None
+
+
+def test_a_history_without_passes_gives_neutral_circuits():
+    from predictor.race_sim import circuit_propensity
+    frame = pd.DataFrame({"circuit": ["a", "a", "b"], "passed": [False, False, False]})
+    assert circuit_propensity(frame, 0.0) == {"a": 0.0, "b": 0.0}

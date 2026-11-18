@@ -36,7 +36,7 @@ from .baselines import RetirementModel, seed_for
 from .forecast import Forecast
 from .laps import race_passes
 from .pace import knockout_positions
-from . import race_sim
+from . import race_sim, track
 
 KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
@@ -228,8 +228,19 @@ class RaceModel:
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share})
 
 
+def scheduled_laps(earlier, layout):
+    """Race length in laps: the most laps completed in an earlier race on the same
+    layout (a shortened race only ever has fewer; the distance rule is fixed per
+    layout), else on any layout of the circuit. `earlier`: (layout, laps
+    completed) of earlier races at the circuit. None without any."""
+    same = [laps for name, laps in earlier if layout is not None and name == layout]
+    pool = same or [laps for _, laps in earlier]
+    return max(pool) if pool else None
+
+
 START_NOISES = (0.0, 0.25, 0.5, 1.0, 2.0)   # s: start noise of a car's time
-SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)  # % of a lap: race-day pace noise beyond the pace model's
+SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)
+PASS_SHIFTS = (-1.0, -0.5, 0.0, 0.5)     # log-odds added to every pass (pass_shift option)  # % of a lap: race-day pace noise beyond the pace model's
 
 
 class SimulatedRace(RaceModel):
@@ -237,8 +248,9 @@ class SimulatedRace(RaceModel):
     passes from the battle model. Fitted per season: the battle model on the dry
     races of earlier seasons; then lap-1 noise and race-day noise by mean RPS."""
 
-    def __init__(self, pace, name):
+    def __init__(self, pace, name, pass_shift=False):
         super().__init__(pace, name)
+        self.pass_shift = pass_shift
         self.passes = race_sim.PassModel()
         self._battles, self._race_shape = {}, {}
         self._archive = None
@@ -250,9 +262,10 @@ class SimulatedRace(RaceModel):
         return self
 
     def candidates(self):
-        for start_noise in START_NOISES:
-            for sigma in SIM_SIGMAS:
-                yield {"start_noise": start_noise, "sigma": sigma}
+        for shift in (PASS_SHIFTS if self.pass_shift else (0.0,)):
+            for start_noise in START_NOISES:
+                for sigma in SIM_SIGMAS:
+                    yield {"start_noise": start_noise, "sigma": sigma, **({"pass_shift": shift} if self.pass_shift else {})}
 
     def neutral(self):
         return {"start_noise": 1.0, "sigma": 0.0}
@@ -288,8 +301,9 @@ class SimulatedRace(RaceModel):
         self.passes.fit(frame, term)
 
     def context(self, view, example):
-        """The circuit's pass propensity, and the race length and a typical lap from
-        the latest earlier race at the circuit."""
+        """The circuit's pass propensity; the scheduled race length (`scheduled_laps`)
+        and a typical green lap from the latest earlier dry race with enough racing
+        laps, on the same layout if there is one."""
         frame = self._battles_in(view, exclude=example.event_key)
         circuit = self.pace.circuit(view, example.event_key)
         term = 0.0
@@ -297,18 +311,26 @@ class SimulatedRace(RaceModel):
             term = float(race_sim.circuit_propensity(frame, float(frame.passed.mean())).get(circuit, 0.0))
         laps, lap = race_sim.DEFAULT_LAPS, race_sim.DEFAULT_LAP
         races = view.sessions[(view.sessions.session_type == "R") & (view.sessions.event_key != example.event_key)]
-        same = [r for r in races.itertuples() if circuit is not None and self.pace.circuit(view, r.event_key) == circuit]
+        same = sorted((r for r in races.itertuples() if circuit is not None
+                       and self.pace.circuit(view, r.event_key) == circuit), key=lambda r: r.scheduled_start_utc)
         if same:
-            latest = max(same, key=lambda r: r.scheduled_start_utc)
-            if latest.session_id not in self._race_shape:
-                table = view.laps(latest.session_id)
-                self._race_shape[latest.session_id] = (int(table.LapNumber.max()),
-                                                       float(table.LapTime.dt.total_seconds().median()))
-            laps, lap = self._race_shape[latest.session_id]
+            layout = track.layout_of(circuit, int(example.season), example.event_key)
+            shapes = [(track.layout_of(circuit, int(r.season), r.event_key), *self._shape(view, r)) for r in same]
+            laps = scheduled_laps([(name, completed) for name, completed, _ in shapes], layout) or laps
+            green = [seconds for name, _, seconds in shapes if seconds is not None]
+            green_same = [seconds for name, _, seconds in shapes if seconds is not None and layout is not None
+                          and name == layout]
+            lap = (green_same or green or [lap])[-1]
         return {"circuit_term": term, "laps": laps, "lap_seconds": lap}
+
+    def _shape(self, view, race):
+        if race.session_id not in self._race_shape:
+            self._race_shape[race.session_id] = race_sim.race_shape(view.laps(race.session_id))
+        return self._race_shape[race.session_id]
 
     def order(self, race, grid, setting, context, seed):
         if setting["sigma"] > 0:
             race = race + setting["sigma"] * np.random.default_rng([seed, 8]).standard_normal(race.shape)
         return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
-                                 context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]))
+                                 context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
+                                 setting.get("pass_shift", 0.0))

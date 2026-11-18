@@ -27,6 +27,7 @@ season-out) battle log-likelihood by 113.
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from scipy.special import expit
 
 from .laps import race_pace, wet_session
 
@@ -36,6 +37,30 @@ START_SPACING = 0.25    # s per grid slot at the start
 LAP_NOISE = 0.55        # % of a lap: lap-to-lap noise of a car's lap time
 PASS_PRIOR_PAIRS = 400.0
 DEFAULT_LAPS, DEFAULT_LAP = 57, 90.0
+MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
+
+
+def green_lap_seconds(laps):
+    """Median time (s) of racing laps: green for every car, no pit stop, lap 1 left
+    out. None with fewer than MIN_GREEN_LAPS such laps (a race run mostly behind the
+    safety car)."""
+    if any(c not in laps for c in ("LapNumber", "LapTime", "TrackStatus", "PitInTime", "PitOutTime")):
+        return None
+    status = laps.TrackStatus.astype(str).str.fullmatch("1+")
+    green = status.groupby(laps.LapNumber).transform("all")
+    keep = green & (laps.LapNumber > 1) & laps.PitInTime.isna() & laps.PitOutTime.isna() & laps.LapTime.notna()
+    if laps.LapNumber[keep].nunique() < MIN_GREEN_LAPS:
+        return None
+    return float(laps.LapTime[keep].dt.total_seconds().median())
+
+
+def race_shape(laps):
+    """(laps completed by the leader, green lap time in s or None) of a race; no lap
+    time from a wet or mixed race (slower than a dry one)."""
+    completed = int(laps.LapNumber.max()) if "LapNumber" in laps and len(laps) else 0
+    if not len(laps) or wet_session(laps):
+        return completed, None
+    return completed, green_lap_seconds(laps)
 
 
 def battles(laps):
@@ -50,7 +75,9 @@ def battles(laps):
     if pace.empty:
         return empty
     pace = dict(zip(pace.driver_number.astype(str), pace.pace))
-    reference = float(laps.LapTime.dt.total_seconds().median())
+    reference = green_lap_seconds(laps)
+    if reference is None:
+        return empty
     laps = laps.assign(number=laps.DriverNumber.astype(str), time=laps.Time.dt.total_seconds(),
                        pit=laps.PitInTime.notna() | laps.PitOutTime.notna(),
                        green=laps.TrackStatus.astype(str).str.fullmatch("1+"))
@@ -108,23 +135,27 @@ class PassModel:
         self.base = float(y.mean())
         return self
 
-    def probability(self, gap, delta, circuit_term=0.0):
-        z = _features(gap, delta) @ self.coef[:5] + self.coef[5] * circuit_term
-        return 1.0 / (1.0 + np.exp(-z))
+    def probability(self, gap, delta, circuit_term=0.0, shift=0.0):
+        """`shift`: added to the log-odds (a race-outcome calibration of passing)."""
+        return expit(_features(gap, delta) @ self.coef[:5] + self.coef[5] * circuit_term + shift)
 
 
 def circuit_propensity(frame, base):
-    """{circuit: log(shrunk pass share / typical)} of battle pairs in `frame`."""
+    """{circuit: log(shrunk pass share / typical)} of battle pairs in `frame`; every
+    circuit neutral (0) when the typical share is not positive (no passes seen)."""
+    if not base > 0:
+        return {circuit: 0.0 for circuit in frame.circuit.unique()}
     counts = frame.groupby("circuit").passed.agg(["sum", "count"])
     share = (counts["sum"] + PASS_PRIOR_PAIRS * base) / (counts["count"] + PASS_PRIOR_PAIRS)
     return np.log(share / base).to_dict()
 
 
-def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng):
+def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps.
 
     `pace`: race pace draws (% of a lap, lower is faster); `grid`: slots, one row or
-    one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap."""
+    one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
+    added to every pass's log-odds."""
     draws, n = pace.shape
     seconds = pace * lap_seconds / 100                       # s per lap against the field's reference
     grid = np.broadcast_to(grid, pace.shape)
@@ -141,7 +172,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
             ahead, behind = order[:, k - 1].copy(), order[:, k].copy()
             gap = before[:, k] - before[:, k - 1]
             delta = own[:, k] - own[:, k - 1]
-            chance = np.where(gap < BATTLE_GAP, passes.probability(np.maximum(gap, 0.01), delta, circuit_term), 0.0)
+            chance = np.where(gap < BATTLE_GAP, passes.probability(np.maximum(gap, 0.01), delta, circuit_term,
+                                                                      pass_shift), 0.0)
             passed = luck[:, k] < chance
             # passed: swap; the passed car is held behind the passer
             t_ahead, t_behind = after[:, k - 1].copy(), after[:, k].copy()

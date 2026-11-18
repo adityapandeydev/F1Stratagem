@@ -107,7 +107,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
 def _race_model(pace, name, simulated=False, **options):
     from .race import RaceModel, SimulatedRace
     if simulated:
-        return SimulatedRace(model_registry()[pace](), name)
+        return SimulatedRace(model_registry()[pace](), name, **options)
     return RaceModel(model_registry()[pace](), name, **options)
 
 
@@ -231,6 +231,7 @@ def model_registry():
             "race1a": lambda: _race_model("pace3wrqwt", "race:v1a"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
             "race2a": lambda: _race_model("pace3wrqwt", "race:v2a", simulated=True),
+            "race2as": lambda: _race_model("pace3wrqwt", "race:v2as", simulated=True, pass_shift=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
