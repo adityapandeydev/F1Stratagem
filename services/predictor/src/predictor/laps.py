@@ -492,3 +492,38 @@ def segment_wet_shares(laps, results):
         if found and 2 * len(found) >= times:
             out[segment] = float(np.mean(found))
     return out
+
+
+PASS_MIN_LAPS = 20   # racing laps a race needs for its pass rate
+
+
+def race_passes(laps):
+    """(passes, racing laps) of a dry race: pairs of cars that swapped order between
+    two consecutive green laps on which neither car pitted, lap 1 excluded. A lap is
+    green only if every car's track status on it is confirmed green ("1" only): a
+    yellow flag, safety car, virtual safety car, red flag or a missing status rules
+    it out. None for a wet or mixed race, a race without positions, or one with too
+    few racing laps."""
+    columns = ("Position", "LapNumber", "DriverNumber", "PitInTime", "PitOutTime", "TrackStatus")
+    if any(c not in laps for c in columns) or wet_session(laps):
+        return None
+    laps = laps[laps.Position.notna()]
+    if laps.empty:
+        return None
+    position = laps.pivot_table(index="LapNumber", columns="DriverNumber", values="Position")
+    pitted = (laps.PitInTime.notna() | laps.PitOutTime.notna()).astype(float)
+    pit = laps.assign(pit=pitted).pivot_table(index="LapNumber", columns="DriverNumber", values="pit", aggfunc="max")
+    pit = pit.reindex(index=position.index, columns=position.columns).fillna(1.0) > 0
+    green = laps.TrackStatus.astype(str).str.fullmatch("1+")
+    neutral = (~green).groupby(laps.LapNumber).max()
+    neutral = neutral.reindex(position.index).fillna(True).astype(bool)
+    passes, counted = 0, 0
+    numbers = list(position.index)
+    for previous, lap in zip(numbers, numbers[1:]):
+        if previous < 2 or lap != previous + 1 or neutral[lap] or neutral[previous]:
+            continue
+        clean = (~pit.loc[lap] & ~pit.loc[previous] & position.loc[lap].notna() & position.loc[previous].notna()).to_numpy()
+        before, after = position.loc[previous].to_numpy()[clean], position.loc[lap].to_numpy()[clean]
+        passes += int(((before[:, None] < before[None, :]) & (after[:, None] > after[None, :])).sum())
+        counted += 1
+    return (passes, counted) if counted >= PASS_MIN_LAPS else None

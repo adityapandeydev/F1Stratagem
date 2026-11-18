@@ -47,3 +47,55 @@ def test_kappa_trades_race_pace_against_grid_position():
     grid = np.array([[1.0, 2.0]])             # driver 1 starts ahead
     assert list(model.positions(race, grid, 0.0, 0.0, 1)[0]) == [2, 1]   # pace alone decides
     assert list(model.positions(race, grid, 0.5, 0.0, 1)[0]) == [1, 2]   # the grid slot is worth more
+
+
+def _race_laps(swaps, laps=25):
+    """Three cars running 1-2-3; at each lap in `swaps` (lap: kind) cars 1 and 2 swap
+    for good: kind "green", "pit" (car 2 pits that lap), "sc" (safety car), "yellow"
+    (a yellow flag on car 3's record only) or "unknown" (no status recorded)."""
+    order, rows = ["1", "2", "3"], []
+    for lap in range(1, laps + 1):
+        kind = swaps.get(lap)
+        if kind:
+            order = [order[1], order[0], order[2]]
+        for position, number in enumerate(order, start=1):
+            rows.append({"LapNumber": lap, "DriverNumber": number, "Position": float(position),
+                         "PitInTime": pd.Timedelta(seconds=1) if kind == "pit" and number == "2" else pd.NaT,
+                         "PitOutTime": pd.NaT,
+                         "TrackStatus": {"sc": "4", "unknown": None}.get(kind, "12" if kind == "yellow" and number == "3"
+                                                                         else "1"),
+                         "LapTime": pd.Timedelta(seconds=90), "Compound": "SOFT"})
+    return pd.DataFrame(rows)
+
+
+def test_only_swaps_on_green_laps_without_a_pit_stop_are_passes():
+    from predictor.laps import race_passes
+    passes, counted = race_passes(_race_laps({2: "green", 5: "green", 8: "pit", 11: "sc"}))
+    # lap 2 compares with lap 1 (excluded), lap 8 involves a stop, lap 11 is neutralised
+    assert passes == 1
+    # lap pairs (2, 3) .. (24, 25), less the two around the safety car; a stop leaves out the
+    # car that stopped, not the lap
+    assert counted == 23 - 2
+
+
+def test_a_short_race_has_no_pass_rate():
+    from predictor.laps import race_passes
+    assert race_passes(_race_laps({}, laps=15)) is None
+
+
+def test_a_swap_under_a_yellow_flag_or_an_unknown_status_is_not_a_pass():
+    from predictor.laps import race_passes
+    for kind in ("yellow", "unknown"):
+        passes, counted = race_passes(_race_laps({5: kind}))
+        assert passes == 0, kind
+        assert counted == 23 - 2, kind
+
+
+def test_settings_are_fitted_per_cutoff_from_races_forecast_from_that_cutoff():
+    model = RaceModel.__new__(RaceModel)
+    model.overtaking, model.settings = True, {}
+    earlier = [types.SimpleNamespace(season=2018, cutoff_label="last", session_type="R")]
+    model._history = earlier
+    model._fit_season(2019, "pre_weekend")          # no pre-weekend history: the neutral settings
+    assert model.settings[(2019, "pre_weekend")] == {"kappa": 0.0, "sigma": 0.0, "rps": None, "races": 0,
+                                                     "gamma": 0.0}

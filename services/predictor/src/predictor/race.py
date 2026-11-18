@@ -19,12 +19,22 @@ come from the historical rate (`baselines.RetirementModel`), as for the baseline
   noise beyond the pace model's (starts, strategy, incidents). Both are fitted per
   season and cutoff on the races of earlier seasons, by mean ranked probability
   score, on a fixed grid of values with common random numbers.
+
+Stage 1b (`overtaking=True`): a grid slot is worth more where passing is hard,
+
+    kappa at a circuit = kappa x (typical pass rate / circuit pass rate) ^ gamma,
+
+with each circuit's on-track pass rate (`laps.race_passes`: passes per green lap,
+dry races) from the races finished before the cutoff, shrunk towards the typical
+rate by PASS_PRIOR_RACES races' worth of it; a circuit without history gets the
+typical rate. gamma is fitted with kappa and sigma (0 is stage 1a).
 """
 import numpy as np
 import pandas as pd
 
 from .baselines import RetirementModel, seed_for
 from .forecast import Forecast
+from .laps import race_passes
 from .pace import knockout_positions
 
 KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
@@ -32,6 +42,8 @@ SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
 DRAWS = 10000
 FIT_DRAWS = 1000
 GRID_FROM_SPRINT = frozenset({2021, 2022})   # seasons whose sprint set the race grid
+GAMMAS = (0.0, 0.5, 1.0, 1.5, 2.0)
+PASS_PRIOR_RACES = 1.0      # weight of the typical pass rate in a circuit's, in races
 
 
 def grid_at(view, example):
@@ -55,11 +67,13 @@ def grid_at(view, example):
 class RaceModel:
     """Model interface: fit(history, view_for) then predict(view, example). Races only."""
 
-    def __init__(self, pace, name):
+    def __init__(self, pace, name, overtaking=False):
         self.pace = pace
         self.name = name
+        self.overtaking = overtaking
+        self._passes = {}           # race session -> race_passes(...)
         self.retirements = RetirementModel()
-        self.settings = {}          # season -> {"kappa", "sigma", "rps"}
+        self.settings = {}          # (season, cutoff label) -> {"kappa", "sigma", "rps", ...}
         self._history, self._view_for = [], None
         self._draws = {}            # (event, cutoff, season) -> draws(...) at FIT_DRAWS, while fitting
 
@@ -99,6 +113,29 @@ class RaceModel:
                                       scale_rng=np.random.default_rng([seed, 7]))
         return race, np.atleast_2d(grid).astype(float)
 
+    def difficulty(self, view, example):
+        """(typical pass rate / this circuit's pass rate) from the dry races finished
+        before the cutoff, the circuit's rate shrunk towards the typical one; 1 without
+        history."""
+        circuit = self.pace.circuit(view, example.event_key)
+        races = view.sessions[(view.sessions.session_type == "R") & (view.sessions.event_key != example.event_key)]
+        rates, here = [], []
+        for race in races.itertuples():
+            if race.session_id not in self._passes:
+                self._passes[race.session_id] = race_passes(view.laps(race.session_id))
+            counted = self._passes[race.session_id]
+            if counted is None:
+                continue
+            rate = counted[0] / counted[1]
+            rates.append(rate)
+            if circuit is not None and self.pace.circuit(view, race.event_key) == circuit:
+                here.append(rate)
+        if not rates:
+            return 1.0
+        typical = float(np.mean(rates))
+        rate = (sum(here) + PASS_PRIOR_RACES * typical) / (len(here) + PASS_PRIOR_RACES)
+        return typical / max(rate, 1e-3)
+
     def positions(self, race, grid, kappa, sigma, seed):
         """Finishing order before retirements, draws x entrants (1 = first)."""
         score = race + kappa * (grid - 1)
@@ -118,45 +155,58 @@ class RaceModel:
             driver_numbers=list(example.driver_numbers), driver_ids=list(example.driver_ids), model=self.name,
             seed=seed, metadata=metadata)
 
-    def _fit_season(self, season):
-        """kappa and sigma for `season`, from the races of earlier seasons in the history."""
+    def _fit_season(self, season, cutoff):
+        """The settings for `season` at the cutoff labelled `cutoff`, from the races of
+        earlier seasons in the history forecast from the same cutoff."""
         from .evaluation import score
-        earlier = [e for e in self._history if e.season < season]
+        earlier = [e for e in self._history if e.season < season and e.cutoff_label == cutoff]
         if not earlier:
-            self.settings[season] = {"kappa": 0.0, "sigma": 0.0, "rps": None, "races": 0}
+            self.settings[(season, cutoff)] = {"kappa": 0.0, "sigma": 0.0, "rps": None, "races": 0,
+                                               **({"gamma": 0.0} if self.overtaking else {})}
             return
         prepared = []
         for example in earlier:
             key = (example.event_key, example.cutoff_label, season)
             if key not in self._draws:
-                self._draws[key] = self.draws(self._view_for(example), example, FIT_DRAWS, seed_for(example))
+                view = self._view_for(example)
+                self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)),
+                                    self.difficulty(view, example) if self.overtaking else 1.0)
             prepared.append((example, *self._draws[key]))
         best = None
-        for kappa in KAPPAS:
-            for sigma in SIGMAS:
-                total = 0.0
-                for example, race, grid in prepared:
-                    seed = seed_for(example)
-                    forecast = self.forecast(example, self.positions(race, grid, kappa, sigma, seed), seed, {})
-                    total += score(forecast, example)["rps"]
-                rps = total / len(prepared)
-                if best is None or rps < best[0]:
-                    best = (rps, kappa, sigma)
-        self.settings[season] = {"kappa": best[1], "sigma": best[2], "rps": best[0], "races": len(prepared)}
+        for gamma in (GAMMAS if self.overtaking else (0.0,)):
+            for kappa in KAPPAS:
+                for sigma in SIGMAS:
+                    total = 0.0
+                    for example, race, grid, difficulty in prepared:
+                        seed = seed_for(example)
+                        here = kappa * difficulty ** gamma
+                        forecast = self.forecast(example, self.positions(race, grid, here, sigma, seed), seed, {})
+                        total += score(forecast, example)["rps"]
+                    rps = total / len(prepared)
+                    if best is None or rps < best[0]:
+                        best = (rps, kappa, sigma, gamma)
+        self.settings[(season, cutoff)] = {"kappa": best[1], "sigma": best[2], "rps": best[0], "races": len(prepared),
+                                 **({"gamma": best[3]} if self.overtaking else {})}
         self._draws = {}             # tied to this season's pace settings
 
     def predict(self, view, example, draws=DRAWS):
         if example.session_type != "R":
             return None
         self.pace._ensure_hyper(view, example.season)
-        if example.season not in self.settings:
-            self._fit_season(example.season)
-        chosen = self.settings[example.season]
+        key = (example.season, example.cutoff_label)
+        if key not in self.settings:
+            self._fit_season(*key)
+        chosen = self.settings[key]
         seed = seed_for(example)
         race, grid = self.draws(view, example, draws, seed)
-        positions = self.positions(race, grid, chosen["kappa"], chosen["sigma"], seed)
+        kappa = chosen["kappa"]
+        difficulty = None
+        if self.overtaking:
+            difficulty = self.difficulty(view, example)
+            kappa = kappa * difficulty ** chosen["gamma"]
+        positions = self.positions(race, grid, kappa, chosen["sigma"], seed)
         known_grid = grid.shape[0] == 1
         return self.forecast(example, positions, seed, {
-            "grid": "known" if known_grid else "simulated",
+            "grid": "known" if known_grid else "simulated", "difficulty": difficulty,
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share})

@@ -104,9 +104,9 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     return model
 
 
-def _race_model(pace, name):
+def _race_model(pace, name, **options):
     from .race import RaceModel
-    return RaceModel(model_registry()[pace](), name)
+    return RaceModel(model_registry()[pace](), name, **options)
 
 
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
@@ -227,6 +227,7 @@ def model_registry():
                                                 robust=True, wet_evolution=True, wet_forecast=True),
             # race forecasts (race.py) on the champion's pace model; fits shared with it
             "race1a": lambda: _race_model("pace3wrqwt", "race:v1a"),
+            "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
