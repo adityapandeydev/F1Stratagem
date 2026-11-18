@@ -643,6 +643,34 @@ the race lap by lap:
   the forecast at the cutoff instead of the race's own measured pace; the measured
   pace comes from the same race, so a car held up looks slower than it was.
 
+**Retirements by circuit and team (`retirements.py`, v1ar, v2ar, v2bwr).** Each
+driver's chance of retiring is an incident chance times the circuit's incident
+factor plus a mechanical chance times the team's reliability factor. Base rates
+come from the last three seasons. The circuit factor is the circuit's incidents
+against what its seasons' rates expect, over Jolpica's results from 1996 to 2017
+(cause read from the status text) and the labelled races from 2018, shrunk towards
+1 by a gamma prior whose spread is estimated from the same races: circuits differ
+far beyond chance (p = 2e-11) and keep their rank between 1996–2009 and
+2010–2022 (correlation 0.78), from Monaco about 1.7 to Bahrain about 0.6 after
+shrinkage. The team factor is the team's mechanical failures this season, shrunk
+towards a prior that keeps 42% of last season's deviation (measured 2014–2022: a
+team's rate repeats between odd and even rounds with correlation 0.25 and between
+seasons with 0.42; true spread about 0.04 per start around 0.10).
+
+**Other history before 2018, measured and not used:**
+
+- **Battles 2011–2017** (46,144 pairs from Jolpica lap times and pit stops): the
+  circuits' pass factors agree with 2018–2024 (correlation 0.82), but adding them
+  lowers the held-out likelihood of 2018–2024 passes (down-weighted, at best +2
+  against the +156 the circuit factor already gives); the battle model itself
+  needs forecast pace, which exists only from 2018.
+- **Starts 1996–2018** (8,534): how much lap 1 reshuffles the field by circuit
+  does not persist between eras (correlation 0.12); no grid-side advantage
+  (0.02); a team's launch repeats within a season only weakly (odd against even
+  rounds 0.24; about 0.5 places per start against 3.1 places of noise), so an
+  in-season estimate explains under 1% of a start. Kept for the 2026 work, when
+  launches differed more.
+
 **Next stages:**
 
 - **Shortened races** beyond a red flag that ends the race (time limits) as
@@ -992,7 +1020,8 @@ Races (2019–2024, 128 races):
 | race:v2af: v2a with the battle model fitted on forecast pace differences | −0.00012 (noise); +0.00018 against v2a (noise) | −0.00026 (noise); −0.00099 against v2a, better beyond noise; winner log loss 1.36 → 1.32 | not a champion; **base of the next stage** |
 | race:v2afs: v2af + pass shift | −0.00001 (noise) | −0.00040 (noise) | not adopted |
 | race:v2b: v2af + safety cars, virtual safety cars and red flags | −0.00007 (noise); +0.00016 against v2af (noise) | −0.00029 (noise); −0.00099 against v2a, better beyond noise; −0.00003 against v2af (noise) | not a champion (stages 3–4 need neutralisations) |
-| race:v2bw: v2b + the typical lap from this weekend's qualifying | identical to v2b (no session yet) | −0.00032 (noise); −0.00004 against v2b (noise) | not a champion; **simulation base** (more accurate lap at no cost) |
+| race:v2bw: v2b + the typical lap from this weekend's qualifying | identical to v2b (no session yet) | −0.00032 (noise); −0.00004 against v2b (noise) | not a champion |
+| race:v1ar, v2ar, v2bwr: retirements by circuit and team, on v1a, v2a and v2bw | against their own base +0.00001, +0.00010, −0.00016 (noise) | −0.00028, −0.00015, −0.00012 (noise); 2024 −0.0017, −0.0009, −0.0009; v1ar better beyond noise in rounds 15+; retirement Brier −0.0003 for each (noise) | champions unchanged; **v2bwr is the simulation base** |
 
 Differences are against race:v1a. The first v2a results were discarded: a
 shortened race could set the next year's race length and lap time (fixed before

@@ -132,8 +132,9 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # pass shift (race:v2as) only reaches -0.00020 (noise): race:v1a stays.
 # Stage 2b (race:v2b, neutralisations) is level with race:v2af at both cutoffs and
 # not better than either champion. race:v2bw (+ the lap from this weekend's
-# qualifying) is level with v2b at the last cutoff (-0.00004, noise) and the
-# simulation base for the next stages.
+# qualifying) is level with v2b at the last cutoff (-0.00004, noise). Retirements by
+# circuit and team (v1ar, v2ar, v2bwr) are within noise against their bases at both
+# cutoffs (better on 2024 and in retirement Brier); race:v2bwr is the simulation base.
 RACE_CHAMPIONS = {"pre_weekend": "race2a", "after_session": "race1a"}
 
 
@@ -249,6 +250,10 @@ def model_registry():
                                           neutralisations=True),
             "race2bw": lambda: _race_model("pace3wrqwt", "race:v2bw", simulated=True, forecast_battles=True,
                                            neutralisations=True, weekend_lap=True),
+            "race1ar": lambda: _race_model("pace3wrqwt", "race:v1ar", detailed_retirements=True),
+            "race2ar": lambda: _race_model("pace3wrqwt", "race:v2ar", simulated=True, detailed_retirements=True),
+            "race2bwr": lambda: _race_model("pace3wrqwt", "race:v2bwr", simulated=True, forecast_battles=True,
+                                            neutralisations=True, weekend_lap=True, detailed_retirements=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 

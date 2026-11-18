@@ -37,6 +37,7 @@ from .forecast import Forecast
 from .laps import race_passes
 from .pace import knockout_positions
 from . import race_sim, track
+from .retirements import DetailedRetirements, history_incidents
 
 KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
@@ -68,10 +69,11 @@ def grid_at(view, example):
 class RaceModel:
     """Model interface: fit(history, view_for) then predict(view, example). Races only."""
 
-    def __init__(self, pace, name, overtaking=False):
+    def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
         self.pace = pace
         self.name = name
         self.overtaking = overtaking
+        self.detailed_retirements = detailed_retirements
         self._passes = {}           # race session -> race_passes(...)
         self.retirements = RetirementModel()
         self.settings = {}          # (season, cutoff label) -> {"kappa", "sigma", "rps", ...}
@@ -89,6 +91,10 @@ class RaceModel:
     def fit(self, history, view_for):
         self._history = [e for e in history if e.session_type == "R"]
         self._view_for = view_for
+        if self.detailed_retirements and history and not isinstance(self.retirements, DetailedRetirements):
+            archive = view_for(history[0]).archive     # circuits are reference data; older results end in 2017
+            self.retirements = DetailedRetirements(dict(zip(archive.events.event_key, archive.events.circuit_id)),
+                                                   history_incidents(archive.root))
         self.retirements.fit(history)
         return self
 
@@ -230,7 +236,9 @@ class RaceModel:
             "grid": "known" if known_grid else "simulated",
             "context": {k: (v["factor"] if k == "neutral" else v) for k, v in context.items()},
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
-            "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share})
+            "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
+            **({"retire_factors": dict(zip(("incident", "mechanical"), map(list, self.retirements.chances(example))))}
+               if self.detailed_retirements else {})})
 
 
 def scheduled_laps(earlier, layout):
@@ -269,8 +277,8 @@ class SimulatedRace(RaceModel):
     latest earlier race at the circuit, which stays the source before qualifying."""
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
-                 weekend_lap=False):
-        super().__init__(pace, name)
+                 weekend_lap=False, detailed_retirements=False):
+        super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
         self.pass_shift = pass_shift
