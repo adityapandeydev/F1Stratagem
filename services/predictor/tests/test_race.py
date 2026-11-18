@@ -99,3 +99,48 @@ def test_settings_are_fitted_per_cutoff_from_races_forecast_from_that_cutoff():
     model._fit_season(2019, "pre_weekend")          # no pre-weekend history: the neutral settings
     assert model.settings[(2019, "pre_weekend")] == {"kappa": 0.0, "sigma": 0.0, "rps": None, "races": 0,
                                                      "gamma": 0.0}
+
+
+class _Passing:
+    """A pass model with a fixed chance for a faster car within battle range."""
+
+    def __init__(self, chance):
+        self.chance = chance
+
+    def probability(self, gap, delta, circuit_term=0.0):
+        return np.where(delta < 0, self.chance, 0.0)
+
+
+def _run(chance, laps, pace=(0.0, 1.0, -2.0), grid=(1, 2, 3)):
+    from predictor import race_sim
+    import predictor.race_sim as sim
+    keep = sim.LAP_NOISE
+    sim.LAP_NOISE = 0.0
+    try:
+        return race_sim.simulate(np.array([pace]), np.array([grid], dtype=float), _Passing(chance), 0.0, laps, 90.0,
+                                 0.0, np.random.default_rng(0))[0]
+    finally:
+        sim.LAP_NOISE = keep
+
+
+def test_without_passing_a_faster_car_stays_held_behind():
+    # car 3 is 2% faster but starts last; nobody can pass
+    assert list(_run(0.0, laps=30)) == [1, 2, 3]
+
+
+def test_a_faster_car_passes_one_place_per_lap():
+    assert list(_run(1.0, laps=1)) == [1, 3, 2]          # one lap: past car 2 only
+    assert list(_run(1.0, laps=30)) == [2, 3, 1]         # then past the leader too; car 2 (slower) passed by 3
+
+
+def test_the_battle_model_learns_that_faster_closer_cars_pass():
+    from predictor.race_sim import PassModel
+    rng = np.random.default_rng(1)
+    gap = rng.uniform(0.1, 2.4, 4000)
+    delta = rng.normal(0, 0.6, 4000)
+    truth = 1 / (1 + np.exp(-(-1.0 - 2.5 * gap - 1.5 * delta)))
+    frame = pd.DataFrame({"gap": gap, "delta": delta, "passed": rng.random(4000) < truth})
+    model = PassModel().fit(frame, np.zeros(4000))
+    close_fast = model.probability(np.array([0.3]), np.array([-1.0]))[0]
+    far_slow = model.probability(np.array([2.0]), np.array([0.5]))[0]
+    assert close_fast > 0.4 and far_slow < 0.01

@@ -36,6 +36,7 @@ from .baselines import RetirementModel, seed_for
 from .forecast import Forecast
 from .laps import race_passes
 from .pace import knockout_positions
+from . import race_sim
 
 KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
@@ -136,6 +137,28 @@ class RaceModel:
         rate = (sum(here) + PASS_PRIOR_RACES * typical) / (len(here) + PASS_PRIOR_RACES)
         return typical / max(rate, 1e-3)
 
+    def candidates(self):
+        """Settings tried by the fit, in order (the first best is kept)."""
+        for gamma in (GAMMAS if self.overtaking else (0.0,)):
+            for kappa in KAPPAS:
+                for sigma in SIGMAS:
+                    yield {"kappa": kappa, "sigma": sigma, **({"gamma": gamma} if self.overtaking else {})}
+
+    def neutral(self):
+        """Settings without any earlier race to fit them on."""
+        return {"kappa": 0.0, "sigma": 0.0, **({"gamma": 0.0} if self.overtaking else {})}
+
+    def prepare_season(self, season):
+        """Anything fitted per season before the settings (nothing here)."""
+
+    def context(self, view, example):
+        """What a forecast needs from the archive besides the draws."""
+        return {"difficulty": self.difficulty(view, example) if self.overtaking else 1.0}
+
+    def order(self, race, grid, setting, context, seed):
+        kappa = setting["kappa"] * context["difficulty"] ** setting.get("gamma", 0.0)
+        return self.positions(race, grid, kappa, setting["sigma"], seed)
+
     def positions(self, race, grid, kappa, sigma, seed):
         """Finishing order before retirements, draws x entrants (1 = first)."""
         score = race + kappa * (grid - 1)
@@ -161,8 +184,7 @@ class RaceModel:
         from .evaluation import score
         earlier = [e for e in self._history if e.season < season and e.cutoff_label == cutoff]
         if not earlier:
-            self.settings[(season, cutoff)] = {"kappa": 0.0, "sigma": 0.0, "rps": None, "races": 0,
-                                               **({"gamma": 0.0} if self.overtaking else {})}
+            self.settings[(season, cutoff)] = {**self.neutral(), "rps": None, "races": 0}
             return
         prepared = []
         for example in earlier:
@@ -170,43 +192,123 @@ class RaceModel:
             if key not in self._draws:
                 view = self._view_for(example)
                 self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)),
-                                    self.difficulty(view, example) if self.overtaking else 1.0)
+                                    self.context(view, example))
             prepared.append((example, *self._draws[key]))
         best = None
-        for gamma in (GAMMAS if self.overtaking else (0.0,)):
-            for kappa in KAPPAS:
-                for sigma in SIGMAS:
-                    total = 0.0
-                    for example, race, grid, difficulty in prepared:
-                        seed = seed_for(example)
-                        here = kappa * difficulty ** gamma
-                        forecast = self.forecast(example, self.positions(race, grid, here, sigma, seed), seed, {})
-                        total += score(forecast, example)["rps"]
-                    rps = total / len(prepared)
-                    if best is None or rps < best[0]:
-                        best = (rps, kappa, sigma, gamma)
-        self.settings[(season, cutoff)] = {"kappa": best[1], "sigma": best[2], "rps": best[0], "races": len(prepared),
-                                 **({"gamma": best[3]} if self.overtaking else {})}
+        for setting in self.candidates():
+            total = 0.0
+            for example, race, grid, context in prepared:
+                seed = seed_for(example)
+                forecast = self.forecast(example, self.order(race, grid, setting, context, seed), seed, {})
+                total += score(forecast, example)["rps"]
+            rps = total / len(prepared)
+            if best is None or rps < best[0]:
+                best = (rps, setting)
+        self.settings[(season, cutoff)] = {**best[1], "rps": best[0], "races": len(prepared)}
         self._draws = {}             # tied to this season's pace settings
 
     def predict(self, view, example, draws=DRAWS):
         if example.session_type != "R":
             return None
         self.pace._ensure_hyper(view, example.season)
+        self._archive = view.archive
         key = (example.season, example.cutoff_label)
         if key not in self.settings:
+            self.prepare_season(example.season)
             self._fit_season(*key)
         chosen = self.settings[key]
         seed = seed_for(example)
         race, grid = self.draws(view, example, draws, seed)
-        kappa = chosen["kappa"]
-        difficulty = None
-        if self.overtaking:
-            difficulty = self.difficulty(view, example)
-            kappa = kappa * difficulty ** chosen["gamma"]
-        positions = self.positions(race, grid, kappa, chosen["sigma"], seed)
+        context = self.context(view, example)
+        positions = self.order(race, grid, chosen, context, seed)
         known_grid = grid.shape[0] == 1
         return self.forecast(example, positions, seed, {
-            "grid": "known" if known_grid else "simulated", "difficulty": difficulty,
+            "grid": "known" if known_grid else "simulated", "context": context,
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share})
+
+
+START_NOISES = (0.0, 0.25, 0.5, 1.0, 2.0)   # s: start noise of a car's time
+SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)  # % of a lap: race-day pace noise beyond the pace model's
+
+
+class SimulatedRace(RaceModel):
+    """Stage 2: the race run lap by lap (`race_sim.simulate`): start, racing laps,
+    passes from the battle model. Fitted per season: the battle model on the dry
+    races of earlier seasons; then lap-1 noise and race-day noise by mean RPS."""
+
+    def __init__(self, pace, name):
+        super().__init__(pace, name)
+        self.passes = race_sim.PassModel()
+        self._battles, self._race_shape = {}, {}
+        self._archive = None
+
+    def fit(self, history, view_for):
+        super().fit(history, view_for)
+        if history and self._archive is None:
+            self._archive = view_for(history[0]).archive
+        return self
+
+    def candidates(self):
+        for start_noise in START_NOISES:
+            for sigma in SIM_SIGMAS:
+                yield {"start_noise": start_noise, "sigma": sigma}
+
+    def neutral(self):
+        return {"start_noise": 1.0, "sigma": 0.0}
+
+    def _race_battles(self, view, race):
+        if race.session_id not in self._battles:
+            frame = race_sim.battles(view.laps(race.session_id))
+            self._battles[race.session_id] = frame.assign(circuit=self.pace.circuit(view, race.event_key),
+                                                          season=int(race.season))
+        return self._battles[race.session_id]
+
+    def _battles_in(self, view, exclude=None):
+        races = view.sessions[(view.sessions.session_type == "R") & (view.sessions.event_key != exclude)]
+        frames = [self._race_battles(view, race) for race in races.itertuples()]
+        frames = [f for f in frames if not f.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+            columns=["gap", "delta", "passed", "circuit", "season"])
+
+    def prepare_season(self, season):
+        """The battle model from the races before `season`; each pair's circuit term
+        from the other seasons' battles."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        frame = self._battles_in(view)
+        term = np.zeros(len(frame))
+        if not frame.empty:
+            for year in frame.season.unique():
+                other = frame[frame.season != year]
+                if other.empty:
+                    continue
+                propensity = race_sim.circuit_propensity(other, float(other.passed.mean()))
+                rows = (frame.season == year).to_numpy()
+                term[rows] = frame[rows].circuit.map(propensity).fillna(0.0).to_numpy(float)
+        self.passes.fit(frame, term)
+
+    def context(self, view, example):
+        """The circuit's pass propensity, and the race length and a typical lap from
+        the latest earlier race at the circuit."""
+        frame = self._battles_in(view, exclude=example.event_key)
+        circuit = self.pace.circuit(view, example.event_key)
+        term = 0.0
+        if not frame.empty and circuit is not None:
+            term = float(race_sim.circuit_propensity(frame, float(frame.passed.mean())).get(circuit, 0.0))
+        laps, lap = race_sim.DEFAULT_LAPS, race_sim.DEFAULT_LAP
+        races = view.sessions[(view.sessions.session_type == "R") & (view.sessions.event_key != example.event_key)]
+        same = [r for r in races.itertuples() if circuit is not None and self.pace.circuit(view, r.event_key) == circuit]
+        if same:
+            latest = max(same, key=lambda r: r.scheduled_start_utc)
+            if latest.session_id not in self._race_shape:
+                table = view.laps(latest.session_id)
+                self._race_shape[latest.session_id] = (int(table.LapNumber.max()),
+                                                       float(table.LapTime.dt.total_seconds().median()))
+            laps, lap = self._race_shape[latest.session_id]
+        return {"circuit_term": term, "laps": laps, "lap_seconds": lap}
+
+    def order(self, race, grid, setting, context, seed):
+        if setting["sigma"] > 0:
+            race = race + setting["sigma"] * np.random.default_rng([seed, 8]).standard_normal(race.shape)
+        return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
+                                 context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]))
