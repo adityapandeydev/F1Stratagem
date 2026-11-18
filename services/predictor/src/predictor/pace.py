@@ -1086,6 +1086,17 @@ class PaceModel:
 
     def distribution(self, view, example):
         """Mean and covariance of the entrants' qualifying pace at the example's cutoff."""
+        kind = self.forecast_type(example)
+        state, designs = self.state_at(view, example, (kind,))
+        design = designs[kind]
+        mean = design @ state.mean
+        noise, track = self.forecast_noise(view, example)
+        cov = design @ state.cov @ design.T + (noise ** 2 + track ** 2) * np.eye(len(mean))
+        return mean, cov
+
+    def state_at(self, view, example, kinds):
+        """(filter state at the example's cutoff, {session type: design matrix}): the
+        entrants' pace as each session type in `kinds` reads it, before observation noise."""
         recorder = self.record(view, self.sessions(view), self.hyper.weekend_prior > 0,
                                self.hyper.affinity_prior > 0, objective="all", form=self.hyper.form_prior > 0,
                                skills=self.hyper.skill_prior > 0, season_skills=self.hyper.season_skill_prior > 0,
@@ -1098,14 +1109,9 @@ class PaceModel:
             recorder.shares = self.shares(view, example.event_key)
         drivers = [d if pd.notna(d) else f"unknown:{n}" for d, n in zip(example.driver_ids, example.driver_numbers)]
         cars = [c if pd.notna(c) else f"unknown:{n}" for c, n in zip(example.lineage_ids, example.driver_numbers)]
-        kind = self.forecast_type(example)
-        rows = recorder.columns(cars, drivers, kind)
+        rows = {kind: recorder.columns(cars, drivers, kind) for kind in kinds}
         state = recorder.replay(self.hyper)
-        design = state.design(rows)
-        mean = design @ state.mean
-        noise, track = self.forecast_noise(view, example)
-        cov = design @ state.cov @ design.T + (noise ** 2 + track ** 2) * np.eye(len(cars))
-        return mean, cov
+        return state, {kind: state.design(r) for kind, r in rows.items()}
 
     def forecast_type(self, example):
         """The session type a forecast is made as: "QW" for a wet qualifying when the

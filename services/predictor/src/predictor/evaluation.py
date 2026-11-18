@@ -104,6 +104,11 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     return model
 
 
+def _race_model(pace, name):
+    from .race import RaceModel
+    return RaceModel(model_registry()[pace](), name)
+
+
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
 # Before the weekend: no session of the event has run. Once any has, the last-cutoff
 # champion serves; after FP1 and after FP2 that routing is provisional until those
@@ -220,6 +225,8 @@ def model_registry():
                                                wet_evolution=True, wet_forecast=True),
             "pace3wrqwtec": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                 robust=True, wet_evolution=True, wet_forecast=True),
+            # race forecasts (race.py) on the champion's pace model; fits shared with it
+            "race1a": lambda: _race_model("pace3wrqwt", "race:v1a"),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 
