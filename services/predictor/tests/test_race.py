@@ -101,23 +101,22 @@ def test_settings_are_fitted_per_cutoff_from_races_forecast_from_that_cutoff():
                                                      "gamma": 0.0}
 
 
-class _Passing:
-    """A pass model with a fixed chance for a faster car within battle range."""
+def _passing(always):
+    """A battle model where a faster car within range always passes (`always`), or
+    nobody ever does."""
+    from predictor.race_sim import PassModel
+    model = PassModel()
+    model.coef = np.array([0.0, 0, 0, -1000.0, 0, 0]) if always else np.array([-1000.0, 0, 0, 0, 0, 0])
+    return model
 
-    def __init__(self, chance):
-        self.chance = chance
 
-    def probability(self, gap, delta, circuit_term=0.0, shift=0.0):
-        return np.where(delta < 0, self.chance, 0.0)
-
-
-def _run(chance, laps, pace=(0.0, 1.0, -2.0), grid=(1, 2, 3)):
+def _run(always, laps, pace=(0.0, 1.0, -2.0), grid=(1, 2, 3)):
     from predictor import race_sim
     import predictor.race_sim as sim
     keep = sim.LAP_NOISE
     sim.LAP_NOISE = 0.0
     try:
-        return race_sim.simulate(np.array([pace]), np.array([grid], dtype=float), _Passing(chance), 0.0, laps, 90.0,
+        return race_sim.simulate(np.array([pace]), np.array([grid], dtype=float), _passing(always), 0.0, laps, 90.0,
                                  0.0, np.random.default_rng(0))[0]
     finally:
         sim.LAP_NOISE = keep
@@ -125,12 +124,12 @@ def _run(chance, laps, pace=(0.0, 1.0, -2.0), grid=(1, 2, 3)):
 
 def test_without_passing_a_faster_car_stays_held_behind():
     # car 3 is 2% faster but starts last; nobody can pass
-    assert list(_run(0.0, laps=30)) == [1, 2, 3]
+    assert list(_run(False, laps=30)) == [1, 2, 3]
 
 
 def test_a_faster_car_passes_one_place_per_lap():
-    assert list(_run(1.0, laps=1)) == [1, 3, 2]          # one lap: past car 2 only
-    assert list(_run(1.0, laps=30)) == [2, 3, 1]         # then past the leader too; car 2 (slower) passed by 3
+    assert list(_run(True, laps=1)) == [1, 3, 2]          # one lap: past car 2 only
+    assert list(_run(True, laps=30)) == [2, 3, 1]         # then past the leader too; car 2 (slower) passed by 3
 
 
 def test_the_battle_model_learns_that_faster_closer_cars_pass():
@@ -171,3 +170,19 @@ def test_a_history_without_passes_gives_neutral_circuits():
     from predictor.race_sim import circuit_propensity
     frame = pd.DataFrame({"circuit": ["a", "a", "b"], "passed": [False, False, False]})
     assert circuit_propensity(frame, 0.0) == {"a": 0.0, "b": 0.0}
+
+
+def test_the_native_simulation_matches_the_numpy_reference():
+    """Golden finishing orders recorded from the NumPy simulation the native lap
+    replaced (same seeds, same random numbers)."""
+    import hashlib
+    from predictor import race_sim
+    model = race_sim.PassModel()
+    model.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    rng = np.random.default_rng(3)
+    pace = rng.normal(0, 0.8, (300, 10))
+    grid = np.argsort(rng.random((300, 10)), axis=1) + 1.0
+    got = race_sim.simulate(pace, grid, model, 0.4, 25, 95.0, 0.5, np.random.default_rng(4), -0.5)
+    assert got[:2].tolist() == [[9, 1, 8, 7, 4, 6, 2, 5, 3, 10], [8, 3, 2, 6, 1, 7, 10, 4, 9, 5]]
+    assert hashlib.sha256(got.astype(np.int64).tobytes()).hexdigest() == \
+        "59eadef3931b82ba4fab920617eae66f5fce1cbf4c90b66b12bc5030c34a6642"

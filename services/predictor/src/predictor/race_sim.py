@@ -6,8 +6,8 @@ Each draw runs the race lap by lap, every car at its race pace:
   by a start noise (`start_noise`, fitted: launches, the first corners); pace then
   acts through racing like on any lap, so a fast car starting behind still has to
   pass.
-- **Racing laps.** Every lap, lap 1 included, every car laps at its race pace plus lap noise (LAP_NOISE, %
-  of a lap). Front to back, a car closes on or drops away from the car ahead; it
+- **Racing laps.** Every lap, lap 1 included, every car laps at its race pace plus
+  lap noise (LAP_NOISE, % of a lap). Front to back, a car closes on or drops away from the car ahead; it
   passes with the probability of the battle model (`PassModel`: the gap at the
   start of the lap, the race-pace difference, the circuit), and otherwise is held
   at least MIN_FOLLOW seconds behind. At most one pass per car per lap.
@@ -26,8 +26,8 @@ season-out) battle log-likelihood by 113.
 """
 import numpy as np
 import pandas as pd
+import predictor_race_native
 from scipy.optimize import minimize
-from scipy.special import expit
 
 from .laps import race_pace, wet_session
 
@@ -136,8 +136,12 @@ class PassModel:
         return self
 
     def probability(self, gap, delta, circuit_term=0.0, shift=0.0):
-        """`shift`: added to the log-odds (a race-outcome calibration of passing)."""
-        return expit(_features(gap, delta) @ self.coef[:5] + self.coef[5] * circuit_term + shift)
+        """`shift`: added to the log-odds (a race-outcome calibration of passing).
+        Computed natively, the same function the simulation uses."""
+        gap, delta = np.broadcast_arrays(np.asarray(gap, dtype=float), np.asarray(delta, dtype=float))
+        out = predictor_race_native.pass_probability(np.ascontiguousarray(gap.ravel()), np.ascontiguousarray(delta.ravel()),
+                                                     np.asarray(self.coef, dtype=float), float(circuit_term), float(shift))
+        return out.reshape(gap.shape)
 
 
 def circuit_propensity(frame, base):
@@ -157,40 +161,17 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
     added to every pass's log-odds."""
     draws, n = pace.shape
-    seconds = pace * lap_seconds / 100                       # s per lap against the field's reference
+    seconds = np.ascontiguousarray(pace * lap_seconds / 100, dtype=float)   # s per lap against the field's reference
     grid = np.broadcast_to(grid, pace.shape)
-    time = START_SPACING * (grid - 1) + start_noise * rng.standard_normal(pace.shape)
+    time = np.ascontiguousarray(START_SPACING * (grid - 1) + start_noise * rng.standard_normal(pace.shape), dtype=float)
     rows = np.arange(draws)
-    for _ in range(laps):
-        order = np.argsort(time, axis=1, kind="stable")        # car at each position
-        before = np.take_along_axis(time, order, axis=1)
-        lap = seconds + (LAP_NOISE * lap_seconds / 100) * rng.standard_normal(pace.shape)
-        after = before + np.take_along_axis(lap, order, axis=1)
-        own = np.take_along_axis(seconds, order, axis=1)
+    coef = np.asarray(passes.coef, dtype=float)
+    scale = LAP_NOISE * lap_seconds / 100
+    for _ in range(laps):       # the lap itself runs natively (predictor_race_native.race_lap)
+        noise = rng.standard_normal(pace.shape)
         luck = rng.random((draws, n))
-        for k in range(1, n):
-            ahead, behind = order[:, k - 1].copy(), order[:, k].copy()
-            gap = before[:, k] - before[:, k - 1]
-            delta = own[:, k] - own[:, k - 1]
-            chance = np.where(gap < BATTLE_GAP, passes.probability(np.maximum(gap, 0.01), delta, circuit_term,
-                                                                      pass_shift), 0.0)
-            passed = luck[:, k] < chance
-            # passed: swap; the passed car is held behind the passer
-            t_ahead, t_behind = after[:, k - 1].copy(), after[:, k].copy()
-            first = np.minimum(t_ahead, t_behind)
-            if k >= 2:      # one place per lap: the passer stays behind the car two ahead
-                first = np.maximum(first, after[:, k - 2] + MIN_FOLLOW)
-            first = np.where(passed, first, t_ahead)
-            second = np.where(passed, np.maximum(t_ahead, first + MIN_FOLLOW),
-                              np.maximum(t_behind, t_ahead + MIN_FOLLOW))
-            after[:, k - 1], after[:, k] = first, second
-            order[:, k - 1] = np.where(passed, behind, ahead)
-            order[:, k] = np.where(passed, ahead, behind)
-            before[:, k - 1], before[:, k] = np.where(passed, before[:, k], before[:, k - 1]), \
-                np.where(passed, before[:, k - 1], before[:, k])
-            own[:, k - 1], own[:, k] = np.where(passed, own[:, k], own[:, k - 1]), np.where(passed, own[:, k - 1], own[:, k])
-        time = np.empty_like(time)
-        time[rows[:, None], order] = after
+        predictor_race_native.race_lap(time, seconds, noise, luck, coef, float(circuit_term), float(pass_shift),
+                                       float(scale), BATTLE_GAP, MIN_FOLLOW)
     order = np.argsort(time, axis=1, kind="stable")
     positions = np.empty_like(order)
     positions[rows[:, None], order] = np.arange(1, n + 1)

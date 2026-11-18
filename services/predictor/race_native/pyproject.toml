@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "predictor-race-native"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Native lap-by-lap race simulation for the F1Stratagem race model"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
