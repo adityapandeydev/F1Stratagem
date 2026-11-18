@@ -465,25 +465,30 @@ def qualifying_trend(laps, results):
 
 def segment_wet_shares(laps, results):
     """{segment: share of its segment times set on wet-weather tyres} for one
-    qualifying, over the times found among the laps (a segment with none is left
-    out). A wet qualifying often dries: Q1 on intermediates, Q3 on slicks."""
+    qualifying, over the times found among the laps on a known compound. A segment
+    where fewer than half its times have a known compound is left out, so the caller
+    keeps the session's own classification: a missing compound is no evidence of
+    slicks. A wet qualifying often dries: Q1 on intermediates, Q3 on slicks."""
     if any(c not in laps for c in ("LapTime", "DriverNumber", "Compound")):
         return {}
     timed = laps[laps.LapTime.notna()]
     seconds = timed.LapTime.dt.total_seconds().to_numpy()
     numbers = timed.DriverNumber.astype(str).to_numpy()
-    wet = timed.Compound.fillna("").astype(str).str.upper().isin(WET).to_numpy()
+    compound = timed.Compound.fillna("").astype(str).str.upper()
+    wet = compound.isin(WET).to_numpy()
+    known = compound.isin(DRY + WET).to_numpy()
     out = {}
     for segment in SEGMENTS_Q:
         if segment not in results:
             continue
-        found = []
+        found, times = [], 0
         for number, value in zip(results.DriverNumber.astype(str), pd.to_timedelta(results[segment]).dt.total_seconds()):
             if pd.isna(value):
                 continue
+            times += 1
             match = np.flatnonzero((numbers == number) & (np.abs(seconds - value) < MATCH_SECONDS))
-            if len(match) == 1:
+            if len(match) == 1 and known[match[0]]:
                 found.append(bool(wet[match[0]]))
-        if found:
+        if found and 2 * len(found) >= times:
             out[segment] = float(np.mean(found))
     return out

@@ -268,3 +268,15 @@ def test_each_segment_knows_the_tyres_its_times_were_set_on():
     slicks = laps.assign(Compound="SOFT")
     assert L.segment_wet_shares(slicks, results) == {"Q1": 0.0}
     assert L.segment_wet_shares(laps.drop(columns="Compound"), results) == {}
+
+
+def test_missing_compounds_are_no_evidence_of_slicks():
+    laps, results, _, _ = _drying_qualifying()
+    for unknown in (None, "UNKNOWN", "TEST_UNKNOWN"):
+        assert L.segment_wet_shares(laps.assign(Compound=unknown), results) == {}
+    half = laps.copy()                                # half the times known: read from those
+    half.loc[half.DriverNumber.astype(int) % 2 == 0, "Compound"] = None
+    assert L.segment_wet_shares(half, results) == {"Q1": 1.0}
+    third = laps.copy()                               # a third known: too little to retype
+    third.loc[third.DriverNumber.astype(int) % 3 != 0, "Compound"] = None
+    assert L.segment_wet_shares(third, results) == {}
