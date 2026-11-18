@@ -130,16 +130,21 @@ class Hyper:
     season_skill_prior: float = 0.0   # spread of a driver's season ability in a part of the track, reset each season
     wet_prior: float = 0.0       # spread of a driver's wet ability (wet sessions only); 0 disables it
     wet_drift: float = 0.0       # its variance added per 14 days
+    driver_affinity_prior: float = 0.0   # spread of a driver x circuit affinity; 0 disables it
+    driver_affinity_drift: float = 0.0   # its variance added per 14 days
+    driver_affinity_winter: float = 0.0  # its variance added at each season start
 
     SCALARS = ("car_drift", "driver_drift", "offset_drift", "car_prior", "driver_prior", "offset_prior",
                "car_winter", "driver_winter", "regulation_multiplier", "weekend_prior",
                "affinity_prior", "affinity_drift", "affinity_winter", "form_prior", "skill_prior", "skill_drift",
-               "season_skill_prior", "estimate_scale", "robust_dof", "wet_prior", "wet_drift")
+               "season_skill_prior", "estimate_scale", "robust_dof", "wet_prior", "wet_drift",
+               "driver_affinity_prior", "driver_affinity_drift", "driver_affinity_winter")
     SHARED = ("car_drift", "driver_drift", "car_prior", "driver_prior")
 
     @staticmethod
     def fitted(types, winter=False, regulation=False, weekend=False, affinity=False, new_cars=True, new_drivers=True,
-               form=False, skills=False, season_skills=False, estimates=False, robust=False, wet=False):
+               form=False, skills=False, season_skills=False, estimates=False, robust=False, wet=False,
+               driver_affinity=False):
         """Scalars that affect the likelihood. Offsets exist only for non-qualifying
         sessions; winter terms only if the data crosses a season start; the regulation
         multiplier only if it crosses a season that began under new regulations; the
@@ -154,7 +159,9 @@ class Hyper:
                 *(("form_prior",) if form else ()),
                 *(("skill_prior", "skill_drift") if skills else ()), *(("season_skill_prior",) if season_skills else ()),
                 *(("estimate_scale",) if estimates else ()), *(("robust_dof",) if robust else ()),
-                *(("wet_prior", "wet_drift") if wet else ()))
+                *(("wet_prior", "wet_drift") if wet else ()),
+                *(("driver_affinity_prior", "driver_affinity_drift", *(("driver_affinity_winter",) if winter else ()))
+                  if driver_affinity else ()))
 
     def vector(self, noise_types, scalars):
         return np.log([self.noise[t] for t in noise_types] + [getattr(self, name) for name in scalars])
@@ -170,8 +177,9 @@ class Hyper:
 
 
 NESTED_AFFINITY = {"affinity_prior": 1e-3, "affinity_drift": 1e-8, "affinity_winter": 1e-8,
-                   "skill_prior": 1e-3, "skill_drift": 1e-8, "season_skill_prior": 1e-3}
-NESTED_TERMS = ("affinity", "skill", "season_skill")   # terms a model adds to the one it extends
+                   "skill_prior": 1e-3, "skill_drift": 1e-8, "season_skill_prior": 1e-3,
+                   "driver_affinity_prior": 1e-3, "driver_affinity_drift": 1e-8, "driver_affinity_winter": 1e-8}
+NESTED_TERMS = ("affinity", "skill", "season_skill", "driver_affinity")   # terms a model adds to the one it extends
 LOG_BOUNDS = (-20.0, 4.0)   # settings are fitted as logs: about 2e-9 to 55
 # Historical qualifying cannot be more precise than this (modern qualifying noise is
 # about 0.45): below it the 2019 fit had a second optimum treating history as exact.
@@ -432,7 +440,7 @@ class PaceModel:
                  skills=(), season_skills=(), driver_offsets=(), practice_push=False, long_runs=False,
                  race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
                  wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False,
-                 wet_segments=False):
+                 wet_segments=False, driver_affinity=False):
         history = "shared" if history is True else history
         assert history in (False, *HISTORY_MODES), history
         self.session_types = tuple(session_types) + (("H",) if history in OWN_TYPE_HISTORY else ())
@@ -442,6 +450,8 @@ class PaceModel:
         self.weekend = weekend
         self.shared_from_qualifying = shared_from_qualifying
         self.affinity = affinity
+        # each driver's own affinity for a circuit, against his teammates (the car's is `affinity`)
+        self.driver_affinity = driver_affinity
         self.form = form
         self.skills, self.season_skills = tuple(skills), tuple(season_skills)
         self.driver_offsets = tuple(driver_offsets)
@@ -752,13 +762,14 @@ class PaceModel:
         return track.layout_profile(profiles)
 
     def record(self, view, sessions, weekend, affinity, objective=None, form=False, skills=False,
-               season_skills=False):
+               season_skills=False, driver_affinity=False):
         """The filter run over `sessions`, recorded (see `program.Recorder`). With the
         qualifying objective, track 1 is the filter as it stood before each weekend and
         sees only that weekend's qualifying; only qualifying updates count."""
         objective = objective or self.objective
         recorder = Recorder(self.session_types, weekend, affinity, form, self.skills if skills else (),
-                            self.season_skills if season_skills else (), self.driver_offsets, self.wet_ability)
+                            self.season_skills if season_skills else (), self.driver_offsets, self.wet_ability,
+                            driver_affinity)
         event = None
         for session in sessions.itertuples():
             recorder.advance(session.scheduled_start_utc)
@@ -793,14 +804,16 @@ class PaceModel:
         """Filter every session. `state.objective` is the quantity the settings maximise."""
         return self.record(view, sessions, hyper.weekend_prior > 0, hyper.affinity_prior > 0,
                            form=hyper.form_prior > 0, skills=hyper.skill_prior > 0,
-                           season_skills=hyper.season_skill_prior > 0).replay(hyper)
+                           season_skills=hyper.season_skill_prior > 0,
+                           driver_affinity=hyper.driver_affinity_prior > 0).replay(hyper)
 
     def objective_function(self, view, sessions, like):
         """hyper -> objective over `sessions`, for settings with the same weekend and
         affinity switches as `like`: recorded once, replayed for every candidate."""
         return self.record(view, sessions, like.weekend_prior > 0, like.affinity_prior > 0,
                            form=like.form_prior > 0, skills=like.skill_prior > 0,
-                           season_skills=like.season_skill_prior > 0).objective
+                           season_skills=like.season_skill_prior > 0,
+                           driver_affinity=like.driver_affinity_prior > 0).objective
 
     def fit_hyper(self, view, sessions, start, frozen=()):
         """Fit the settings that affect the objective, except those named in `frozen`."""
@@ -833,6 +846,7 @@ class PaceModel:
         regulation = winter and any(s in REGULATION_CHANGES for s in crossed)
         # affinity needs repeat visits: with a single season of data every circuit was seen once
         affinity = self.affinity and len(seasons) > 1
+        driver_affinity = self.driver_affinity and len(seasons) > 1
         # season form needs a season start inside the counted sessions: within one season
         # it cannot be told apart from the driver's level
         form = self.form and winter
@@ -850,18 +864,22 @@ class PaceModel:
             # also a repeat visit, so the affinity can be identified from the first counted season
             visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
             affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
+        if self.driver_affinity and state and not driver_affinity:
+            visited = {self.circuit(view, e) for e in sessions[history].event_key} - {None}
+            driver_affinity = bool(visited & {self.circuit(view, e) for e in counted.event_key})
         counts = sessions.session_type.value_counts()
         # wet ability once the data has enough wet sessions to tell it from noise
         wet = self.wet_ability and sum(n for t, n in counts.items()
                                        if t.endswith(WET_SUFFIX) and base_type(t) != t) >= MIN_WET_SESSIONS
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers,
                                            form, skills, season_skills, self.race_estimates and "R" in types,
-                                           self.robust, wet)
+                                           self.robust, wet, driver_affinity)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen
                        and not (t.endswith(WET_SUFFIX) and base_type(t) != t and counts.get(t, 0) < MIN_WET_SESSIONS)]
         default = self._default_start()
         off = {**({"affinity_prior": 0.0} if self.affinity and not affinity else {}),
+               **({"driver_affinity_prior": 0.0} if self.driver_affinity and not driver_affinity else {}),
                **({"form_prior": 0.0} if self.form and not form else {}),
                **({"season_skill_prior": 0.0} if self.season_skills and not season_skills else {}),
                **({"skill_prior": 0.0, "skill_drift": 0.0} if self.skills and not skills else {})}
@@ -935,7 +953,7 @@ class PaceModel:
                              affinity=base.affinity, form=base.form, skills=bool(base.skills),
                              season_skills=bool(base.season_skills),
                              estimates=base.race_estimates and "R" in base.session_types, robust=base.robust,
-                             wet=base.wet_ability)
+                             wet=base.wet_ability, driver_affinity=base.driver_affinity)
         noise = {**start.noise, **{t: base.hyper.noise[t] for t in base.session_types}}
         merged = replace(start, noise=noise, **{name: getattr(base.hyper, name) for name in owned})
         if base.fit_log[season].get("fitted") is None:     # the base kept its starting values: too little data
@@ -955,7 +973,7 @@ class PaceModel:
             problems.append("objective")
         if base.shared_from_qualifying or self.shared_from_qualifying:
             problems.append("shared-from-qualifying fit")
-        for flag in ("winter", "weekend", "affinity", "form"):
+        for flag in ("winter", "weekend", "affinity", "form", "driver_affinity"):
             if getattr(base, flag) and not getattr(self, flag):
                 problems.append(flag)
         for bands in ("skills", "season_skills"):
@@ -989,7 +1007,9 @@ class PaceModel:
                      **({"season_skill_prior": 0.2} if self.season_skills else {}),
                      **({"estimate_scale": 1.0} if self.race_estimates else {}),
                      **({"robust_dof": 5.0} if self.robust else {}),
-                     **({"wet_prior": 0.2, "wet_drift": 0.001} if self.wet_ability else {}))
+                     **({"wet_prior": 0.2, "wet_drift": 0.001} if self.wet_ability else {}),
+                     **({"driver_affinity_prior": 0.1, "driver_affinity_drift": 0.0005,
+                         "driver_affinity_winter": 0.01} if self.driver_affinity else {}))
 
     def fit(self, history, view_for):
         return self
@@ -1005,6 +1025,7 @@ class PaceModel:
                 "wet_ability": self.wet_ability, "wet_races": self.wet_races,
                 **({"wet_evolution": True} if self.wet_evolution else {}),
                 **({"wet_segments": True} if self.wet_segments else {}),
+                **({"driver_affinity": True} if self.driver_affinity else {}),
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 
@@ -1064,7 +1085,8 @@ class PaceModel:
         """Mean and covariance of the entrants' qualifying pace at the example's cutoff."""
         recorder = self.record(view, self.sessions(view), self.hyper.weekend_prior > 0,
                                self.hyper.affinity_prior > 0, objective="all", form=self.hyper.form_prior > 0,
-                               skills=self.hyper.skill_prior > 0, season_skills=self.hyper.season_skill_prior > 0)
+                               skills=self.hyper.skill_prior > 0, season_skills=self.hyper.season_skill_prior > 0,
+                               driver_affinity=self.hyper.driver_affinity_prior > 0)
         recorder.advance(example.cutoff_time)
         if recorder.event != example.event_key:
             # before the weekend: its weekend effect is unknown; this circuit's affinity resumes

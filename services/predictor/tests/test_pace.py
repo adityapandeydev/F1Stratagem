@@ -202,6 +202,55 @@ def test_affinity_persists_between_visits_and_shapes_the_next_forecast():
     assert gap(at_marina) - gap(at_monza) == pytest.approx(0.8, abs=0.15)
 
 
+def test_driver_affinity_persists_between_visits_against_his_teammate():
+    """Driver 'a' is always 0.6% slower at 'marina_bay' than his teammate's usual gap.
+    The car's affinity cannot hold it (his teammate is not slower); the driver's can.
+    Car and driver affinities park side by side without sharing a slot."""
+    rng = np.random.default_rng(5)
+    hyper = affinity_hyper(driver_affinity_prior=0.5, driver_affinity_drift=1e-5, driver_affinity_winter=0.001)
+    state = Recorder(("Q",), weekend=True, affinity=True, driver_affinity=True)
+    cars, drivers = [c for _, c in LINEUP], [d for d, _ in LINEUP]
+    truth = np.array([CARS[c] + DRIVERS[d] for d, c in LINEUP])
+    penalty = np.array([0.6 if d == "a" else 0.0 for d, _ in LINEUP])
+    time = pd.Timestamp("2019-03-01", tz=UTC)
+    for event in range(24):
+        circuit = "marina_bay" if event % 2 else "monza"
+        time += pd.Timedelta(weeks=8)
+        state.advance(time)
+        state.start_event(event, circuit)
+        state.update(cars, drivers, truth + (penalty if circuit == "marina_bay" else 0) + rng.normal(0, 0.05, 6), "Q")
+    assert len(state.slot_of) == len(set(state.slot_of)) and ("driver_affinity", ("a", "monza")) in state.slot_of
+    state.advance(time + pd.Timedelta(weeks=8))
+    state.start_event(99, "marina_bay")
+    at_marina, _ = estimate(state, hyper, cars, drivers)
+    state.start_event(100, "monza")
+    at_monza, _ = estimate(state, hyper, cars, drivers)
+    gap = lambda x: x[0] - x[1]                   # a against his teammate b
+    assert gap(at_marina) - gap(at_monza) == pytest.approx(0.6, abs=0.1)
+
+
+def test_driver_affinity_is_not_scaled_at_a_regulation_change():
+    hyper = affinity_hyper(affinity_drift=0.0, driver_affinity_prior=0.5, driver_affinity_drift=0.0,
+                           driver_affinity_winter=0.004)
+    key = ("driver_affinity", ("a", "marina_bay"))
+    state = Recorder(("Q",), weekend=True, affinity=True, driver_affinity=True)
+    state.advance(pd.Timestamp("2021-09-01", tz=UTC))
+    state.start_event(1, "marina_bay")
+    state.update(["fast", "fast"], ["a", "b"], np.array([90.0, 90.4]))
+    visited = state.replay(hyper)
+    value, variance = visited.mean[visited.index[key]], visited.cov[visited.index[key]][visited.index[key]]
+    assert value != 0
+    state.advance(pd.Timestamp("2021-10-01", tz=UTC))
+    state.start_event(2, "monza")
+    state.advance(pd.Timestamp("2022-09-01", tz=UTC))
+    state.start_event(3, "marina_bay")
+    state.columns(["fast"], ["a"], "Q")
+    resumed = state.replay(hyper)
+    index = resumed.index[key]
+    assert resumed.mean[index] == pytest.approx(value)
+    assert resumed.cov[index, index] == pytest.approx(variance + 0.004)           # one winter, not multiplied
+
+
 def test_regulation_change_inflates_parked_affinity_but_keeps_its_value():
     hyper = affinity_hyper(affinity_drift=0.0)
     key = ("affinity", ("fast", "marina_bay"))

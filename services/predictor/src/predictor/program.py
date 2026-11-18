@@ -24,7 +24,9 @@ try:
 except ImportError as error:   # pragma: no cover - the build step is part of installing the service
     raise ImportError("predictor_native is not built; run `make predictor-native`") from error
 
-KINDS = ("car", "driver", "offset", "weekend", "affinity", "form", "skill", "season_skill", "wet")
+KINDS = ("car", "driver", "offset", "weekend", "affinity", "form", "skill", "season_skill", "wet",
+         "driver_affinity")
+PARKED = ("affinity", "driver_affinity")   # per-circuit kinds: parked between visits to their circuit
 REFERENCE_TYPES = ("Q", "H")  # session types read without an offset: qualifying and historical qualifying
 WET_SUFFIX = "W"               # a session in wet or mixed conditions: "QW", "FP2W" (own noise, shared offsets)
 
@@ -98,11 +100,14 @@ def _weighted(entry):
 def settings(hyper, noise_types):
     """Settings as the arrays the native filter reads."""
     priors = [hyper.car_prior, hyper.driver_prior, hyper.offset_prior, hyper.weekend_prior, hyper.affinity_prior,
-              hyper.form_prior, hyper.skill_prior, hyper.season_skill_prior, hyper.wet_prior]
+              hyper.form_prior, hyper.skill_prior, hyper.season_skill_prior, hyper.wet_prior,
+              hyper.driver_affinity_prior]
     drifts = [hyper.car_drift, hyper.driver_drift, hyper.offset_drift, 0.0, hyper.affinity_drift, 0.0,
-              hyper.skill_drift, 0.0, hyper.wet_drift]
-    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0, 0.0, 0.0, 0.0]
-    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]   # which kinds the regulation multiplier scales
+              hyper.skill_drift, 0.0, hyper.wet_drift, hyper.driver_affinity_drift]
+    winters = [hyper.car_winter, hyper.driver_winter, 0.0, 0.0, hyper.affinity_winter, 0.0, 0.0, 0.0, 0.0,
+               hyper.driver_affinity_winter]
+    # which kinds the regulation multiplier scales: the car's, not the driver's
+    multiplied = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     noise = [hyper.noise.get(t, 0.0) for t in noise_types]
     return (np.array(priors, dtype=np.float64), np.array(drifts, dtype=np.float64),
             np.array(winters, dtype=np.float64), np.array(multiplied, dtype=np.float64),
@@ -115,7 +120,7 @@ class _Track:
 
     def __init__(self):
         self.index, self.kind = {}, []
-        self.parked = {}      # affinity key -> (slot, time parked)
+        self.parked = {}      # (kind, key) of a per-circuit state -> (slot, time parked)
         self.time = None
 
     def copy(self):
@@ -130,8 +135,10 @@ class Recorder:
     weekend / affinity switches. `columns` adds the states a forecast reads."""
 
     def __init__(self, noise_types, weekend=False, affinity=False, form=False, skills=(), season_skills=(),
-                 driver_offsets=(), wet_ability=False):
+                 driver_offsets=(), wet_ability=False, driver_affinity=False):
         self.weekend, self.affinity, self.form = weekend, affinity, form
+        # a driver's own affinity for a circuit (against his teammates), kept between visits
+        self.driver_affinity = driver_affinity
         # a driver's pace in the wet against his dry pace, read by wet sessions ("QW", "FP2W")
         self.wet_ability = wet_ability
         # parts of the track (track.BANDS) with a driver skill, persistent or per season; an
@@ -167,8 +174,8 @@ class Recorder:
         t = self.tracks[track]
         if (kind, key) not in t.index:
             slot, accrual = -1, -1
-            if kind == "affinity" and key in t.parked:
-                slot, since = t.parked.pop(key)
+            if kind in PARKED and (kind, key) in t.parked:
+                slot, since = t.parked.pop((kind, key))
                 accrual = len(self.ints)
                 if since is None or t.time is None or t.time <= since:
                     self.ints += [-1, 0, 0]
@@ -198,13 +205,13 @@ class Recorder:
         circuits are parked until the next visit."""
         self.event = event
         t = self.tracks[0]
-        if self.affinity:
-            active = [i for i, kind in enumerate(t.kind) if kind == "affinity"]
+        if self.affinity or self.driver_affinity:
+            active = [i for i, kind in enumerate(t.kind) if kind in PARKED]
             keys = sorted(t.index, key=t.index.get)
             if active:
                 start = len(self.ints)
                 for i in active:
-                    key = keys[i][1]
+                    key = keys[i]
                     slot = self.slot_of.setdefault(key, len(self.slot_of))
                     t.parked[key] = (slot, t.time)
                     self.ints += [i, slot]
@@ -250,6 +257,8 @@ class Recorder:
                 row.append(self.column(driver, "form", track))
             if self.affinity and self.circuit is not None:
                 row.append(self.column((car, self.circuit), "affinity", track))
+            if self.driver_affinity and self.circuit is not None:
+                row.append(self.column((driver, self.circuit), "driver_affinity", track))
             if self.shares is not None and session_type != "H":
                 for band in self.skills:
                     row.append((self.column((driver, band), "skill", track), self.shares[f"share_{band}"]))
@@ -292,8 +301,9 @@ class Recorder:
 
     def _check(self, hyper):
         if (hyper.weekend_prior > 0, hyper.affinity_prior > 0, hyper.form_prior > 0, hyper.skill_prior > 0,
-                hyper.season_skill_prior > 0) != (self.weekend, self.affinity, self.form, bool(self.skills),
-                                                  bool(self.season_skills)):
+                hyper.season_skill_prior > 0, hyper.driver_affinity_prior > 0) != (
+                self.weekend, self.affinity, self.form, bool(self.skills), bool(self.season_skills),
+                self.driver_affinity):
             raise ValueError("settings switch a term the recorded program does not have")
 
     def objective(self, hyper):
