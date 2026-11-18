@@ -227,7 +227,8 @@ class RaceModel:
         positions = self.order(race, grid, chosen, context, seed)
         known_grid = grid.shape[0] == 1
         return self.forecast(example, positions, seed, {
-            "grid": "known" if known_grid else "simulated", "context": context,
+            "grid": "known" if known_grid else "simulated",
+            "context": {k: (v["factor"] if k == "neutral" else v) for k, v in context.items()},
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share})
 
@@ -256,12 +257,17 @@ class SimulatedRace(RaceModel):
     `forecast_battles`: the battle model reads, for each pair, the pace difference
     the model forecast at the cutoff (BATTLE_DRAWS draws of its race pace, the input
     the simulation gives it) instead of the race's own measured pace, which is
-    taken from the same race and so is slowed by being held up."""
+    taken from the same race and so is slowed by being held up.
 
-    def __init__(self, pace, name, pass_shift=False, forecast_battles=False):
+    `neutralisations`: safety cars, virtual safety cars and red flags
+    (`race_sim.NeutralModel`, fitted per season on the races before it)."""
+
+    def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False):
         super().__init__(pace, name)
         self.pass_shift = pass_shift
         self.forecast_battles = forecast_battles
+        self.neutralisations = neutralisations
+        self._neutral_models, self._periods, self._neutral = {}, {}, None
         self.passes = race_sim.PassModel()
         self._pass_models = {}      # (season, cutoff) -> PassModel
         self._battles, self._race_shape = {}, {}
@@ -298,6 +304,30 @@ class SimulatedRace(RaceModel):
 
     def select(self, key):
         self.passes = self._pass_models[key]
+        self._neutral = self._neutral_models.get(key[0])
+
+    def _race_periods(self, view, race):
+        if race.session_id not in self._periods:
+            table = view.laps(race.session_id)
+            periods = race_sim.neutral_periods(table)
+            self._periods[race.session_id] = None if periods is None else (int(table.LapNumber.max()), periods)
+        return self._periods[race.session_id]
+
+    def _fit_neutral(self, season):
+        """The neutralisation model for `season`, from the races before it."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        races = view.sessions[view.sessions.session_type == "R"]
+        recent, rows = [], []
+        for race in races.itertuples():
+            shape = self._race_periods(view, race)
+            if shape is None:
+                continue
+            laps, periods = shape
+            recent.append((int(race.season), laps, periods))
+            rows.append((int(race.season), self.pace.circuit(view, race.event_key), laps, len(periods)))
+        history = pd.concat([race_sim.history_neutralisations(self._archive.root, view.cutoff),
+                             pd.DataFrame(rows, columns=["season", "circuit", "laps", "n"])], ignore_index=True)
+        return race_sim.NeutralModel().fit(history, recent)
 
     def _forecast_deltas(self, frame, term, season, cutoff):
         """The battle pairs of races forecast from `cutoff` in earlier seasons, each
@@ -334,7 +364,11 @@ class SimulatedRace(RaceModel):
 
     def prepare_season(self, season, cutoff):
         """The battle model for `season` at `cutoff`, from the races before the
-        season; each pair's circuit term from the other seasons' battles."""
+        season; each pair's circuit term from the other seasons' battles. Also the
+        neutralisation model for the season."""
+        if self.neutralisations and season not in self._neutral_models:
+            self._neutral_models[season] = self._fit_neutral(season)
+        self._neutral = self._neutral_models.get(season)
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         frame = self._battles_in(view)
         term = np.zeros(len(frame))
@@ -372,7 +406,10 @@ class SimulatedRace(RaceModel):
             green_same = [seconds for name, _, seconds in shapes if seconds is not None and layout is not None
                           and name == layout]
             lap = (green_same or green or [lap])[-1]
-        return {"circuit_term": term, "laps": laps, "lap_seconds": lap}
+        context = {"circuit_term": term, "laps": laps, "lap_seconds": lap}
+        if self.neutralisations and self._neutral is not None:
+            context["neutral"] = self._neutral.race(circuit, laps)
+        return context
 
     def _shape(self, view, race):
         if race.session_id not in self._race_shape:
@@ -384,4 +421,4 @@ class SimulatedRace(RaceModel):
             race = race + setting["sigma"] * np.random.default_rng([seed, 8]).standard_normal(race.shape)
         return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
-                                 setting.get("pass_shift", 0.0))
+                                 setting.get("pass_shift", 0.0), context.get("neutral"))

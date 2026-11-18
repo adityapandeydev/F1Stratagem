@@ -31,7 +31,7 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Race pace estimation uncertainty in the filter (v3wru), failed laps in qualifying (v3wrqf) | Tested, not adopted |
 | Qualifying history 1996–2017, driver season form, car × circuit affinity, driver corner skills | Tested, not adopted (see Training and evaluation) |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
-| Safety cars, virtual safety cars, red flags and shortened races in the race simulation (stage 2b) | Next |
+| Safety cars, virtual safety cars and red flags in the race simulation (stage 2b) | Implemented; simulation base (race:v2b) |
 | Tyres and strategy, grid penalties and weather in the race simulation (stages 3–4) | Planned |
 | Circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
@@ -639,12 +639,35 @@ the race lap by lap:
 
 **Next stages:**
 
-- **2b: neutralisations and shortened races.** Safety car and virtual safety car
-  as a per-lap hazard with the lap-1 spike (measured 2018–2023: 0.75 safety cars
-  per race, 24% of them on laps 1–2, per-lap hazard 0.0126), checked for circuit
-  persistence first; gaps close up and nobody passes while it is out. Red flags
-  and shortened races (stopped, time-limited, abandoned) as their own scenarios;
-  a shortened race never sets the scheduled distance.
+- **Shortened races** beyond a red flag that ends the race (time limits) as
+  their own scenario; a shortened race never sets the scheduled distance.
+**Stage 2b: neutralisations (implemented; simulation base `race:v2b`).**
+
+- **History.** Track status gives every safety car, virtual safety car and red
+  flag from 2018 (a run of neutralised laps is one period, its kind the most
+  severe: red flag, then safety car, then virtual safety car). Before 2018 they
+  are inferred from Jolpica's lap times: a lap is neutralised when the field's
+  median is 10% slower than the race's typical lap (25% on lap 1, which includes
+  the standing start). On 2018, the season with both, this gives the exact count
+  in 18 of 20 races and the same total.
+- **Circuits.** On 2018–2024 alone circuits differ no more than chance (p = 0.71
+  for safety cars); over 1996–2024 (543 races) they clearly do (p < 0.0001):
+  Montreal and Singapore about 1.8 times the typical rate, Melbourne and
+  Interlagos 1.6, Monaco 1.5; Barcelona 0.4, the Hungaroring 0.5. The rate also
+  rose over time: 0.54 neutralisations per race in 1996–2005, 0.84 in 2006–2014,
+  1.0 in 2015–2017, 1.46 in 2018–2024.
+- **Hazard.** Per lap: a base rate from the last three seasons with track status,
+  laps 1–2 apart (32% of races have one there), counted over the laps on which one
+  can start, times a circuit factor shrunk towards 1 by a gamma prior whose spread
+  is estimated from the same races. Kind mix, lengths (safety car median 5 laps,
+  virtual 3) and the chance a red flag ends the race (1 of 19 in 2018–2024) come
+  from the races with track status.
+- **In the simulation.** A safety car or red flag closes the field up to 0.52 s
+  per car (the median gap when a safety car ends); a virtual safety car keeps the
+  gaps; nobody passes while it lasts.
+- **Result.** Level with the same simulation without neutralisations at both
+  cutoffs: they matter for strategy (a cheap stop under a safety car), which
+  stage 3 adds, more than for the finishing order alone.
 - **Lap time from the weekend's own sessions** once practice or qualifying has
   run, so a first race on a new layout (2020 Sakhir, outer loop) does not inherit
   another layout's lap; the earlier race stays the fallback before the weekend.
@@ -965,6 +988,7 @@ Races (2019–2024, 128 races):
 | race:v2as: v2a + a fitted shift of every pass's log-odds | +0.00006 (noise) | −0.00020 (noise); 2024 −0.00105 | not adopted |
 | race:v2af: v2a with the battle model fitted on forecast pace differences | −0.00012 (noise); +0.00018 against v2a (noise) | −0.00026 (noise); −0.00099 against v2a, better beyond noise; winner log loss 1.36 → 1.32 | not a champion; **base of the next stage** |
 | race:v2afs: v2af + pass shift | −0.00001 (noise) | −0.00040 (noise) | not adopted |
+| race:v2b: v2af + safety cars, virtual safety cars and red flags | −0.00007 (noise); +0.00016 against v2af (noise) | −0.00029 (noise); −0.00099 against v2a, better beyond noise; −0.00003 against v2af (noise) | not a champion; **simulation base** (stages 3–4 need neutralisations) |
 
 Differences are against race:v1a. The first v2a results were discarded: a
 shortened race could set the next year's race length and lap time (fixed before

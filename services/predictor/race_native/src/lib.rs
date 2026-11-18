@@ -6,6 +6,14 @@
 //! probability, else hold it at least `min_follow` behind. At most one place gained
 //! per car per lap.
 //!
+//! Neutralisations (optional): before each green lap a safety car, virtual safety
+//! car or red flag starts with that lap's hazard. Its kind and length in laps are
+//! drawn from the observed mix and lengths. A safety car or red flag closes the
+//! field up to `sc_gap` seconds per car in the running order; a virtual safety car
+//! keeps the gaps. Nobody passes and pace does not act while it lasts. A red flag
+//! ends the race with probability `red_end`. With every hazard zero no random
+//! number is drawn for them, so races are exactly those without neutralisations.
+//!
 //! Random numbers are drawn here: each draw has its own PCG64 generator, its state
 //! spread from the forecast's seed and the draw index, so a forecast is
 //! reproducible from its seed and does not depend on the number of threads. Draws
@@ -96,6 +104,19 @@ fn lap_of_draw(
     }
 }
 
+/// Neutralisations of one race: per-lap hazard of a new one, the kind mix
+/// (safety car, virtual safety car, red flag) and observed lengths of each kind.
+struct Neutral {
+    hazard: Vec<f64>,
+    kinds: [f64; 3],
+    lengths: [Vec<usize>; 3],
+    sc_gap: f64,
+    red_end: f64,
+}
+
+const SC: usize = 0;
+const RED: usize = 2;
+
 /// Settings of one simulated race, shared by all its draws.
 struct Race {
     coef: [f64; 6],
@@ -107,6 +128,18 @@ struct Race {
     scale: f64,
     battle_gap: f64,
     min_follow: f64,
+    neutral: Neutral,
+}
+
+/// Closes the field up behind the leader, `gap` seconds per place, order kept.
+fn close_up(time: &mut [f64], order: &mut Vec<usize>, gap: f64) {
+    order.clear();
+    order.extend(0..time.len());
+    order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
+    let leader = time[order[0]];
+    for (place, &car) in order.iter().enumerate() {
+        time[car] = leader + gap * place as f64;
+    }
 }
 
 /// One draw: the race from the grid to the flag; writes finishing positions (1 =
@@ -120,7 +153,30 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
     let (mut noise, mut luck) = (vec![0.0; n], vec![0.0; n]);
     let (mut order, mut before, mut after, mut own) =
         (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
-    for _ in 0..race.laps {
+    let mut neutral_left = 0usize;
+    for lap in 0..race.laps {
+        if neutral_left == 0 && race.neutral.hazard[lap] > 0.0 && rng.gen::<f64>() < race.neutral.hazard[lap] {
+            let pick = rng.gen::<f64>();
+            let kind = if pick < race.neutral.kinds[0] {
+                SC
+            } else if pick < race.neutral.kinds[0] + race.neutral.kinds[1] {
+                1
+            } else {
+                RED
+            };
+            let lengths = &race.neutral.lengths[kind];
+            neutral_left = if lengths.is_empty() { 1 } else { lengths[rng.gen_range(0..lengths.len())].max(1) };
+            if kind == RED && rng.gen::<f64>() < race.neutral.red_end {
+                break; // the race is not restarted: classified as it stands
+            }
+            if kind != 1 {
+                close_up(&mut time, &mut order, race.neutral.sc_gap);
+            }
+        }
+        if neutral_left > 0 {
+            neutral_left -= 1; // neutralised: nobody passes, pace does not act
+            continue;
+        }
         for value in noise.iter_mut() {
             *value = rng.sample(StandardNormal);
         }
@@ -171,11 +227,34 @@ fn simulate<'py>(
     battle_gap: f64,
     min_follow: f64,
     seed: u64,
+    hazard: PyReadonlyArray1<f64>,
+    kinds: PyReadonlyArray1<f64>,
+    sc_lengths: PyReadonlyArray1<i64>,
+    vsc_lengths: PyReadonlyArray1<i64>,
+    red_lengths: PyReadonlyArray1<i64>,
+    sc_gap: f64,
+    red_end: f64,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
         return Err(PyValueError::new_err("seconds and grid must have one shape"));
     }
+    let hazard = hazard.as_slice()?.to_vec();
+    if hazard.len() != laps {
+        return Err(PyValueError::new_err("one hazard per lap"));
+    }
+    let kinds: [f64; 3] =
+        kinds.as_slice()?.try_into().map_err(|_| PyValueError::new_err("three kind shares: SC, VSC, red"))?;
+    let lengths = |a: &PyReadonlyArray1<i64>| -> PyResult<Vec<usize>> {
+        Ok(a.as_slice()?.iter().map(|&x| x.max(1) as usize).collect())
+    };
+    let neutral = Neutral {
+        hazard,
+        kinds,
+        lengths: [lengths(&sc_lengths)?, lengths(&vsc_lengths)?, lengths(&red_lengths)?],
+        sc_gap,
+        red_end,
+    };
     let (draws, n) = (shape[0], shape[1]);
     let race = Race {
         coef: coefficients(coef.as_slice()?)?,
@@ -187,6 +266,7 @@ fn simulate<'py>(
         scale,
         battle_gap,
         min_follow,
+        neutral,
     };
     let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
     let mut positions = vec![0i64; draws * n];

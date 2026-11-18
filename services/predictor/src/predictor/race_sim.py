@@ -37,6 +37,12 @@ START_SPACING = 0.25    # s per grid slot at the start
 LAP_NOISE = 0.55        # % of a lap: lap-to-lap noise of a car's lap time
 PASS_PRIOR_PAIRS = 400.0
 DEFAULT_LAPS, DEFAULT_LAP = 57, 90.0
+KINDS = ("sc", "vsc", "red")    # neutralisations, in the native module's order
+SEVERITY = {"vsc": 0, "sc": 1, "red": 2}   # a run of mixed laps takes its most severe kind
+SC_GAP = 0.52           # s: median gap between consecutive cars when a safety car ends (2018-2024)
+SLOW_LAP = 1.10         # a lap whose field median is this much slower than the race's typical lap is neutralised
+SLOW_FIRST_LAP = 1.25   # the same for lap 1, which includes the standing start
+RECENT_SEASONS = 3      # seasons the base neutralisation rate is taken from
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
 
@@ -157,16 +163,164 @@ def circuit_propensity(frame, base):
     return np.log(share / base).to_dict()
 
 
-def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0):
+def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
     `pace`: race pace draws (% of a lap, lower is faster); `grid`: slots, one row or
     one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
-    added to every pass's log-odds."""
+    added to every pass's log-odds; `neutral`: `NeutralModel.race(...)` (None: no
+    neutralisations)."""
+    laps = int(laps)
+    if neutral is None:
+        neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
+                   "lengths": {kind: np.array([1]) for kind in KINDS}, "red_end": 0.0}
     seconds = np.ascontiguousarray(pace * lap_seconds / 100, dtype=float)   # s per lap against the field's reference
     grid = np.ascontiguousarray(np.broadcast_to(grid, pace.shape), dtype=float)
     seed = int(rng.integers(0, 2 ** 63))
+    lengths = [np.asarray(neutral["lengths"][kind], dtype=np.int64) for kind in KINDS]
     return predictor_race_native.simulate(seconds, grid, np.asarray(passes.coef, dtype=float), float(circuit_term),
-                                          float(pass_shift), int(laps), float(start_noise), START_SPACING,
-                                          float(LAP_NOISE * lap_seconds / 100), BATTLE_GAP, MIN_FOLLOW, seed)
+                                          float(pass_shift), laps, float(start_noise), START_SPACING,
+                                          float(LAP_NOISE * lap_seconds / 100), BATTLE_GAP, MIN_FOLLOW, seed,
+                                          np.ascontiguousarray(neutral["hazard"][:laps], dtype=float),
+                                          np.asarray(neutral["kinds"], dtype=float), *lengths, SC_GAP,
+                                          float(neutral["red_end"]))
+
+
+def neutral_periods(laps):
+    """Neutralisations of a race from its track status: [(first lap, kind, laps)],
+    one per run of consecutive neutralised laps, its kind the most severe in the run
+    (red flag, then safety car, then virtual safety car); None without track status."""
+    if "TrackStatus" not in laps or laps.empty:
+        return None
+    status = laps.groupby("LapNumber").TrackStatus.agg(lambda s: "".join(str(x) for x in s.dropna()))
+    kind = pd.Series(None, index=status.index, dtype=object)
+    kind[status.str.contains("[67]")] = "vsc"
+    kind[status.str.contains("4")] = "sc"
+    kind[status.str.contains("5")] = "red"
+    periods, run = [], None
+    for lap, here in kind.items():
+        if pd.isna(here):
+            if run:
+                periods.append(tuple(run))
+            run = None
+        elif run is None:
+            run = [int(lap), here, 1]
+        else:
+            run[2] += 1
+            if SEVERITY[here] > SEVERITY[run[1]]:
+                run[1] = here
+    if run:
+        periods.append(tuple(run))
+    return periods
+
+
+def slow_lap_periods(times):
+    """Neutralisations inferred from lap times alone (races without track status):
+    `times` maps lap -> every car's lap time (s). A lap is neutralised when the
+    field's median is SLOW_LAP times the race's typical lap (SLOW_FIRST_LAP on lap
+    1); [(first lap, None, laps)]. On 2018, the one season with both, this gives
+    the exact count in 18 of 20 races and the same total (27)."""
+    median = pd.Series({lap: float(np.median(t)) for lap, t in times.items()}).sort_index()
+    typical = median[median.index > 1].median()
+    slow = median > SLOW_LAP * typical
+    if 1 in slow.index:
+        slow[1] = median[1] > SLOW_FIRST_LAP * typical
+    periods, start = [], None
+    for lap, here in slow.items():
+        if here and start is None:
+            start = int(lap)
+        elif not here and start is not None:
+            periods.append((start, None, int(lap) - start))
+            start = None
+    if start is not None:
+        periods.append((start, None, int(slow.index[-1]) - start + 1))
+    return periods
+
+
+def history_neutralisations(root, cutoff, before_season=2018):
+    """Races before `before_season` from Jolpica's lap times (1996 on) available at
+    `cutoff`: DataFrame season, circuit, laps, n (neutralisations inferred by
+    `slow_lap_periods`)."""
+    from .archive import NOMINAL_DURATION, PUBLICATION_DELAY
+    tables = root / "external" / "jolpica" / "tables"
+    if not (tables / "laps.parquet").exists():
+        return pd.DataFrame(columns=["season", "circuit", "laps", "n"])
+    races = pd.read_parquet(tables / "races.parquet")
+    races = races.assign(season=races.season.astype(int), round=races["round"].astype(int))
+    start = pd.to_datetime(races.date + " " + races.time.fillna("12:00:00Z").str.rstrip("Z"), utc=True)
+    races = races[(start + NOMINAL_DURATION["R"] + PUBLICATION_DELAY["R"] <= cutoff) & (races.season < before_season)]
+    laps = pd.read_parquet(tables / "laps.parquet")
+    laps = laps[laps.season.astype(int) < before_season]
+    laps = laps.assign(season=laps.season.astype(int), round=laps["round"].astype(int), seconds=laps.time.map(_seconds))
+    circuit = {(r.season, r.round): r.Circuit_circuitId for r in races.itertuples()}
+    rows = []
+    for (season, rnd), race in laps.groupby(["season", "round"]):
+        if (season, rnd) not in circuit:
+            continue
+        times = {lap: g.seconds.to_numpy() for lap, g in race.groupby("lap")}
+        rows.append((season, circuit[(season, rnd)], int(race.lap.max()), len(slow_lap_periods(times))))
+    return pd.DataFrame(rows, columns=["season", "circuit", "laps", "n"])
+
+
+def _seconds(text):
+    total = 0.0
+    for part in str(text).split(":"):
+        total = 60 * total + float(part)
+    return total
+
+
+def eligible_laps(laps, periods):
+    """Laps of a race on which a neutralisation could start: every lap but the
+    continuation laps of one already out (the simulation draws a new one only then)."""
+    covered = {lap for start, _, length in periods for lap in range(start + 1, start + length)}
+    return set(range(1, int(laps) + 1)) - covered
+
+
+class NeutralModel:
+    """Per-lap hazard of a neutralisation: a base rate from the latest
+    RECENT_SEASONS seasons with track status (laps 1-2, which hold about a third of
+    safety cars, apart), counted over the laps on which one could start, times a
+    circuit factor. The factor is the circuit's count
+    against what its seasons' rates expect over all races known (track status from
+    2018, lap times before), shrunk by a gamma prior whose spread is estimated from
+    the same races (method of moments). Kind mix, lengths and the chance a red flag
+    ends the race come from the races with track status."""
+
+    def fit(self, history, recent):
+        """`history`: DataFrame season, circuit, laps, n of every race; `recent`:
+        [(season, laps, periods)] of races with track status."""
+        self.factors, self.spread = {}, 0.0
+        if not history.empty:
+            rate = history.groupby("season").n.sum() / history.groupby("season").laps.sum()
+            expected = history.laps * history.season.map(rate)
+            by = pd.DataFrame({"obs": history.n, "exp": expected, "circuit": history.circuit}).groupby("circuit").sum()
+            spread = float((((by.obs - by.exp) ** 2 - by.exp).sum()) / (by.exp ** 2).sum())
+            self.spread = max(spread, 0.0)
+            if self.spread > 0:
+                k = 1.0 / self.spread
+                self.factors = ((by.obs + k) / (by.exp + k)).to_dict()
+        seasons = sorted({season for season, _, _ in recent})[-RECENT_SEASONS:]
+        base = [(laps, periods) for season, laps, periods in recent if season in seasons]
+        early = sum(1 for _, periods in base for start, _, _ in periods if start <= 2)
+        later = sum(1 for _, periods in base for start, _, _ in periods if start > 2)
+        open_early = sum(len(eligible_laps(laps, periods) & {1, 2}) for laps, periods in base)
+        open_later = sum(len(eligible_laps(laps, periods) - {1, 2}) for laps, periods in base)
+        self.early = early / max(open_early, 1)
+        self.later = later / max(open_later, 1)
+        every = [p for _, _, periods in recent for p in periods]
+        counts = np.array([sum(1 for _, kind, _ in every if kind == k) for k in KINDS], dtype=float)
+        self.kinds = counts / counts.sum() if counts.sum() else np.array([1.0, 0.0, 0.0])
+        self.lengths = {k: np.array([length for _, kind, length in every if kind == k] or [1]) for k in KINDS}
+        ended = sum(1 for _, laps, periods in recent for start, kind, length in periods
+                    if kind == "red" and start + length - 1 >= laps)
+        self.red_end = ended / counts[2] if counts[2] else 0.0
+        return self
+
+    def race(self, circuit, laps):
+        """The neutralisations of one race of `laps` laps at `circuit`."""
+        factor = self.factors.get(circuit, 1.0)
+        hazard = np.full(int(laps), self.later * factor)
+        hazard[:2] = self.early * factor
+        return {"hazard": np.clip(hazard, 0.0, 0.9), "kinds": self.kinds, "lengths": self.lengths,
+                "red_end": self.red_end, "factor": factor}

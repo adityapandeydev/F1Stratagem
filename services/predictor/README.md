@@ -19,8 +19,8 @@ stages of the race model.
 | `native/` | The filter's arithmetic in Rust (`predictor_native`, built with maturin): replays a program for given settings and returns the log-likelihood and final state. |
 | `laps.py` | Lap-level corrections: corrected race pace (tyres, tyre age, fuel; drying races lap by lap) with its estimation covariance; practice push laps and long runs; wet track evolution and segment wetness in qualifying; green-lap pass counts. |
 | `race.py` | Race model: race pace and grid draws from the pace model, the grid known at the cutoff, retirements, settings fitted per season and cutoff by RPS; the lap-by-lap variant. |
-| `race_sim.py` | Battles from position data, the battle (pass) model, race length and lap reference, the lap-by-lap simulation driver. |
-| `race_native/` | The race simulation in Rust (`predictor_race_native`): start, laps, passes and their random numbers, one generator per draw, draws in parallel. |
+| `race_sim.py` | Battles from position data, the battle (pass) model, race length and lap reference, neutralisations (track status from 2018, inferred from Jolpica lap times before) and their hazard model, the lap-by-lap simulation driver. |
+| `race_native/` | The race simulation in Rust (`predictor_race_native`): start, laps, passes, neutralisations and their random numbers, one generator per draw, draws in parallel. |
 | `track.py` | Corners and track profiles from telemetry; the circuit layout table (`circuit_layouts.csv`). |
 | `fitcache.py` | Fitted settings saved per model and season under a key covering model, start, code and data; reused across cutoffs and runs. |
 | `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons (event and block bootstrap), results by stage of the season, quick screens. |
@@ -44,7 +44,8 @@ Models (`predictor evaluate --models ...`):
 | `race1b` | race:v1b: grid weight by circuit overtaking (tested, not adopted) |
 | `race2a` | race:v2a: lap-by-lap simulation with the battle model (pre-weekend race champion) |
 | `race2as` | race:v2as: v2a + a fitted pass shift (tested, not adopted) |
-| `race2af`, `race2afs` | race:v2af: battle model fitted on forecast pace differences (base of stage 2b); v2afs adds the pass shift (not adopted) |
+| `race2af`, `race2afs` | race:v2af: battle model fitted on forecast pace differences; v2afs adds the pass shift (not adopted) |
+| `race2b` | race:v2b: v2af + safety cars, virtual safety cars and red flags (simulation base for the next stages) |
 | `race_champion` | Router: the race champion of each forecast moment |
 | `pace3wrpn`, `pace3wru`, `pace3wrqf` | Tested, not adopted (push pace challenger, race estimation covariance, failed laps) |
 | `pace3wa` | v3wa: v3w + car × circuit affinity (tested, not adopted) |

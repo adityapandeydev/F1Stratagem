@@ -216,3 +216,79 @@ def test_the_battle_model_can_read_forecast_pace_differences():
     assert np.allclose(out.delta[:BATTLE_DRAWS], 1.0) and np.allclose(out.delta[BATTLE_DRAWS:], -2.0)
     assert np.allclose(term, [0.1] * BATTLE_DRAWS + [0.2] * BATTLE_DRAWS) and np.allclose(weights, 1 / BATTLE_DRAWS)
     assert list(out.passed[::BATTLE_DRAWS]) == [True, False]
+
+
+def test_neutral_periods_merge_a_run_and_keep_its_most_severe_kind():
+    from predictor.race_sim import neutral_periods
+    status = {1: "1", 2: "4", 3: "45", 4: "4", 5: "1", 6: "6", 7: "67", 8: "1", 9: "4"}
+    laps = pd.DataFrame({"LapNumber": list(status), "TrackStatus": list(status.values())})
+    assert neutral_periods(laps) == [(2, "red", 3), (6, "vsc", 2), (9, "sc", 1)]
+
+
+def test_slow_field_laps_mark_a_neutralisation_without_track_status():
+    from predictor.race_sim import slow_lap_periods
+    times = {lap: np.full(10, 90.0) for lap in range(1, 21)}
+    times[1] = np.full(10, 100.0)                    # standing start: slower, not neutralised
+    for lap in (8, 9, 10):
+        times[lap] = np.full(10, 125.0)              # behind the safety car
+    assert slow_lap_periods(times) == [(8, None, 3)]
+
+
+def test_circuit_factors_are_shrunk_and_the_first_laps_have_their_own_rate():
+    from predictor.race_sim import NeutralModel
+    history = pd.DataFrame({"season": [2010] * 8 + [2011] * 8, "circuit": ["a", "b", "c", "d"] * 4,
+                            "laps": [60] * 16, "n": [4, 0, 1, 1] * 4})
+    recent = [(2011, 60, [(1, "sc", 4), (30, "vsc", 2)]), (2011, 60, []), (2011, 60, [(40, "red", 2)])]
+    model = NeutralModel().fit(history, recent)
+    assert model.factors["a"] > 1 > model.factors["b"]
+    assert model.factors["a"] < 4 / 1.5                       # shrunk towards 1 (raw ratio 2.67)
+    race = model.race("a", 60)
+    assert race["hazard"][0] == race["hazard"][1] > race["hazard"][2]
+    assert np.allclose(model.kinds, [1 / 3, 1 / 3, 1 / 3]) and model.red_end == 0.0
+    assert model.race("unseen", 60)["factor"] == 1.0
+
+
+def _neutral(hazard, kind, length, red_end=0.0, laps=30):
+    from predictor.race_sim import KINDS
+    kinds = np.array([1.0 if k == kind else 0.0 for k in KINDS])
+    return {"hazard": np.r_[hazard, np.zeros(laps - 1)], "kinds": kinds,
+            "lengths": {k: np.array([length]) for k in KINDS}, "red_end": red_end}
+
+
+def test_a_safety_car_freezes_the_order_and_a_red_flag_can_end_the_race():
+    from predictor import race_sim
+    pace, grid = np.array([[0.0, 1.0, -2.0]]), np.array([[1.0, 2.0, 3.0]])
+    run = lambda neutral: list(race_sim.simulate(pace, grid, _passing(True), 0.0, 30, 90.0, 0.0,
+                                                 np.random.default_rng(0), neutral=neutral)[0])
+    assert run(None) == [2, 3, 1]                                         # the fastest car comes through
+    assert run(_neutral(1.0, "sc", 30)) == [1, 2, 3]                      # safety car to the flag
+    assert run(_neutral(1.0, "red", 1, red_end=1.0)) == [1, 2, 3]         # stopped on lap 1, not restarted
+    assert run(_neutral(0.0, "sc", 5)) == run(None)                       # no hazard: the same race
+
+
+def test_without_hazards_the_simulation_draws_the_same_races():
+    from predictor import race_sim
+    rng = np.random.default_rng(5)
+    pace, grid = rng.normal(0, 0.5, (200, 8)), np.arange(1, 9, dtype=float)[None]
+    model = race_sim.PassModel()
+    model.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    plain = race_sim.simulate(pace, grid, model, 0.0, 20, 90.0, 0.3, np.random.default_rng(1))
+    zero = race_sim.simulate(pace, grid, model, 0.0, 20, 90.0, 0.3, np.random.default_rng(1),
+                             neutral=_neutral(0.0, "sc", 3, laps=20))
+    assert np.array_equal(plain, zero)
+
+
+def test_a_safety_car_followed_by_a_virtual_one_is_one_safety_car():
+    from predictor.race_sim import neutral_periods
+    status = {1: "1", 2: "4", 3: "4", 4: "6", 5: "67", 6: "1"}
+    laps = pd.DataFrame({"LapNumber": list(status), "TrackStatus": list(status.values())})
+    assert neutral_periods(laps) == [(2, "sc", 4)]
+
+
+def test_hazards_count_only_laps_on_which_a_neutralisation_could_start():
+    from predictor.race_sim import NeutralModel
+    empty = pd.DataFrame(columns=["season", "circuit", "laps", "n"])
+    later = NeutralModel().fit(empty, [(2020, 60, [(10, "sc", 5), (30, "sc", 5)])])
+    assert np.isclose(later.later, 2 / 50) and later.early == 0.0     # laps 3-60 less 2 x 4 continuation laps
+    early = NeutralModel().fit(empty, [(2020, 60, [(1, "sc", 4)])])
+    assert early.early == 1.0                                          # lap 2 continues lap 1's: only lap 1 counts
