@@ -128,12 +128,24 @@ pub fn candidates(archive: &Archive, event_key: &str, min_laps: usize) -> Result
     for compounds in [Compounds::All, Compounds::Slicks, Compounds::Inters] {
         for min_gap_s in [None, Some(1.0), Some(2.0)] {
             for accurate_only in [true, false] {
-                let filter = RaceFilter { compounds, min_gap_s, skip_laps: 1, accurate_only };
+                let filter = RaceFilter { compounds, min_gap_s, skip_laps: 1, accurate_only, fuel_s_per_lap: 0.0 };
                 let fname = filter_name(&filter);
                 for agg in [Agg::Best, Agg::Mean] {
-                    for (stat, sname) in [(Stat::Median, "median"), (Stat::Mean, "mean"), (Stat::Fastest, "fastest")] {
-                        let t = pace::race_stat_team_times(&r_laps, &filter, stat, agg, min_laps);
-                        race_methods.push((format!("R[{sname},{fname},{}]", agg_name(agg)), t));
+                    for fuel in [0.0, 0.03, 0.06] {
+                        let fuelled = RaceFilter { fuel_s_per_lap: fuel, ..filter };
+                        let fuel_name = if fuel > 0.0 { format!(",fuel{fuel}") } else { String::new() };
+                        for (stat, sname) in [
+                            (Stat::Median, "median".to_string()),
+                            (Stat::Mean, "mean".to_string()),
+                            (Stat::Fastest, "fastest".to_string()),
+                            (Stat::TopMean(3), "top3".to_string()),
+                            (Stat::TopMean(5), "top5".to_string()),
+                            (Stat::TopMean(10), "top10".to_string()),
+                            (Stat::TopMean(20), "top20".to_string()),
+                        ] {
+                            let t = pace::race_stat_team_times(&r_laps, &fuelled, stat, agg, min_laps);
+                            race_methods.push((format!("R[{sname}{fuel_name},{fname},{}]", agg_name(agg)), t));
+                        }
                     }
                     for (base, bname) in [(LapBase::Fastest, "lapbest"), (LapBase::Median, "lapmedian")] {
                         for (stat, sname) in [(Stat::Median, "median"), (Stat::Mean, "mean")] {

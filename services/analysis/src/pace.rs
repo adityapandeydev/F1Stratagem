@@ -27,6 +27,8 @@ pub enum Stat {
     Fastest,
     Median,
     Mean,
+    /// Mean of the driver's k quickest kept laps.
+    TopMean(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,11 +48,14 @@ pub struct RaceFilter {
     pub skip_laps: u32,
     /// Keep only laps the timing feed marks accurate.
     pub accurate_only: bool,
+    /// Fixed fuel correction: seconds per lap of fuel still on board, removed from
+    /// each lap (lap statistics only; the regression measures its own lap slope).
+    pub fuel_s_per_lap: f64,
 }
 
 impl Default for RaceFilter {
     fn default() -> Self {
-        Self { compounds: Compounds::All, min_gap_s: None, skip_laps: 1, accurate_only: true }
+        Self { compounds: Compounds::All, min_gap_s: None, skip_laps: 1, accurate_only: true, fuel_s_per_lap: 0.0 }
     }
 }
 
@@ -101,6 +106,11 @@ fn statistic(values: &mut [f64], stat: Stat) -> Option<f64> {
         Stat::Fastest => values.iter().copied().fold(f64::INFINITY, f64::min),
         Stat::Mean => values.iter().sum::<f64>() / values.len() as f64,
         Stat::Median => median(values),
+        Stat::TopMean(k) => {
+            values.sort_by(|a, b| a.total_cmp(b));
+            let k = k.min(values.len());
+            values[..k].iter().sum::<f64>() / k as f64
+        }
     })
 }
 
@@ -129,6 +139,7 @@ pub fn one_lap_team_times(session: &[Lap], agg: Agg) -> TeamTimes {
 /// The race laps a filter keeps, with each lap's gap to the car ahead.
 pub fn race_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> Vec<(&'a Lap, f64, Option<f64>)> {
     let gaps = laps::gaps_ahead(race);
+    let race_laps = race.iter().map(|l| l.lap_number).max().unwrap_or(0) as f64;
     race.iter()
         .zip(gaps)
         .filter_map(|(lap, gap)| {
@@ -145,7 +156,8 @@ pub fn race_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> Vec<(&'a Lap, f64,
                 && lap.lap_number > filter.skip_laps
                 && (!filter.accurate_only || lap.accurate)
                 && filter.min_gap_s.is_none_or(|min| gap.is_none_or(|g| g > min));
-            keep.then_some((lap, t, gap))
+            let corrected = t - filter.fuel_s_per_lap * (race_laps - lap.lap_number as f64);
+            keep.then_some((lap, corrected, gap))
         })
         .collect()
 }
