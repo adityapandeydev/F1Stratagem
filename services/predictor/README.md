@@ -48,6 +48,7 @@ Models (`predictor evaluate --models ...`):
 | `race2af`, `race2afs` | race:v2af: battle model fitted on forecast pace differences; v2afs adds the pass shift (not adopted) |
 | `race2b` | race:v2b: v2af + safety cars, virtual safety cars and red flags |
 | `race2bw` | race:v2bw: v2b + the typical lap from this weekend's qualifying |
+| `race3a` | race:v3a: race2bwr + tyre wear and pit stops (stage 3a, in evaluation) |
 | `race1ar`, `race2ar`, `race2bwr` | v1a, v2a, v2bw + retirements by circuit and team; `race2bwr` is the simulation base for the next stages |
 | `race_champion` | Router: the race champion of each forecast moment |
 | `pace3wrpn`, `pace3wru`, `pace3wrqf` | Tested, not adopted (push pace challenger, race estimation covariance, failed laps) |

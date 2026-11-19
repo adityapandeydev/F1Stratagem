@@ -14,6 +14,16 @@
 //! ends the race with probability `red_end`. With every hazard zero no random
 //! number is drawn for them, so races are exactly those without neutralisations.
 //!
+//! Strategy (optional, `pit_loss` > 0): every car of a simulated race plans the
+//! same number of stops (the circuit's typical count, rounded at random once per
+//! race) at evenly spread laps moved by noise of its own; its tyres lose `wear` seconds per lap of age, which also counts in the
+//! pace difference that decides passes (fresh tyres pass more easily). A stop costs
+//! `pit_loss` plus a slow-stop residual drawn from observed ones and resets the
+//! tyres. When a safety car or virtual safety car comes out, cars with a stop due
+//! within `window` laps stop at once for `sc_ratio` of the loss, before the field
+//! closes up; a red flag gives everyone new tyres. Without strategy no random
+//! number is drawn for it.
+//!
 //! Random numbers are drawn here: each draw has its own PCG64 generator, its state
 //! spread from the forecast's seed and the draw index, so a forecast is
 //! reproducible from its seed and does not depend on the number of threads. Draws
@@ -114,6 +124,54 @@ struct Neutral {
     red_end: f64,
 }
 
+/// Pit stops and tyre wear of one race.
+struct Strategy {
+    wear: f64,
+    pit_loss: f64,
+    sc_ratio: f64,
+    stops_mean: f64,
+    stint_noise: f64,
+    window: usize,
+    residuals: Vec<f64>,
+}
+
+impl Strategy {
+    fn enabled(&self) -> bool {
+        self.pit_loss > 0.0
+    }
+
+    /// Stops of one simulated race: the circuit's typical count rounded at random,
+    /// the same for every car (teams converge on the faster strategy; between cars
+    /// a different count would differ by much more than real strategies do).
+    fn count(&self, rng: &mut Pcg64) -> usize {
+        let whole = self.stops_mean.floor();
+        (whole as usize + usize::from(rng.gen::<f64>() < self.stops_mean - whole)).max(1)
+    }
+
+    /// Planned stop laps (1-based, ascending) of one car making `count` stops.
+    fn plan(&self, laps: usize, count: usize, rng: &mut Pcg64) -> Vec<usize> {
+        let last = laps.saturating_sub(1).max(2);
+        let mut plan: Vec<usize> = (1..=count)
+            .map(|j| {
+                let at = laps as f64 * j as f64 / (count + 1) as f64
+                    + self.stint_noise * rng.sample::<f64, _>(StandardNormal);
+                (at.round().max(2.0) as usize).min(last)
+            })
+            .collect();
+        plan.sort_unstable();
+        plan
+    }
+
+    fn cost(&self, rng: &mut Pcg64) -> f64 {
+        let extra = if self.residuals.is_empty() {
+            0.0
+        } else {
+            self.residuals[rng.gen_range(0..self.residuals.len())]
+        };
+        (self.pit_loss + extra).max(0.0)
+    }
+}
+
 const SC: usize = 0;
 const RED: usize = 2;
 
@@ -129,6 +187,7 @@ struct Race {
     battle_gap: f64,
     min_follow: f64,
     neutral: Neutral,
+    strategy: Strategy,
 }
 
 /// Closes the field up behind the leader, `gap` seconds per place, order kept.
@@ -153,8 +212,20 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
     let (mut noise, mut luck) = (vec![0.0; n], vec![0.0; n]);
     let (mut order, mut before, mut after, mut own) =
         (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    let strategy = &race.strategy;
+    let pits = strategy.enabled();
+    let plans: Vec<Vec<usize>> = if pits {
+        let count = strategy.count(rng);
+        (0..n).map(|_| strategy.plan(race.laps, count, rng)).collect()
+    } else {
+        vec![]
+    };
+    let mut next = vec![0usize; n];
+    let mut age = vec![0.0f64; n];
+    let mut effective = seconds.to_vec();
     let mut neutral_left = 0usize;
     for lap in 0..race.laps {
+        let lap1 = lap + 1;
         if neutral_left == 0 && race.neutral.hazard[lap] > 0.0 && rng.gen::<f64>() < race.neutral.hazard[lap] {
             let pick = rng.gen::<f64>();
             let kind = if pick < race.neutral.kinds[0] {
@@ -168,6 +239,21 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
             neutral_left = if lengths.is_empty() { 1 } else { lengths[rng.gen_range(0..lengths.len())].max(1) };
             if kind == RED && rng.gen::<f64>() < race.neutral.red_end {
                 break; // the race is not restarted: classified as it stands
+            }
+            if pits {
+                for car in 0..n {
+                    let due = next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window;
+                    if kind == RED {
+                        age[car] = 0.0; // tyres may be changed under the red flag
+                        if due {
+                            next[car] += 1;
+                        }
+                    } else if due {
+                        time[car] += strategy.sc_ratio * strategy.cost(rng);
+                        age[car] = 0.0;
+                        next[car] += 1;
+                    }
+                }
             }
             if kind != 1 {
                 close_up(&mut time, &mut order, race.neutral.sc_gap);
@@ -183,9 +269,14 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
         for value in luck.iter_mut() {
             *value = rng.gen::<f64>();
         }
+        if pits {
+            for car in 0..n {
+                effective[car] = seconds[car] + strategy.wear * age[car];
+            }
+        }
         lap_of_draw(
             &mut time,
-            seconds,
+            &effective,
             &noise,
             &luck,
             &race.coef,
@@ -199,6 +290,17 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
             &mut after,
             &mut own,
         );
+        if pits {
+            for car in 0..n {
+                if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 {
+                    time[car] += strategy.cost(rng); // in and out of the pits: the field goes by
+                    age[car] = 0.0;
+                    next[car] += 1;
+                } else {
+                    age[car] += 1.0;
+                }
+            }
+        }
     }
     order.clear();
     order.extend(0..n);
@@ -234,6 +336,13 @@ fn simulate<'py>(
     red_lengths: PyReadonlyArray1<i64>,
     sc_gap: f64,
     red_end: f64,
+    wear: f64,
+    pit_loss: f64,
+    sc_ratio: f64,
+    stops_mean: f64,
+    stint_noise: f64,
+    window: usize,
+    residuals: PyReadonlyArray1<f64>,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -267,6 +376,15 @@ fn simulate<'py>(
         battle_gap,
         min_follow,
         neutral,
+        strategy: Strategy {
+            wear,
+            pit_loss,
+            sc_ratio,
+            stops_mean,
+            stint_noise,
+            window,
+            residuals: residuals.as_slice()?.to_vec(),
+        },
     };
     let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
     let mut positions = vec![0i64; draws * n];

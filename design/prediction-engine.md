@@ -32,7 +32,8 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Qualifying history 1996–2017, driver season form, car × circuit affinity, driver corner skills | Tested, not adopted (see Training and evaluation) |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
 | Safety cars, virtual safety cars and red flags in the race simulation (stage 2b) | Implemented; simulation base (race:v2b) |
-| Tyres and strategy, grid penalties and weather in the race simulation (stages 3–4) | Planned |
+| Tyre wear and pit stops in the race simulation (stage 3a) | Implemented; in evaluation (race:v3a) |
+| Pit timing models, grid penalties and weather in the race simulation (stages 3–4) | Planned |
 | Circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
 | Practice run classification, clean-air tagging | Planned |
@@ -657,6 +658,27 @@ towards a prior that keeps 42% of last season's deviation (measured 2014–2022:
 team's rate repeats between odd and even rounds with correlation 0.25 and between
 seasons with 0.42; true spread about 0.04 per start around 0.10).
 
+**Stage 3a: tyre wear and pit stops (`race:v3a`, in evaluation).** Measured on
+the dry races of 2018–2024: a green-flag stop costs 22.7 s against the cars
+staying out (circuit medians 19–28 s; a circuit's value repeats at the next visit
+with correlation 0.54), one under a safety car or virtual one 0.83 of that; 25%
+of stops fall under one while 9% of laps are neutralised; 12% of stops are more
+than 5 s slower than their race's median; cars make 1.66 stops (circuit means
+1.1–3.3, next-visit correlation 0.39); tyres lose about 0.05% of a lap per lap of
+age (next-visit correlation 0.26–0.60 by compound). In the simulation every car
+of a draw makes the same number of stops (the circuit's count rounded at random
+once per race: drawn per car, a one-stop and a two-stop car end some 13 s apart,
+far more than real strategies differ, and the last cutoff got worse beyond noise),
+at evenly spread laps moved by a fitted spread (the data choose none at the last
+cutoff); tyre age slows a car and counts in the pace difference that decides
+passes; a stop costs the circuit's pit loss plus a slow-stop residual; when a
+safety car or virtual one comes out, cars with a stop due within 6 laps take it
+at once; a red flag gives everyone new tyres. Outcome probabilities improve
+beyond noise at both cutoffs, but at the last cutoff the finishing-order ranking
+is worse than without stops. The slow-stop residuals come from in- and out-lap
+times, which also hold traffic and lap noise, and likely overstate how much stops
+reorder the field; pit-lane times would measure that directly.
+
 **Other history before 2018, measured and not used:**
 
 - **Battles 2011–2017** (46,144 pairs from Jolpica lap times and pit stops): the
@@ -1021,6 +1043,7 @@ Races (2019–2024, 128 races):
 | race:v2afs: v2af + pass shift | −0.00001 (noise) | −0.00040 (noise) | not adopted |
 | race:v2b: v2af + safety cars, virtual safety cars and red flags | −0.00007 (noise); +0.00016 against v2af (noise) | −0.00029 (noise); −0.00099 against v2a, better beyond noise; −0.00003 against v2af (noise) | not a champion (stages 3–4 need neutralisations) |
 | race:v2bw: v2b + the typical lap from this weekend's qualifying | identical to v2b (no session yet) | −0.00032 (noise); −0.00004 against v2b (noise) | not a champion |
+| race:v3a: v2bwr + tyre wear and pit stops (stage 3a) | −0.00005 against v2bwr, level with v2a (noise); outcome log loss −0.0052 against v2bwr, better beyond noise | +0.00037 against v2bwr, worse beyond noise; level with v1a; outcome log loss −0.0094 and winner log loss −0.029 against v1a, both better beyond noise | not a champion; open: ranking against outcome probabilities |
 | race:v1ar, v2ar, v2bwr: retirements by circuit and team, on v1a, v2a and v2bw | against their own base +0.00001, +0.00010, −0.00016 (noise) | −0.00028, −0.00015, −0.00012 (noise); 2024 −0.0017, −0.0009, −0.0009; v1ar better beyond noise in rounds 15+; retirement Brier −0.0003 for each (noise) | champions unchanged; **v2bwr is the simulation base** |
 
 Differences are against race:v1a. The first v2a results were discarded: a

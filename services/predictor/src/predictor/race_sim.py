@@ -44,6 +44,11 @@ SLOW_LAP = 1.10         # a lap whose field median is this much slower than the 
 SLOW_FIRST_LAP = 1.25   # the same for lap 1, which includes the standing start
 RECENT_SEASONS = 3      # seasons the base neutralisation rate is taken from
 RACE_TO_QUALIFYING = 1.075   # typical green race lap / median best qualifying lap, without earlier races
+PIT_LOSS, STOPS, WEAR = 23.0, 1.66, 0.05   # typical pit loss (s), stops per car, wear (% of a lap per lap of age)
+SC_PIT_RATIO = 0.83     # loss of a stop under a safety car or virtual one, against a green-flag stop
+STINT_NOISE = 3.0       # laps: spread of a planned stop around evenly spread stints (default; fitted in race.py)
+STOP_WINDOW = 6         # laps: a stop due this soon is taken under a safety car
+CIRCUIT_PRIOR = 2.0     # races: weight of the typical value in a circuit's pit loss, stops and wear
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
 
@@ -173,14 +178,15 @@ def circuit_propensity(frame, base):
     return np.log(share / base).to_dict()
 
 
-def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None):
+def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
+             strategy=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
     `pace`: race pace draws (% of a lap, lower is faster); `grid`: slots, one row or
     one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
     added to every pass's log-odds; `neutral`: `NeutralModel.race(...)` (None: no
-    neutralisations)."""
+    neutralisations); `strategy`: `StrategyModel.race(...)` (None: no stops or wear)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -194,7 +200,88 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           float(LAP_NOISE * lap_seconds / 100), BATTLE_GAP, MIN_FOLLOW, seed,
                                           np.ascontiguousarray(neutral["hazard"][:laps], dtype=float),
                                           np.asarray(neutral["kinds"], dtype=float), *lengths, SC_GAP,
-                                          float(neutral["red_end"]))
+                                          float(neutral["red_end"]),
+                                          *((float(strategy["wear"]), float(strategy["pit_loss"]), float(strategy["sc_ratio"]),
+                                             float(strategy["stops"]), float(strategy.get("stint_noise", STINT_NOISE)),
+                                             STOP_WINDOW,
+                                             np.asarray(strategy["residuals"], dtype=float)) if strategy else
+                                            (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0))))
+
+
+def stop_record(laps):
+    """Pit stops of a dry race: dict green (each green-flag stop's loss against the
+    cars not stopping on those laps, s), neutral (the same under a safety car or
+    virtual one), stops_per_car; None for a wet race or one without laps."""
+    if laps.empty or "PitInTime" not in laps or wet_session(laps):
+        return None
+    periods = neutral_periods(laps) or []
+    neutral = {lap for start, _, length in periods for lap in range(start, start + length)}
+    laps = laps.assign(t=laps.LapTime.dt.total_seconds(), stop=laps.PitInTime.notna(), out=laps.PitOutTime.notna())
+    field = laps[~laps.stop & ~laps.out].groupby("LapNumber").t.median()
+    by_car = {d: g.set_index("LapNumber").t for d, g in laps.groupby("DriverNumber")}
+    green, under, stops = [], [], 0
+    last = int(laps.LapNumber.max())
+    for row in laps[laps.stop].itertuples():
+        lap = int(row.LapNumber)
+        if lap >= last:
+            continue
+        stops += 1
+        out = by_car[row.DriverNumber].get(lap + 1, np.nan)
+        if lap not in field.index or lap + 1 not in field.index or not np.isfinite(row.t) or not np.isfinite(out):
+            continue
+        loss = row.t + out - field[lap] - field[lap + 1]
+        if np.isfinite(loss):
+            (under if lap in neutral or lap + 1 in neutral else green).append(float(loss))
+    return {"green": green, "neutral": under, "stops_per_car": stops / max(laps.DriverNumber.nunique(), 1)}
+
+
+def race_wear(laps):
+    """Mean tyre wear of a dry race over its compounds (% of a lap per lap of
+    age, from `race_pace`); None without a fit."""
+    pace = race_pace(laps)
+    if pace.empty:
+        return None
+    wear = [v for k, v in pace.attrs["corrections"].items() if k.startswith("wear:") and k != "wear:shared"]
+    return float(np.mean(wear)) if wear else None
+
+
+class StrategyModel:
+    """Pit loss, stops per car and tyre wear per circuit: the mean over earlier races
+    at the circuit, shrunk towards the typical race by CIRCUIT_PRIOR races
+    (measured 2018-2024: a circuit's pit loss repeats at the next visit with
+    correlation 0.54, its stops 0.39, its hard-tyre wear 0.60). Slow stops are the
+    residuals of green-flag stops against their race's median; a stop under a safety
+    car or virtual one costs the observed ratio of the two losses."""
+
+    def fit(self, races):
+        """`races`: [(circuit, record from `stop_record`, wear)] of earlier dry races."""
+        records = [(c, r, w) for c, r, w in races if r is not None]
+        green = [np.median(r["green"]) for _, r, _ in records if len(r["green"]) >= 4]
+        self.pit_loss = float(np.median(green)) if green else PIT_LOSS
+        self.stops = float(np.mean([r["stops_per_car"] for _, r, _ in records])) if records else STOPS
+        wears = [w for _, _, w in records if w is not None and np.isfinite(w)]
+        self.wear = float(np.median(wears)) if wears else WEAR
+        residuals = [x - np.median(r["green"]) for _, r, _ in records if len(r["green"]) >= 4 for x in r["green"]]
+        self.residuals = np.array(residuals) if residuals else np.zeros(1)
+        under = [x for _, r, _ in records for x in r["neutral"]]
+        all_green = [x for _, r, _ in records for x in r["green"]]
+        self.sc_ratio = float(np.median(under) / np.median(all_green)) if under and all_green else SC_PIT_RATIO
+        self.circuits = {}
+        for circuit in {c for c, _, _ in records}:
+            here = [(r, w) for c, r, w in records if c == circuit]
+            losses = [np.median(r["green"]) for r, _ in here if len(r["green"]) >= 4]
+            wear = [w for _, w in here if w is not None and np.isfinite(w)]
+            self.circuits[circuit] = {
+                "pit_loss": (sum(losses) + CIRCUIT_PRIOR * self.pit_loss) / (len(losses) + CIRCUIT_PRIOR),
+                "stops": (sum(r["stops_per_car"] for r, _ in here) + CIRCUIT_PRIOR * self.stops) / (len(here) + CIRCUIT_PRIOR),
+                "wear": (sum(wear) + CIRCUIT_PRIOR * self.wear) / (len(wear) + CIRCUIT_PRIOR)}
+        return self
+
+    def race(self, circuit, lap_seconds):
+        """Strategy inputs of one race at `circuit` (wear in s per lap of age)."""
+        here = self.circuits.get(circuit, {"pit_loss": self.pit_loss, "stops": self.stops, "wear": self.wear})
+        return {"pit_loss": here["pit_loss"], "stops": max(here["stops"], 1.0), "wear": here["wear"] * lap_seconds / 100,
+                "sc_ratio": self.sc_ratio, "residuals": self.residuals}
 
 
 def neutral_periods(laps):

@@ -234,7 +234,9 @@ class RaceModel:
         known_grid = grid.shape[0] == 1
         return self.forecast(example, positions, seed, {
             "grid": "known" if known_grid else "simulated",
-            "context": {k: (v["factor"] if k == "neutral" else v) for k, v in context.items()},
+            "context": {k: (v["factor"] if k == "neutral" else
+                            {x: y for x, y in v.items() if x != "residuals"} if k == "strategy" else v)
+                        for k, v in context.items()},
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
             **({"retire_factors": dict(zip(("incident", "mechanical"), map(list, self.retirements.chances(example))))}
@@ -254,6 +256,7 @@ def scheduled_laps(earlier, layout):
 START_NOISES = (0.0, 0.25, 0.5, 1.0, 2.0)   # s: start noise of a car's time
 SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)     # % of a lap: race-day pace noise beyond the pace model's
 PASS_SHIFTS = (-3.0, -2.0, -1.5, -1.0, -0.5, 0.0)   # log-odds added to every pass (pass_shift option)
+STINT_NOISES = (0.0, 1.5, 3.0)   # laps: spread of each car's planned stops (strategy option)
 BATTLE_DRAWS = 10       # forecast draws per battle pair when the battle model reads forecast pace
 
 
@@ -277,8 +280,10 @@ class SimulatedRace(RaceModel):
     latest earlier race at the circuit, which stays the source before qualifying."""
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
-                 weekend_lap=False, detailed_retirements=False):
+                 weekend_lap=False, detailed_retirements=False, strategy=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
+        self.strategy = strategy
+        self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
         self.pass_shift = pass_shift
@@ -298,9 +303,12 @@ class SimulatedRace(RaceModel):
 
     def candidates(self):
         for shift in (PASS_SHIFTS if self.pass_shift else (0.0,)):
-            for start_noise in START_NOISES:
-                for sigma in SIM_SIGMAS:
-                    yield {"start_noise": start_noise, "sigma": sigma, **({"pass_shift": shift} if self.pass_shift else {})}
+            for stint in (STINT_NOISES if self.strategy else (None,)):
+                for start_noise in START_NOISES:
+                    for sigma in SIM_SIGMAS:
+                        yield {"start_noise": start_noise, "sigma": sigma,
+                               **({"pass_shift": shift} if self.pass_shift else {}),
+                               **({"stint_noise": stint} if self.strategy else {})}
 
     def neutral(self):
         return {"start_noise": 1.0, "sigma": 0.0}
@@ -322,6 +330,20 @@ class SimulatedRace(RaceModel):
     def select(self, key):
         self.passes = self._pass_models[key]
         self._neutral = self._neutral_models.get(key[0])
+        self._strategy = self._strategies.get(key[0])
+
+    def _fit_strategy(self, season):
+        """Pit loss, stops and wear per circuit from the dry races before `season`."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        races = []
+        for race in view.sessions[view.sessions.session_type == "R"].itertuples():
+            if race.session_id not in self._stops:
+                laps = view.laps(race.session_id)
+                record = race_sim.stop_record(laps)
+                self._stops[race.session_id] = (record, race_sim.race_wear(laps) if record is not None else None)
+            record, wear = self._stops[race.session_id]
+            races.append((self.pace.circuit(view, race.event_key), record, wear))
+        return race_sim.StrategyModel().fit(races)
 
     def _race_periods(self, view, race):
         if race.session_id not in self._periods:
@@ -410,6 +432,9 @@ class SimulatedRace(RaceModel):
         self._neutral = self._neutral_models.get(season)
         if self.weekend_lap and season not in self._ratios:
             self._ratios[season] = self._fit_ratio(season)
+        if self.strategy and season not in self._strategies:
+            self._strategies[season] = self._fit_strategy(season)
+        self._strategy = self._strategies.get(season)
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         frame = self._battles_in(view)
         term = np.zeros(len(frame))
@@ -455,6 +480,8 @@ class SimulatedRace(RaceModel):
         context = {"circuit_term": term, "laps": laps, "lap_seconds": lap}
         if self.neutralisations and self._neutral is not None:
             context["neutral"] = self._neutral.race(circuit, laps)
+        if self.strategy and self._strategy is not None:
+            context["strategy"] = self._strategy.race(circuit, lap)
         return context
 
     def _shape(self, view, race):
@@ -467,4 +494,6 @@ class SimulatedRace(RaceModel):
             race = race + setting["sigma"] * np.random.default_rng([seed, 8]).standard_normal(race.shape)
         return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
-                                 setting.get("pass_shift", 0.0), context.get("neutral"))
+                                 setting.get("pass_shift", 0.0), context.get("neutral"),
+                                 {**context["strategy"], "stint_noise": setting.get("stint_noise", race_sim.STINT_NOISE)}
+                                 if context.get("strategy") else None)

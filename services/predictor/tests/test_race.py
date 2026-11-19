@@ -301,3 +301,38 @@ def test_the_qualifying_lap_is_the_median_of_the_drivers_best_laps_when_dry():
     assert qualifying_lap(laps) == 80.0
     wet = laps.assign(Compound="WET")
     assert qualifying_lap(wet) is None
+
+
+def test_a_stop_costs_its_in_and_out_laps_against_the_cars_staying_out():
+    from predictor.race_sim import stop_record
+    laps = _race_laps({}, laps=12)
+    laps["PitInTime"] = pd.Series(pd.NaT, index=laps.index, dtype="timedelta64[ns]")
+    laps.loc[(laps.DriverNumber == "2") & (laps.LapNumber == 5), "PitInTime"] = pd.Timedelta(seconds=1)
+    laps.loc[(laps.DriverNumber == "2") & (laps.LapNumber == 5), "LapTime"] = pd.Timedelta(seconds=100)
+    laps.loc[(laps.DriverNumber == "2") & (laps.LapNumber == 6), "LapTime"] = pd.Timedelta(seconds=103)
+    record = stop_record(laps)
+    assert record["green"] == [23.0] and record["neutral"] == [] and np.isclose(record["stops_per_car"], 1 / 3)
+
+
+def test_circuit_strategy_values_are_shrunk_towards_the_typical_race():
+    from predictor.race_sim import StrategyModel
+    rec = lambda loss, stops: {"green": [loss] * 6, "neutral": [loss * 0.8], "stops_per_car": stops}
+    races = [("a", rec(30.0, 3.0), 0.10), ("b", rec(20.0, 1.0), 0.02), ("c", rec(22.0, 1.5), 0.04)]
+    model = StrategyModel().fit(races)
+    a = model.race("a", 100.0)
+    assert model.pit_loss < a["pit_loss"] < 30.0 and model.stops < a["stops"] < 3.0
+    assert np.isclose(model.sc_ratio, 0.8)
+    assert model.race("unseen", 100.0)["pit_loss"] == model.pit_loss
+    assert np.isclose(a["wear"], (0.10 + 2 * 0.04) / 3)          # % of a 100 s lap = s
+
+
+def test_strategy_runs_reproducibly_and_off_means_the_same_races():
+    from predictor import race_sim
+    rng = np.random.default_rng(5)
+    pace, grid = rng.normal(0, 0.5, (300, 8)), np.arange(1, 9, dtype=float)[None]
+    model = race_sim.PassModel()
+    model.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    strategy = {"pit_loss": 22.0, "stops": 1.6, "wear": 0.05, "sc_ratio": 0.8, "residuals": np.array([0.0, 4.0])}
+    run = lambda s: race_sim.simulate(pace, grid, model, 0.0, 40, 90.0, 0.3, np.random.default_rng(1), strategy=s)
+    assert np.array_equal(run(strategy), run(strategy))
+    assert not np.array_equal(run(strategy), run(None))
