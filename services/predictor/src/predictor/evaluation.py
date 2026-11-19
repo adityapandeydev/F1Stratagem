@@ -23,6 +23,8 @@ Metrics, each averaged over scored entrants (excluded entrants are not scored):
 import json
 import subprocess
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
@@ -177,6 +179,48 @@ class ChampionRouter:
         return forecast
 
 
+class ForecastMixture:
+    """A weighted mixture of complete forecasts: as if each component's simulated
+    finishing orders were pooled in proportion to its weight, so every position and
+    outcome probability is the weighted mean of the components' (each entrant's
+    whole distribution is mixed, not its expected position). Each component is
+    fitted once and also reported on its own (`components` in the metadata)."""
+
+    def __init__(self, components, weights, name, registry=None):
+        registry = registry or model_registry()
+        self.name = name
+        self.components = [registry[c]() for c in components]
+        self.weights = np.asarray(weights, dtype=float) / float(np.sum(weights))
+
+    @property
+    def fit_cache(self):
+        return getattr(self.components[0], "fit_cache", None)
+
+    @fit_cache.setter
+    def fit_cache(self, cache):
+        for model in self.components:
+            if hasattr(model, "fit_cache"):
+                model.fit_cache = cache
+
+    def fit(self, history, view_for):
+        for model in self.components:
+            model.fit(history, view_for)
+        return self
+
+    def predict(self, view, example, **kwargs):
+        forecasts = [model.predict(view, example, **kwargs) for model in self.components]
+        if any(f is None for f in forecasts):
+            return None
+        if any(f.driver_numbers != forecasts[0].driver_numbers for f in forecasts):
+            raise ValueError("components forecast different entrants")
+        mix = lambda field: (None if getattr(forecasts[0], field) is None else
+                             sum(w * getattr(f, field) for w, f in zip(self.weights, forecasts)))
+        return replace(forecasts[0], position_probs=mix("position_probs"), outcome_probs=mix("outcome_probs"),
+                       expected_points=mix("expected_points"), model=self.name,
+                       metadata={"weights": self.weights.tolist(), "components": forecasts,
+                                 "served_by": [f.model for f in forecasts]})
+
+
 def model_registry():
     return {**{name: (lambda name=name: RankBaseline(name)) for name in RANKERS},
             "pace": lambda: _pace_model(1), "pace2": lambda: _pace_model(2),
@@ -277,6 +321,8 @@ def model_registry():
                                           neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                           strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                           team_wear=True),
+            # the development simulator mixed 50/50 with the serving champion of each moment
+            "race_mix3f": lambda: ForecastMixture(["race3f", "race_champion"], [0.5, 0.5], "race:mix3f"),
             "race3fl": lambda: _race_model("pace3wrlqwt", "race:v3fl", simulated=True, forecast_battles=True,
                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
@@ -471,7 +517,8 @@ def _regular_drivers(archive, event_key):
     return regulars
 
 
-def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, screen_base=None):
+def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, screen_base=None,
+                 keep_forecasts=False):
     """Before each example, fit every model on targets that finished before its cutoff,
     then forecast from an ArchiveView at the cutoff. Model instances persist through the
     run, so a model can decide how often to refit its own parameters."""
@@ -497,7 +544,7 @@ def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, s
     def view_for(example):
         return archive.view(example.cutoff_time)
 
-    rows, settings = [], {}
+    rows, settings, kept = [], {}, []
     for example in examples:
         history = [e for e in pool if e.target_available_at < example.cutoff_time]
         view = view_for(example)
@@ -506,14 +553,33 @@ def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, s
             forecast = model.predict(view, example)
             if forecast is None:
                 continue
-            fitted = forecast.metadata.get("hyper") or {k: v for k, v in forecast.metadata.items()
-                                                         if k in ("beta", "retire_rate", "mechanical_share")}
-            settings.setdefault(forecast.model, {}).setdefault(str(example.season), fitted)
-            rows.append({"event_key": example.event_key, "season": example.season, "model": forecast.model,
-                         **score(forecast, example)})
+            # a mixture also reports its components, each scored as its own model
+            for one in [forecast, *forecast.metadata.pop("components", [])]:
+                fitted = one.metadata.get("hyper") or {k: v for k, v in one.metadata.items()
+                                                       if k in ("beta", "retire_rate", "mechanical_share")}
+                settings.setdefault(one.model, {}).setdefault(str(example.season), fitted)
+                rows.append({"event_key": example.event_key, "season": example.season, "model": one.model,
+                             **score(one, example)})
+                if keep_forecasts:
+                    kept.extend(forecast_rows(one, example))
     scores = pd.DataFrame(rows)
     scores.attrs["settings"] = settings
+    scores.attrs["forecasts"] = pd.DataFrame(kept) if keep_forecasts else None
     return scores
+
+
+def forecast_rows(forecast, example):
+    """One row per entrant: its position distribution, expected position and spread,
+    and what happened (for error analysis)."""
+    n = forecast.position_probs.shape[1]
+    places = np.arange(1, n + 1)
+    expected = forecast.position_probs @ places
+    spread = np.sqrt(np.clip(forecast.position_probs @ places ** 2 - expected ** 2, 0, None))
+    return [{"event_key": example.event_key, "season": example.season, "model": forecast.model,
+             "driver_number": str(d), "actual": int(a), "excluded": bool(x), "expected": float(e), "spread": float(s),
+             "probs": p.tolist()}
+            for d, a, x, e, s, p in zip(forecast.driver_numbers, example.positions, example.excluded, expected, spread,
+                                        forecast.position_probs)]
 
 
 def common_events(scores):
@@ -615,7 +681,7 @@ def git_revision():
 
 
 def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdout=False, archive=None, out=None,
-        reference="uniform", fit_cache=None, screen_base=None):
+        reference="uniform", fit_cache=None, screen_base=None, keep_forecasts=False):
     archive = archive or Archive()
     revision = git_revision()   # the code the run starts with; the tree may change while it runs
     if fit_cache is not None:
@@ -624,10 +690,12 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
     train = prepare(archive, session_type, cutoff_label, warmup, allow_holdout=False)
     examples = prepare(archive, session_type, cutoff_label, seasons, allow_holdout=allow_holdout)
-    scores = walk_forward(examples, models, archive, train, fit_cache, screen_base)
+    scores = walk_forward(examples, models, archive, train, fit_cache, screen_base, keep_forecasts)
     if out is not None:             # saved first: a failing comparison must not lose the run
         out.mkdir(parents=True, exist_ok=True)
         scores.to_csv(out / "scores.csv", index=False)
+        if scores.attrs.get("forecasts") is not None:
+            scores.attrs["forecasts"].to_parquet(out / "forecasts.parquet", index=False)
     if reference != "uniform" and reference not in set(scores.model):
         raise ValueError(f"reference {reference} was not evaluated: add its model to --models"
                          + (f" (scores saved in {out})" if out is not None else ""))

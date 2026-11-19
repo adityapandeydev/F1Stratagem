@@ -29,6 +29,8 @@ def main(argv=None):
     evaluate.add_argument("--reference", default="uniform", help="model the others are compared against")
     evaluate.add_argument("--allow-holdout", action="store_true",
                           help="evaluate held-out seasons (2025-2026); only at model selection")
+    evaluate.add_argument("--save-forecasts", action="store_true",
+                          help="also write every forecast per entrant (forecasts.parquet) for error analysis")
     evaluate.add_argument("--no-fit-cache", action="store_true",
                           help="fit every season afresh instead of reusing saved fits (data/fits)")
     evaluate.add_argument("--screen-base", choices=sorted(n for n in model_registry() if n.startswith("pace")),
@@ -43,7 +45,8 @@ def main(argv=None):
     scores, overall, _, comparison, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
                                                          allow_holdout=args.allow_holdout, out=out,
                                                          reference=args.reference, fit_cache=fit_cache,
-                                                         screen_base=args.screen_base)
+                                                         screen_base=args.screen_base,
+                                                         keep_forecasts=args.save_forecasts)
     with pd.option_context("display.width", 200, "display.max_columns", 30, "display.precision", 3):
         print(f"{manifest['events']} events, session {args.session}, cutoff {args.cutoff}")
         print(overall.T)

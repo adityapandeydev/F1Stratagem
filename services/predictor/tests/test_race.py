@@ -559,3 +559,23 @@ def test_traffic_covers_cars_a_lap_apart():
     assert ("2", 9) in traffic and ("1", 10) not in traffic and ("3", 9) not in traffic
     being_lapped = pd.DataFrame({"DriverNumber": ["9", "1"], "LapNumber": [20, 21], "Time": [t(500.0), t(500.6)]})
     assert race_sim.traffic_laps(being_lapped) == {("9", 20), ("1", 21)}
+
+
+def test_a_mixture_pools_whole_forecasts_and_reports_its_components():
+    from predictor.evaluation import ForecastMixture
+    from predictor.forecast import Forecast
+    def stub(name, positions):
+        class Stub:
+            def fit(self, history, view_for):
+                return self
+            def predict(self, view, example, **kwargs):
+                return Forecast.from_draws(positions=np.array(positions), season=2024, session_type="R",
+                                           event_key="e", cutoff_label="last", cutoff_time="t",
+                                           driver_numbers=["1", "2"], driver_ids=["a", "b"], model=name, seed=0)
+        return Stub
+    registry = {"one": stub("one", [[1, 2], [1, 2]]), "two": stub("two", [[2, 1], [2, 1]])}
+    mix = ForecastMixture(["one", "two"], [1, 3], "mix", registry=registry)
+    forecast = mix.predict(None, None)
+    one, two = forecast.metadata["components"]
+    assert np.allclose(forecast.position_probs, 0.25 * one.position_probs + 0.75 * two.position_probs)
+    assert forecast.model == "mix" and [c.model for c in (one, two)] == ["one", "two"]
