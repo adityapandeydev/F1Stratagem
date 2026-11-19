@@ -28,7 +28,9 @@
 //! closes up; so do cars whose stop comes due within `window` laps on a later lap
 //! of the same neutralisation (behind a safety car the field closes up again). A
 //! red flag gives everyone new tyres. Without strategy no random
-//! number is drawn for it.
+//! number is drawn for it. With team wear, each team's wear deviation from the
+//! field is drawn once per simulated race from its mean and spread, shared by
+//! teammates, so tyre outcomes differ between simulated races.
 //!
 //! Random numbers are drawn here: each draw has its own PCG64 generator, its state
 //! spread from the forecast's seed and the draw index, so a forecast is
@@ -140,6 +142,12 @@ struct Strategy {
     window: usize,
     residuals: Vec<f64>,
     deviate: Vec<f64>,
+    /// Team wear (optional): each car's team (`team[car]`); per team, the mean and
+    /// spread of its wear deviation from the field (s per lap of age), drawn once
+    /// per simulated race and shared by teammates. Empty: every car wears at `wear`.
+    team: Vec<usize>,
+    team_mean: Vec<f64>,
+    team_sd: Vec<f64>,
 }
 
 impl Strategy {
@@ -185,6 +193,20 @@ impl Strategy {
             .collect();
         plan.sort_unstable();
         plan
+    }
+
+    /// Each car's wear in one simulated race (no random number without team wear).
+    fn car_wear(&self, n: usize, rng: &mut Pcg64) -> Vec<f64> {
+        if self.team.is_empty() {
+            return vec![self.wear; n];
+        }
+        let draws: Vec<f64> = self
+            .team_mean
+            .iter()
+            .zip(&self.team_sd)
+            .map(|(&mean, &sd)| mean + sd * rng.sample::<f64, _>(StandardNormal))
+            .collect();
+        self.team.iter().map(|&t| (self.wear + draws[t]).max(0.0)).collect()
     }
 
     fn cost(&self, rng: &mut Pcg64) -> f64 {
@@ -262,6 +284,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
     };
     let mut next = vec![0usize; n];
     let mut age = vec![0.0f64; n];
+    let wear = if pits { strategy.car_wear(n, rng) } else { vec![] };
     let mut effective = seconds.to_vec();
     let mut neutral_left = 0usize;
     let mut neutral_kind = SC;
@@ -332,7 +355,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
         }
         if pits {
             for car in 0..n {
-                effective[car] = seconds[car] + strategy.wear * age[car];
+                effective[car] = seconds[car] + wear[car] * age[car];
             }
         }
         lap_of_draw(
@@ -400,6 +423,9 @@ fn simulate<'py>(
     window: usize,
     residuals: PyReadonlyArray1<f64>,
     deviate: PyReadonlyArray1<f64>,
+    team: PyReadonlyArray1<i64>,
+    team_mean: PyReadonlyArray1<f64>,
+    team_sd: PyReadonlyArray1<f64>,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -426,6 +452,13 @@ fn simulate<'py>(
     if !deviate.is_empty() && deviate.len() != 3 * n {
         return Err(PyValueError::new_err("three deviation chances per entrant"));
     }
+    let team: Vec<usize> = team.as_slice()?.iter().map(|&t| t.max(0) as usize).collect();
+    let (team_mean, team_sd) = (team_mean.as_slice()?.to_vec(), team_sd.as_slice()?.to_vec());
+    if !team.is_empty()
+        && (team.len() != n || team_mean.len() != team_sd.len() || team.iter().any(|&t| t >= team_mean.len()))
+    {
+        return Err(PyValueError::new_err("one team per entrant, a mean and spread per team"));
+    }
     let race = Race {
         coef: coefficients(coef.as_slice()?)?,
         term,
@@ -446,6 +479,9 @@ fn simulate<'py>(
             window,
             residuals: residuals.as_slice()?.to_vec(),
             deviate,
+            team,
+            team_mean,
+            team_sd,
         },
     };
     let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
@@ -507,6 +543,9 @@ fn stop_counts<'py>(
         window: 0,
         residuals: vec![],
         deviate,
+        team: vec![],
+        team_mean: vec![],
+        team_sd: vec![],
     };
     let mut counts = vec![0i64; draws * entrants];
     for (d, row) in counts.chunks_mut(entrants.max(1)).enumerate() {
@@ -563,9 +602,39 @@ mod tests {
                 window: 6,
                 residuals: vec![],
                 deviate: vec![],
+                team: vec![],
+                team_mean: vec![],
+                team_sd: vec![],
             },
         };
         race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(7))[0]
+    }
+
+    #[test]
+    fn team_wear_is_shared_by_teammates_and_absent_without_teams() {
+        let mut strategy = Strategy {
+            wear: 0.05,
+            pit_loss: 22.0,
+            sc_ratio: 0.8,
+            stops_mean: 1.0,
+            stint_noise: 0.0,
+            window: 6,
+            residuals: vec![],
+            deviate: vec![],
+            team: vec![],
+            team_mean: vec![],
+            team_sd: vec![],
+        };
+        let mut rng = Pcg64::seed_from_u64(1);
+        assert_eq!(strategy.car_wear(3, &mut rng), vec![0.05; 3]);
+        strategy.team = vec![0, 1, 0];
+        strategy.team_mean = vec![0.01, -0.02];
+        strategy.team_sd = vec![0.0, 0.0];
+        let wear = strategy.car_wear(3, &mut rng);
+        assert!((wear[0] - 0.06).abs() < 1e-12 && (wear[1] - 0.03).abs() < 1e-12 && wear[0] == wear[2]);
+        strategy.team_sd = vec![0.01, 0.01];
+        let drawn = strategy.car_wear(3, &mut rng);
+        assert_eq!(drawn[0], drawn[2]);
     }
 
     #[test]

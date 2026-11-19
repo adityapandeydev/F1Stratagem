@@ -29,7 +29,7 @@ import pandas as pd
 import predictor_race_native
 from scipy.optimize import minimize
 
-from .laps import FUEL, practice_laps, race_pace, wet_session
+from .laps import FUEL, clean_race_laps, practice_laps, race_pace, wet_session
 
 BATTLE_GAP = 2.5        # s: pairs further apart are not battles
 MIN_FOLLOW = 0.35       # s: closest a car is held behind the car ahead
@@ -212,8 +212,12 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                              float(strategy["stops"]), float(strategy.get("stint_noise", STINT_NOISE)),
                                              STOP_WINDOW,
                                              np.asarray(strategy["residuals"], dtype=float),
-                                             car_deviations(strategy.get("deviate"), pace))
-                                            if strategy else (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0), np.zeros(0))))
+                                             car_deviations(strategy.get("deviate"), pace),
+                                             np.asarray(strategy.get("team", np.zeros(0)), dtype=np.int64),
+                                             np.asarray(strategy.get("team_mean", np.zeros(0)), dtype=float),
+                                             np.asarray(strategy.get("team_sd", np.zeros(0)), dtype=float))
+                                            if strategy else (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0), np.zeros(0),
+                                                              np.zeros(0, dtype=np.int64), np.zeros(0), np.zeros(0))))
 
 
 def car_deviations(table, pace):
@@ -358,6 +362,142 @@ class WeekendWear:
         if self.coef is None or practice is None or not np.isfinite(practice):
             return None
         return float(np.clip(self.coef @ [1.0, practice, past], 0.0, 0.3))
+
+
+TRAFFIC_GAP = 1.0            # s to the car ahead at a lap's end: a lap in traffic
+TEAM_STINT_LAPS = 6          # a stint needs this many clean laps (and 4 tyre ages) for team wear
+TEAM_LAPS = 60               # a team needs this many such laps in a race for its wear deviation
+TEAM_DECAYS = (1.0, 0.8, 0.6)   # recency weights per race back tried for team wear
+MIN_TEAM_RACES = 20          # earlier races needed to fit the team wear model
+
+
+def team_wear_deviations(laps, lineage_of):
+    """Each team's tyre wear in a dry race against the field (% of a lap per lap of
+    age) with its standard error: DataFrame lineage, dev, se, laps; empty without.
+
+    100 log lap time = lap effect + stint effect + wear(compound) x age + team
+    deviation x age + noise, on clean laps out of traffic. The lap effect takes fuel
+    burn and track evolution (shared by the field); the stint effect each driver's
+    stint pace. The field's own wear is not identified this way (age is lap minus
+    the stint's start), but a team's departure from it is. Deviations are centred
+    on the precision-weighted field."""
+    empty = pd.DataFrame(columns=["lineage", "dev", "se", "laps"])
+    if laps.empty or wet_session(laps):
+        return empty
+    ends = laps.dropna(subset=["Time"]).assign(end=lambda f: f.Time.dt.total_seconds())
+    ends = ends.sort_values(["LapNumber", "end"])
+    gap = ends.groupby("LapNumber").end.diff()
+    slow = gap < TRAFFIC_GAP
+    traffic = set(zip(ends.DriverNumber[slow], ends.LapNumber[slow]))
+    f = clean_race_laps(laps)
+    if f.empty:
+        return empty
+    f = f[[(d, n) not in traffic for d, n in zip(f.DriverNumber, f.LapNumber)]]
+    f = f.assign(lineage=f.driver_number.map(lineage_of), stint=f.driver_number + "-" + f.Stint.astype(str),
+                 age=f.TyreLife.astype(float), y=100 * np.log(f.seconds.to_numpy()))
+    f = f[f.lineage.notna()]
+    f = f.groupby("stint").filter(lambda g: len(g) >= TEAM_STINT_LAPS and g.age.nunique() >= 4)
+    counts = f.lineage.value_counts()
+    f = f[f.lineage.isin(counts[counts >= TEAM_LAPS].index)]
+    teams = sorted(f.lineage.unique())
+    if len(teams) < 3:
+        return empty
+    columns = [pd.get_dummies(f.LapNumber, prefix="lap", drop_first=True, dtype=float),
+               pd.get_dummies(f.stint, prefix="st", dtype=float)]
+    for c in sorted(f.compound.unique()):
+        columns.append(pd.DataFrame({f"wear:{c}": (f.compound == c).to_numpy(float) * f.age.to_numpy()}, index=f.index))
+    for t in teams[:-1]:          # effect coding: the last team is minus the sum of the others
+        code = (f.lineage == t).astype(float) - (f.lineage == teams[-1]).astype(float)
+        columns.append(pd.DataFrame({f"dev:{t}": code.to_numpy() * f.age.to_numpy()}, index=f.index))
+    x = pd.concat(columns, axis=1)
+    X, y = x.to_numpy(), f.y.to_numpy()
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    residual = y - X @ beta
+    sigma2 = residual @ residual / max(len(y) - np.linalg.matrix_rank(X), 1)
+    index = [list(x.columns).index(f"dev:{t}") for t in teams[:-1]]
+    k = len(teams)
+    a = np.vstack([np.eye(k - 1), -np.ones(k - 1)])
+    dev = a @ beta[index]
+    se = np.sqrt(np.diag(a @ (sigma2 * np.linalg.pinv(X.T @ X))[np.ix_(index, index)] @ a.T))
+    w = 1 / se ** 2
+    dev = dev - np.sum(w * dev) / w.sum()
+    return pd.DataFrame({"lineage": teams, "dev": dev, "se": se, "laps": [int(counts[t]) for t in teams]})
+
+
+class TeamWear:
+    """Each team's wear deviation from the field in its next race, as a
+    distribution: a pool of its earlier races in the tyre era (recency weight per
+    race back), shrunk towards the field by the persistent spread between teams,
+    plus the race-to-race spread a team shows beyond it.
+
+    Measured 2018-2024 (133 dry races): persistent spread 0.010% of a lap per lap
+    of age, race-specific 0.020, estimation error 0.010; earlier races predict the
+    next race's deviation beyond noise (correlation 0.24). The recency weight is
+    chosen per season by one-step predictive likelihood over the earlier races."""
+
+    def __init__(self):
+        self.persistent = self.specific = 0.0
+        self.decay = None
+
+    def fit(self, races):
+        """`races`: [deviations from `team_wear_deviations`] of the earlier dry races
+        of the tyre era, in order."""
+        self.persistent = self.specific = 0.0
+        self.decay = None
+        parts = [d.assign(order=i) for i, d in enumerate(races) if not d.empty]
+        if len(parts) < MIN_TEAM_RACES:
+            return self
+        frame = pd.concat(parts, ignore_index=True)
+        nxt = frame.groupby("lineage").dev.shift(-1)
+        pairs = frame.assign(nxt=nxt).dropna(subset=["nxt"])
+        self.persistent = max(float(np.cov(pairs.dev, pairs.nxt)[0, 1]), 0.0)
+        self.specific = max(float(frame.dev.var() - (frame.se ** 2).mean()) - self.persistent, 1e-6)
+        if self.persistent <= 0:
+            return self
+        best = None
+        orders = sorted(frame.order.unique())
+        for decay in TEAM_DECAYS:
+            self.decay, total = decay, 0.0
+            for order in orders[MIN_TEAM_RACES // 2:]:
+                prior, now = frame[frame.order < order], frame[frame.order == order]
+                for r in now.itertuples():
+                    mean, var = self._pool(prior[prior.lineage == r.lineage])
+                    s2 = r.se ** 2 + self.specific + var
+                    total += -0.5 * (np.log(s2) + (r.dev - mean) ** 2 / s2)
+            if best is None or total > best[0]:
+                best = (total, decay)
+        self.decay = best[1]
+        return self
+
+    def _pool(self, earlier):
+        """(mean, variance) of a team's persistent deviation from its earlier races
+        (in order); the field's (0, persistent spread) without any."""
+        if earlier.empty:
+            return 0.0, self.persistent
+        weights = self.decay ** np.arange(len(earlier))[::-1] / (earlier.se.to_numpy() ** 2 + self.specific)
+        mean = float(np.sum(weights * earlier.dev.to_numpy()) / weights.sum())
+        shrink = self.persistent / (self.persistent + 1 / weights.sum())
+        return shrink * mean, self.persistent * (1 - shrink)
+
+    def predict(self, lineages, races):
+        """(team index per entrant, mean and spread per team of the wear deviation
+        in % of a lap per lap of age) for the next race; `races`: the earlier
+        races' deviations in order. None while the model is not fitted."""
+        if self.decay is None:
+            return None
+        parts = [d for d in races if not d.empty]
+        frame = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["lineage", "dev", "se"])
+        teams = sorted({l for l in lineages if l is not None})
+        means, sds = [], []
+        for team in teams:
+            mean, var = self._pool(frame[frame.lineage == team])
+            means.append(mean)
+            sds.append(float(np.sqrt(var + self.specific)))
+        if any(l is None for l in lineages):          # unknown team: the field's spread
+            means.append(0.0)
+            sds.append(float(np.sqrt(self.persistent + self.specific)))
+        index = [teams.index(l) if l is not None else len(teams) for l in lineages]
+        return index, np.array(means), np.array(sds)
 
 
 def race_wear(laps):

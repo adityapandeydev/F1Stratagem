@@ -235,7 +235,7 @@ class RaceModel:
         return self.forecast(example, positions, seed, {
             "grid": "known" if known_grid else "simulated",
             "context": {k: (v["factor"] if k == "neutral" else
-                            {x: (y.tolist() if x == "deviate" else y) for x, y in v.items() if x != "residuals"}
+                            {x: (y.tolist() if isinstance(y, np.ndarray) else y) for x, y in v.items() if x != "residuals"}
                             if k == "strategy" else v)
                         for k, v in context.items()},
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
@@ -283,7 +283,7 @@ class SimulatedRace(RaceModel):
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
-                 car_strategies=False, pit_noise=False, weekend_wear=False):
+                 car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -291,6 +291,8 @@ class SimulatedRace(RaceModel):
         self.weekend_wear = weekend_wear
         self._wear_models, self._practice = {}, {}
         self._ratio, self._wear = race_sim.RACE_TO_QUALIFYING, None
+        self.team_wear = team_wear
+        self._team_devs, self._team_models, self._team = {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
@@ -350,6 +352,7 @@ class SimulatedRace(RaceModel):
         self._strategy = self._strategies.get(season)
         self._ratio = self._ratios.get(season, race_sim.RACE_TO_QUALIFYING)
         self._wear = self._wear_models.get(season) if self.weekend_wear else None
+        self._team = self._team_models.get(season) if self.team_wear else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -367,6 +370,14 @@ class SimulatedRace(RaceModel):
             races.append((self.pace.circuit(view, race.event_key), record, wear))
         if self.weekend_wear:
             self._wear_models[season] = self._fit_weekend_wear(view, rows, races)
+        if self.team_wear:
+            # the spreads and recency weight from the tyre era, or every era while it is young;
+            # a team's own pool is always its era's races (`_strategy_inputs`)
+            devs = self._era_team_devs(view, season)
+            if sum(not d.empty for d in devs) < race_sim.MIN_TEAM_RACES:
+                every = view.sessions[view.sessions.session_type == "R"].sort_values("scheduled_start_utc")
+                devs = [self._race_team_devs(view, race) for race in every.itertuples()]
+            self._team_models[season] = race_sim.TeamWear().fit(devs)
         stops = None
         if self.pit_lane or self.car_strategies:
             stops = race_sim.history_stops(self._archive.root, season)
@@ -374,6 +385,21 @@ class SimulatedRace(RaceModel):
                 stops = {"residuals": stops["residuals"] if self.pit_lane else None,
                          "deviate": stops["deviate"] if self.car_strategies else None}
         return race_sim.StrategyModel().fit(races, stops)
+
+    def _race_team_devs(self, view, race):
+        """A race's team wear deviations (cached; a dry race's laps are final)."""
+        if race.session_id not in self._team_devs:
+            entrants = view.entrants(race.session_id)
+            lineage_of = dict(zip(entrants.driver_number.astype(str), entrants.lineage_id))
+            self._team_devs[race.session_id] = race_sim.team_wear_deviations(view.laps(race.session_id), lineage_of)
+        return self._team_devs[race.session_id]
+
+    def _era_team_devs(self, view, season, exclude=None):
+        """Team wear deviations of the races readable in `view` in `season`'s tyre
+        era, in order (`exclude`: an event key left out)."""
+        races = view.sessions[(view.sessions.session_type == "R") & (view.sessions.event_key != exclude)]
+        races = races[races.season.map(race_sim.tyre_era) == race_sim.tyre_era(season)]
+        return [self._race_team_devs(view, race) for race in races.sort_values("scheduled_start_utc").itertuples()]
 
     def _practice_wear(self, view, event_key):
         """Field wear of this event's dry practice long runs readable in `view`
@@ -547,6 +573,13 @@ class SimulatedRace(RaceModel):
             weekend = self._wear.predict(self._practice_wear(view, example.event_key), past)
             if weekend is not None:
                 strategy["wear"] = weekend * lap / 100
+        if self._team is not None:
+            n = len(example.driver_numbers)
+            lineages = list(example.lineage_ids) if len(example.lineage_ids) == n else [None] * n
+            teams = self._team.predict(lineages, self._era_team_devs(view, int(example.season), example.event_key))
+            if teams is not None:
+                index, mean, sd = teams
+                strategy.update(team=np.asarray(index), team_mean=mean * lap / 100, team_sd=sd * lap / 100)
         return strategy
 
     def _shape(self, view, race):

@@ -458,3 +458,54 @@ def test_a_seasons_forecasts_do_not_depend_on_seasons_evaluated_before_it():
     assert standalone._ratio == multi._ratio == 1.08
     multi._activate(2023)
     assert multi._ratio == 1.06 and not np.isclose(multi._strategy_inputs(None, example, "x", 90.0)["wear"], expected)
+
+
+def _team_wear_race(devs, seed=0, laps=50):
+    """Two cars per team, two stints (soft then hard), each team's wear the field's
+    plus its deviation; cars far apart (no traffic)."""
+    rng = np.random.default_rng(seed)
+    rows, lineage_of = [], {}
+    for k, (team, dev) in enumerate(devs.items()):
+        for j in range(2):
+            number = str(10 * k + j + 1)
+            lineage_of[number] = team
+            stop = 20 + 4 * k + 3 * j
+            clock = 8.0 * (2 * k + j)
+            for lap in range(1, laps + 1):
+                stint, age = (1, lap) if lap <= stop else (2, lap - stop)
+                wear = (0.08 if stint == 1 else 0.04) + dev
+                y = 0.3 * k + 0.1 * j - 0.06 * lap + wear * age + rng.normal(0, 0.05)
+                seconds = 90 * np.exp(y / 100)
+                clock += seconds
+                rows.append({"LapNumber": lap, "DriverNumber": number, "LapTime": pd.Timedelta(seconds=seconds),
+                             "Time": pd.Timedelta(seconds=clock), "Stint": stint, "TyreLife": float(age),
+                             "Compound": "SOFT" if stint == 1 else "HARD", "TrackStatus": "1", "IsAccurate": True,
+                             "Deleted": False, "PitInTime": pd.NaT, "PitOutTime": pd.NaT,
+                             "Position": float(2 * k + j + 1)})
+    return pd.DataFrame(rows), lineage_of
+
+
+def test_team_wear_deviations_recover_each_teams_wear_against_the_field():
+    from predictor import race_sim
+    truth = {"a": 0.02, "b": -0.01, "c": 0.0, "d": -0.01}
+    laps, lineage_of = _team_wear_race(truth)
+    devs = race_sim.team_wear_deviations(laps, lineage_of).set_index("lineage")
+    centre = np.mean(list(truth.values()))
+    for team, dev in truth.items():
+        assert abs(devs.dev[team] - (dev - centre)) < 3 * devs.se[team] + 1e-3
+    assert devs.se.max() < 0.005
+
+
+def test_team_wear_pools_earlier_races_and_shrinks_towards_the_field():
+    from predictor import race_sim
+    rng = np.random.default_rng(1)
+    persistent = {"a": 0.02, "b": -0.02, "c": 0.0}
+    races = [pd.DataFrame({"lineage": list(persistent), "dev": [v + rng.normal(0, 0.01) for v in persistent.values()],
+                           "se": 0.005}) for _ in range(30)]
+    model = race_sim.TeamWear().fit(races)
+    assert model.decay in race_sim.TEAM_DECAYS and model.persistent > 0
+    index, mean, sd = model.predict(["a", "b", None], races)
+    assert mean[0] > 0.01 and mean[1] < -0.01 and abs(mean[0]) < 0.02 + 1e-9      # shrunk, right sign
+    assert index == [0, 1, 2] and mean[2] == 0.0                                    # unknown team: the field
+    few = race_sim.TeamWear().fit(races[:5])
+    assert few.decay is None and few.predict(["a"], races) is None
