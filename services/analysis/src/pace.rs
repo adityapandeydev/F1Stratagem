@@ -209,9 +209,10 @@ fn observations(race: &[Lap], filter: &RaceFilter, agg: Agg, min_laps: usize) ->
 
 /// Least-squares fit of every kept lap:
 /// lap time = entity + compound offset + wear x tyre age + lap trend (+ traffic).
-/// An entity's time is its fitted lap at a common reference (most-run compound,
-/// median tyre age and lap number, free air), so cars are compared on equal tyres
-/// and fuel.
+/// Entities are compared at a common reference (most-run compound, median tyre age
+/// and lap number, free air), so cars are compared on equal tyres and fuel. The
+/// returned time is the race's median kept lap plus the entity's fitted difference
+/// to the most-measured entity.
 pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceModel, agg: Agg, min_laps: usize) -> TeamTimes {
     let mut obs = observations(race, filter, agg, min_laps);
     if obs.is_empty() {
@@ -221,9 +222,10 @@ pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceMode
     for pass in 0..2 {
         let design = Design::new(&obs, model);
         let (x, y) = design.matrix(&obs);
-        let Ok(beta) = x.clone().svd(true, true).solve(&y, 1e-10) else { return TeamTimes::new() };
+        let svd = x.clone().svd(true, true);
+        let Ok(beta) = svd.solve(&y, 1e-10) else { return TeamTimes::new() };
         let residuals = &y - &x * &beta;
-        fit = Some((design, beta));
+        fit = Some((design, beta, svd));
         // Trim once, then refit; the final fit and its laps stay together.
         let (Some(k), 0) = (model.trim_sigma, pass) else { break };
         let mut abs: Vec<f64> = residuals.iter().map(|r| r.abs()).collect();
@@ -234,32 +236,51 @@ pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceMode
         }
         obs = obs.into_iter().zip(keep).filter_map(|(o, k)| k.then_some(o)).collect();
     }
-    let (design, beta) = fit.expect("fitted at least once");
+    let (design, beta, svd) = fit.expect("fitted at least once");
 
     let mut ages: Vec<f64> = obs.iter().map(|o| o.age).collect();
     let mut laps_run: Vec<f64> = obs.iter().map(|o| o.lap as f64).collect();
+    let mut kept_times: Vec<f64> = obs.iter().map(|o| o.time).collect();
     let reference_age = median(&mut ages);
-    let reference_lap = median(&mut laps_run).round() as u32;
+    let reference_lap = design.nearest_lap(median(&mut laps_run).round() as u32);
+    let base = median(&mut kept_times);
 
-    let entity_team: BTreeMap<&str, &str> = obs.iter().map(|o| (o.entity.as_str(), o.team.as_str())).collect();
-    let fitted: Vec<(String, String, f64)> = entity_team
+    let mut counts: BTreeMap<&str, (usize, &str)> = BTreeMap::new();
+    for o in &obs {
+        let e = counts.entry(o.entity.as_str()).or_insert((0, o.team.as_str()));
+        e.0 += 1;
+    }
+    let reference_entity = counts.iter().max_by_key(|(_, (n, _))| *n).map(|(e, _)| *e).expect("laps kept");
+    let at = |entity: &str, team: &str| Obs {
+        entity: entity.to_string(),
+        team: team.to_string(),
+        compound: design.reference_compound.clone(),
+        age: reference_age,
+        lap: reference_lap,
+        time: 0.0,
+        gap: None,
+    };
+    let reference_row = design.row(&at(reference_entity, counts[reference_entity].1));
+    let reference_time = design.predict(&beta, &at(reference_entity, counts[reference_entity].1));
+    let row_space = RowSpace::new(&svd);
+
+    // Only differences between cars are reported, anchored to the race's median kept
+    // lap: when every car stops on the same lap, tyre age and the lap terms cannot be
+    // told apart and the fitted absolute lap time is arbitrary, but the gaps between
+    // cars are not. A car whose gap the laps do not determine is left out.
+    let fitted: Vec<(String, f64)> = counts
         .iter()
-        .map(|(entity, team)| {
-            let at = Obs {
-                entity: entity.to_string(),
-                team: team.to_string(),
-                compound: design.reference_compound.clone(),
-                age: reference_age,
-                lap: design.nearest_lap(reference_lap),
-                time: 0.0,
-                gap: None,
-            };
-            (entity.to_string(), team.to_string(), design.predict(&beta, &at))
+        .filter_map(|(entity, (_, team))| {
+            let point = at(entity, team);
+            let contrast: Vec<f64> = design.row(&point).iter().zip(&reference_row).map(|(a, b)| a - b).collect();
+            row_space
+                .contains(&contrast)
+                .then(|| (team.to_string(), base + design.predict(&beta, &point) - reference_time))
         })
         .collect();
 
     let mut by_team: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for (_, team, t) in fitted {
+    for (team, t) in fitted {
         by_team.entry(team).or_default().push(t);
     }
     by_team
@@ -272,6 +293,32 @@ pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceMode
             (team, v)
         })
         .collect()
+}
+
+/// The row space of a design matrix: the linear functions of the coefficients
+/// that the laps determine.
+struct RowSpace {
+    basis: DMatrix<f64>,
+}
+
+impl RowSpace {
+    fn new(svd: &nalgebra::SVD<f64, nalgebra::Dyn, nalgebra::Dyn>) -> Self {
+        let v_t = svd.v_t.as_ref().expect("svd computed with V");
+        let largest = svd.singular_values.iter().copied().fold(0.0, f64::max);
+        let rows: Vec<usize> =
+            (0..svd.singular_values.len()).filter(|&i| svd.singular_values[i] > 1e-9 * largest).collect();
+        Self { basis: v_t.select_rows(&rows) }
+    }
+
+    fn contains(&self, c: &[f64]) -> bool {
+        let c = DVector::from_column_slice(c);
+        let norm2 = c.norm_squared();
+        if norm2 == 0.0 {
+            return true;
+        }
+        let projected = (&self.basis * &c).norm_squared();
+        norm2 - projected <= 1e-8 * norm2
+    }
 }
 
 /// Column layout of the regression.
@@ -427,6 +474,26 @@ mod tests {
         assert!(gaps["Alpha"].abs() < 1e-6);
         assert!((gaps["Beta"] - 0.5).abs() < 1e-6, "Beta {}", gaps["Beta"]);
         assert!((gaps["Gamma"] - 1.2).abs() < 1e-6, "Gamma {}", gaps["Gamma"]);
+    }
+
+    #[test]
+    fn same_lap_stops_keep_gaps_and_a_real_percent_base() {
+        // Every car stops on lap 25: tyre age equals lap number minus a constant for
+        // everyone, so wear and the lap terms are not separable. Gaps must survive and
+        // percentages must use a real lap time as base.
+        let mut race = Vec::new();
+        for (driver, team, pace) in [("A1", "Alpha", 0.0), ("B1", "Beta", 0.9), ("C1", "Gamma", 1.8)] {
+            for n in 1..=50u32 {
+                let (compound, age) = if n <= 25 { ("MEDIUM", n as f64) } else { ("HARD", (n - 25) as f64) };
+                let time = 90.0 + pace + 0.05 * age + if n % 5 == 0 { 0.7 } else { 0.0 };
+                race.push(lap(driver, team, n, time, compound, age));
+            }
+        }
+        let times = team_race_pace(&race);
+        let s = gaps_s(&times);
+        assert!((s["Beta"] - 0.9).abs() < 1e-6 && (s["Gamma"] - 1.8).abs() < 1e-6, "{s:?}");
+        let pct = gaps_pct(&times);
+        assert!((pct["Gamma"] - 1.8 / 90.0 * 100.0).abs() < 0.1, "{pct:?}");
     }
 
     #[test]
