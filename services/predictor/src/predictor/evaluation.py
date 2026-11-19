@@ -167,7 +167,7 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # after qualifying and worse than race:v3f before the weekend (+0.00052). With held cars
 # able to leave their gap and attack (re-gated): -0.00060 [-0.00093, -0.00028], 15+
 # -0.00065, 2024 -0.00119, winner log loss better: confirmed.
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3fw2a", "after_session": "race_mix3ff1a"}
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3fw2a", "after_session": "race_mix3ffn1a"}
 
 
 class ChampionRouter:
