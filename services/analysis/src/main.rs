@@ -20,13 +20,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Rank team-pace recipes by how closely they reproduce published tables
+    /// Rank team-pace recipes by their agreement with reference tables
     /// (one or more events; recipes are ranked by mean error over all of them).
     Calibrate {
         /// Event key, e.g. 2024-20 (repeat for several events).
         #[arg(long, required = true)]
         event: Vec<String>,
-        /// CSV of team,pct for each event, in the same order.
+        /// CSV of team,gap for each event, in the same order.
         #[arg(long, required = true)]
         reference: Vec<PathBuf>,
         /// Recipes to list.

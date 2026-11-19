@@ -1,7 +1,7 @@
-//! Reproduce a published per-team race pace table: run every variant of the race
-//! regression on an event and rank the variants by how closely they match.
+//! Compare the race regression's variants with an external per-team reference
+//! table: run every variant on an event and rank the variants by their agreement.
 //!
-//! Published tables are read from files given at run time; no reference values
+//! Reference tables are read from files given at run time; no reference values
 //! live in this code.
 
 use std::collections::BTreeMap;
@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use crate::archive::Archive;
 use crate::pace::{self, Agg, Compounds, LapTrend, RaceFilter, RaceModel, TeamTimes};
 
-/// What a published gap is measured in.
+/// What a reference gap is measured in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
     /// Percent of the quickest team's lap.
@@ -21,7 +21,7 @@ pub enum Unit {
     Seconds,
 }
 
-/// A published table: team -> gap to the quickest team.
+/// A reference table: team -> gap to the quickest team.
 pub struct Reference {
     pub unit: Unit,
     pub gaps: BTreeMap<String, f64>,
@@ -74,7 +74,7 @@ pub struct Score {
     pub spearman: f64,
     pub same_best: bool,
     pub missing: usize,
-    /// Least-squares factor taking our gaps to the published ones (1 = same scale).
+    /// Least-squares factor taking our gaps to the reference ones (1 = same scale).
     pub scale: f64,
 }
 
