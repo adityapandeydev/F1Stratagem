@@ -428,3 +428,33 @@ def test_tyre_eras_and_weekend_wear_calibration():
     assert model.predict(None, 0.05) is None
     assert race_sim.WeekendWear().fit(list(zip(practice, past, race))[:5]).predict(0.1, 0.05) is None   # too few races
     assert np.isclose(race_sim.shrunk_mean([0.1, None, np.nan], 0.04, prior=2.0), (0.1 + 0.08) / 3)
+
+
+def test_a_seasons_forecasts_do_not_depend_on_seasons_evaluated_before_it():
+    """Fitting 2024's settings forecasts 2023 races with 2024's models: the strategy,
+    the wear calibration and the race-to-qualifying ratio alike, whether or not 2023
+    was evaluated first (standalone run against multi-season run)."""
+    from predictor import race_sim
+    from predictor.race import SimulatedRace
+    rec = {"green": [22.0] * 6, "neutral": [], "stops_per_car": 1.5, "modal": 1}
+    def season_models(wear, coef, ratio):
+        strategy = race_sim.StrategyModel().fit([("x", rec, wear)])
+        calibration = race_sim.WeekendWear(); calibration.coef = np.array(coef)
+        return strategy, calibration, ratio
+    models = {2023: season_models(0.03, [0.0, 0.2, 0.5], 1.06), 2024: season_models(0.07, [0.01, 0.4, 0.3], 1.08)}
+    def model(seasons):
+        m = SimulatedRace(None, "race:test", strategy=True, weekend_lap=True, weekend_wear=True)
+        for s in seasons:
+            m._strategies[s], m._wear_models[s], m._ratios[s] = models[s]
+            m._activate(s)
+        m._practice_wear = lambda view, event_key: 0.12
+        return m
+    standalone, multi = model([2024]), model([2023, 2024])
+    example = types.SimpleNamespace(season=2023, event_key="2023-05")
+    a = standalone._strategy_inputs(None, example, "x", 90.0)
+    b = multi._strategy_inputs(None, example, "x", 90.0)
+    expected = models[2024][1].predict(0.12, models[2024][0].circuits["x"]["wear"]) * 90.0 / 100
+    assert np.isclose(a["wear"], expected) and np.isclose(b["wear"], expected)
+    assert standalone._ratio == multi._ratio == 1.08
+    multi._activate(2023)
+    assert multi._ratio == 1.06 and not np.isclose(multi._strategy_inputs(None, example, "x", 90.0)["wear"], expected)

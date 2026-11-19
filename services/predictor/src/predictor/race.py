@@ -290,6 +290,7 @@ class SimulatedRace(RaceModel):
         self.pit_noise = pit_noise
         self.weekend_wear = weekend_wear
         self._wear_models, self._practice = {}, {}
+        self._ratio, self._wear = race_sim.RACE_TO_QUALIFYING, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
@@ -338,8 +339,17 @@ class SimulatedRace(RaceModel):
 
     def select(self, key):
         self.passes = self._pass_models[key]
-        self._neutral = self._neutral_models.get(key[0])
-        self._strategy = self._strategies.get(key[0])
+        self._activate(key[0])
+
+    def _activate(self, season):
+        """Make `season`'s fitted models the active ones. Every race forecast while
+        they are active uses them, including the earlier seasons' races that fit the
+        season's settings, so a season's forecasts do not depend on which seasons
+        were evaluated before it."""
+        self._neutral = self._neutral_models.get(season)
+        self._strategy = self._strategies.get(season)
+        self._ratio = self._ratios.get(season, race_sim.RACE_TO_QUALIFYING)
+        self._wear = self._wear_models.get(season) if self.weekend_wear else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -475,12 +485,11 @@ class SimulatedRace(RaceModel):
         neutralisation model for the season."""
         if self.neutralisations and season not in self._neutral_models:
             self._neutral_models[season] = self._fit_neutral(season)
-        self._neutral = self._neutral_models.get(season)
         if self.weekend_lap and season not in self._ratios:
             self._ratios[season] = self._fit_ratio(season)
         if self.strategy and season not in self._strategies:
             self._strategies[season] = self._fit_strategy(season)
-        self._strategy = self._strategies.get(season)
+        self._activate(season)
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         frame = self._battles_in(view)
         term = np.zeros(len(frame))
@@ -521,20 +530,24 @@ class SimulatedRace(RaceModel):
         if self.weekend_lap:
             qualifying = self._weekend_qualifying(view, example.event_key)
             if qualifying:
-                ratio = self._ratios.get(int(example.season), race_sim.RACE_TO_QUALIFYING)
-                lap = qualifying * ratio
+                lap = qualifying * self._ratio
         context = {"circuit_term": term, "laps": laps, "lap_seconds": lap}
         if self.neutralisations and self._neutral is not None:
             context["neutral"] = self._neutral.race(circuit, laps)
         if self.strategy and self._strategy is not None:
-            context["strategy"] = self._strategy.race(circuit, lap)
-            calibration = self._wear_models.get(int(example.season)) if self.weekend_wear else None
-            if calibration is not None:
-                past = self._strategy.circuits.get(circuit, {}).get("wear", self._strategy.wear)
-                weekend = calibration.predict(self._practice_wear(view, example.event_key), past)
-                if weekend is not None:
-                    context["strategy"]["wear"] = weekend * lap / 100
+            context["strategy"] = self._strategy_inputs(view, example, circuit, lap)
         return context
+
+    def _strategy_inputs(self, view, example, circuit, lap):
+        """The active strategy model's inputs for this race, its tyre wear from this
+        weekend's practice under the active wear calibration when there is one."""
+        strategy = self._strategy.race(circuit, lap)
+        if self._wear is not None:
+            past = self._strategy.circuits.get(circuit, {}).get("wear", self._strategy.wear)
+            weekend = self._wear.predict(self._practice_wear(view, example.event_key), past)
+            if weekend is not None:
+                strategy["wear"] = weekend * lap / 100
+        return strategy
 
     def _shape(self, view, race):
         if race.session_id not in self._race_shape:
