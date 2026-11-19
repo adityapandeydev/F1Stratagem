@@ -981,3 +981,20 @@ def test_start_roles_and_their_window_shifts_are_learned():
     assert np.allclose(chances.sum(axis=1), 1) and chances[3].argmax() == 2 and chances[0].argmax() == 1
     assert np.isclose(shifts[2], 26 / 40 - mean) and shifts[0] == 0.0       # no soft starters: no shift
     assert race_sim.pooled_roles([roles] * (race_sim.MIN_ROLE_RACES - 1), np.array([0.4])) is None
+
+
+def test_gamble_model_learns_more_stops_for_high_wear_teams():
+    from predictor import race_sim
+    rng = np.random.default_rng(0)
+    n = 4000
+    wear = rng.normal(0, 0.03, n)
+    band = rng.integers(0, 4, n)
+    z = -1.8 + 25 * wear
+    more = rng.uniform(size=n) < 1 / (1 + np.exp(-z))
+    fewer = ~more & (rng.uniform(size=n) < 1 / (1 + np.exp(-(-2.5 - 25 * wear))))
+    rows = pd.DataFrame({"modal": 2, "dev": np.where(more, 1, np.where(fewer, -1, 0)), "band": band, "wear": wear})
+    model = race_sim.GambleModel().fit(rows)
+    c = model.chances(np.array([5.0, 5.0]), np.array([-0.05, 0.05])).reshape(2, 3)
+    assert c[1, 2] > 2 * c[0, 2] and c[0, 1] > 2 * c[1, 1]       # high wear: more; gentle: fewer
+    assert np.all(c[:, 0] == 0)                                    # no one-stop races seen: no chance there
+    assert list(race_sim.grid_band([1, 3, 4, 10, 11, 16, 0])) == [0, 0, 1, 1, 2, 3, 3]

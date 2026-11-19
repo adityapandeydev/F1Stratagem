@@ -369,6 +369,12 @@ def model_registry():
             "race_mix3f": lambda: ForecastMixture(["race3f", "race2a"], [0.5, 0.5], "race:mix3f"),
             "race_mix3f1a": lambda: ForecastMixture(["race3f", "race1a"], [0.5, 0.5], "race:mix3f1a"),
             "race_mix3ff1a": lambda: ForecastMixture(["race3ff", "race1a"], [0.5, 0.5], "race:mix3ff1a"),
+            # gambles (one stop more or fewer) from grid band and team wear, on the after-qualifying champion
+            "race3ffng": lambda: _race_model("pace3wrqwt", "race:v3ffng", simulated=True, forecast_battles=True,
+                                             neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                             strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                             team_wear=True, following=True, windows=True, gambles=True),
+            "race_mix3ffng1a": lambda: ForecastMixture(["race3ffng", "race1a"], [0.5, 0.5], "race:mix3ffng1a"),
             # starting tyre roles on the after-qualifying champion's simulator (learned windows)
             "race3ffnr": lambda: _race_model("pace3wrqwt", "race:v3ffnr", simulated=True, forecast_battles=True,
                                              neutralisations=True, weekend_lap=True, detailed_retirements=True,

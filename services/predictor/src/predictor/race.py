@@ -285,7 +285,7 @@ class SimulatedRace(RaceModel):
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
                  car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False,
                  following=False, follow_penalty=False, lap_effect_wear=False, fresh_peak=False, windows=False,
-                 start_roles=False):
+                 start_roles=False, gambles=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -307,6 +307,8 @@ class SimulatedRace(RaceModel):
         self._windows, self._window_tables, self._window = {}, {}, None
         self.start_roles = start_roles
         self._roles, self._role_tables, self._role = {}, {}, None
+        self.gambles = gambles
+        self._gamble_rows, self._gamble_models, self._gamble = {}, {}, None
         self._penalties, self._penalty_tables, self._penalty = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
@@ -376,6 +378,7 @@ class SimulatedRace(RaceModel):
         self._peak = self._peak_tables.get(season) if self.fresh_peak else None
         self._window = self._window_tables.get(season) if self.windows else None
         self._role = self._role_tables.get(season) if self.start_roles else None
+        self._gamble = self._gamble_models.get(season) if self.gambles else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -451,6 +454,43 @@ class SimulatedRace(RaceModel):
             if race.session_id not in self._windows:
                 self._windows[race.session_id] = race_sim.stop_windows(view.laps(race.session_id))
         return race_sim.pooled_windows([self._windows[r.session_id] for r in races.itertuples()])
+
+    def _fit_gambles(self, season):
+        """The gamble model from the dry races before `season`: each finisher's stop
+        count against its race's most common, by grid band and its team's expected
+        wear before that race (the season's team wear model on the tyre era's races
+        before it)."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        races = view.sessions[view.sessions.session_type == "R"].sort_values("scheduled_start_utc")
+        team_model = self._team_models.get(season)
+        frames = []
+        for race in races.itertuples():
+            if race.session_id not in self._gamble_rows:
+                results = view.results(race.session_id)
+                grid = ({} if "GridPosition" not in results else
+                        {d: float(g) for d, g in zip(results.DriverNumber.astype(str),
+                                                     pd.to_numeric(results.GridPosition, errors="coerce")) if pd.notna(g)})
+                wear = {}
+                if team_model is not None:
+                    entrants = view.entrants(race.session_id)
+                    numbers = list(entrants.driver_number.astype(str))
+                    teams = team_model.predict(list(entrants.lineage_id),
+                                               self._era_team_devs_before(view, race))
+                    if teams is not None:
+                        index, mean, _ = teams
+                        wear = {d: float(mean[i]) for d, i in zip(numbers, index)}
+                self._gamble_rows[race.session_id] = race_sim.gamble_rows(view.laps(race.session_id), grid, wear)
+            frames.append(self._gamble_rows[race.session_id])
+        frames = [f for f in frames if f is not None]
+        return race_sim.GambleModel().fit(pd.concat(frames, ignore_index=True) if frames else None)
+
+    def _era_team_devs_before(self, view, race):
+        """Team wear deviations of the races of `race`'s tyre era before it, in order."""
+        season = int(race.season)
+        rows = view.sessions[(view.sessions.session_type == "R")
+                             & (view.sessions.scheduled_start_utc < race.scheduled_start_utc)]
+        rows = rows[rows.season.map(race_sim.tyre_era) == race_sim.tyre_era(season)]
+        return [self._race_team_devs(view, r) for r in rows.sort_values("scheduled_start_utc").itertuples()]
 
     def _fit_roles(self, season):
         """Starting tyre roles from the dry races before `season` of its tyre era."""
@@ -649,6 +689,8 @@ class SimulatedRace(RaceModel):
             self._role_tables[season] = self._fit_roles(season)
         if self.strategy and season not in self._strategies:
             self._strategies[season] = self._fit_strategy(season)
+        if self.gambles and season not in self._gamble_models:      # after the strategy: needs the team wear model
+            self._gamble_models[season] = self._fit_gambles(season)
         self._activate(season)
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         frame = self._battles_in(view)
@@ -710,6 +752,8 @@ class SimulatedRace(RaceModel):
         if self._pit is not None and self._pit.coef is not None:
             rate = self._circuit_passing(view, circuit, example.event_key)
             strategy.update(pit_coef=self._pit.coef, passing=0.0 if rate is None else rate - self._pit.centre)
+        if self._gamble is not None:
+            strategy["gambles"] = self._gamble
         if self._team is not None:
             n = len(example.driver_numbers)
             lineages = list(example.lineage_ids) if len(example.lineage_ids) == n else [None] * n
@@ -746,4 +790,6 @@ class SimulatedRace(RaceModel):
             out["residuals"] = np.asarray(strategy["residuals"], dtype=float) * share
             if strategy.get("deviate") is not None:
                 out["deviate"] = np.asarray(strategy["deviate"], dtype=float) * share
+            if strategy.get("gambles") is not None:
+                out["gamble_share"] = share
         return out

@@ -238,7 +238,11 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                              float(strategy["stops"]), float(strategy.get("stint_noise", STINT_NOISE)),
                                              STOP_WINDOW,
                                              np.asarray(strategy["residuals"], dtype=float),
-                                             car_deviations(strategy.get("deviate"), pace),
+                                             (strategy["gambles"].chances(np.asarray(grid).mean(axis=0),
+                                                                          *_team_wear_pct(strategy, lap_seconds, pace.shape[1]))
+                                              * float(strategy.get("gamble_share", 1.0))
+                                              if strategy.get("gambles") is not None
+                                              else car_deviations(strategy.get("deviate"), pace)),
                                              np.asarray(strategy.get("team", np.zeros(0)), dtype=np.int64),
                                              np.asarray(strategy.get("team_mean", np.zeros(0)), dtype=float),
                                              np.asarray(strategy.get("team_sd", np.zeros(0)), dtype=float),
@@ -261,6 +265,104 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           np.asarray(() if windows is None else windows, dtype=float),
                                           np.asarray(() if roles is None or windows is None else roles[0], dtype=float).ravel(),
                                           np.asarray(() if roles is None or windows is None else roles[1], dtype=float).ravel())
+
+
+def _team_wear_pct(strategy, lap_seconds, n):
+    """(each entrant's team wear deviation in % of a lap per lap of age, centred on
+    the field,) from the strategy's team inputs (zeros without team wear)."""
+    team, mean = strategy.get("team"), strategy.get("team_mean")
+    if team is None or mean is None or len(team) != n:
+        return (np.zeros(n),)
+    dev = np.asarray(mean, dtype=float)[np.asarray(team, dtype=int)] / lap_seconds * 100
+    return (dev - dev.mean(),)
+
+
+def grid_band(slot):
+    """Grid band of a slot (1-3, 4-10, 11-15, 16 on; 0 = pit lane counts as the back)."""
+    slot = np.asarray(slot, dtype=float)
+    return np.where(slot < 1, len(ROLE_BANDS), np.searchsorted(ROLE_BANDS, np.round(slot), side="left"))
+
+
+GAMBLE_RIDGE = 1.0      # pull of the gamble model's coefficients towards 0 (log-odds)
+
+
+class GambleModel:
+    """Each car's chances of one stop more or fewer than its race's most common
+    count, from its grid band and its team's expected tyre wear against the field:
+    a logistic model of one more stop in races most cars run on one stop, and a
+    softmax over fewer / as planned / more in races of two or more. Measured
+    2019-2024 dry races: gentle teams (the third with the lowest earlier wear) go one
+    stop fewer 9.7% of the time against 6.0% for high-wear teams, and one more 13.3%
+    against 21.2%; from 2022 the back of the grid (slots 16-20) adds a stop 24% of
+    the time against 14% at the front."""
+
+    def __init__(self):
+        self.one, self.multi = None, None
+
+    @staticmethod
+    def _x(band, wear):
+        band = np.asarray(band, dtype=int)
+        x = np.zeros((len(band), len(ROLE_BANDS) + 2))
+        x[np.arange(len(band)), band] = 1.0
+        x[:, -1] = np.asarray(wear, dtype=float) * 10      # per 0.1% of a lap per lap of age
+        return x
+
+    @staticmethod
+    def _softmax_fit(x, y, classes):
+        def loss(flat):
+            b = flat.reshape(classes - 1, x.shape[1])
+            z = np.column_stack([np.zeros(len(x)), x @ b.T])
+            z -= z.max(axis=1, keepdims=True)
+            logp = z - np.log(np.exp(z).sum(axis=1, keepdims=True))
+            return float(-logp[np.arange(len(y)), y].sum() + GAMBLE_RIDGE * np.sum(flat ** 2))
+        return minimize(loss, np.zeros((classes - 1) * x.shape[1]), method="L-BFGS-B").x.reshape(classes - 1, x.shape[1])
+
+    def fit(self, rows):
+        """`rows`: DataFrame modal (race's most common count), dev (-1, 0, 1), band,
+        wear (team wear deviation, % of a lap per lap, centred within the race)."""
+        if rows is None or rows.empty:
+            return self
+        one, multi = rows[rows.modal <= 1], rows[rows.modal >= 2]
+        if len(one) >= 50:
+            self.one = self._softmax_fit(self._x(one.band, one.wear), (one.dev > 0).astype(int).to_numpy(), 2)
+        if len(multi) >= 50:
+            self.multi = self._softmax_fit(self._x(multi.band, multi.wear), (multi.dev + 1).astype(int).to_numpy(), 3)
+        return self
+
+    def chances(self, grid, wear):
+        """Per entrant (flat, entrant-major) the three chances `simulate` takes: one
+        more stop in a one-stop race, one fewer and one more in a race of two or more."""
+        x = self._x(grid_band(grid), wear)
+        out = np.zeros((len(x), 3))
+        if self.one is not None:
+            z = x @ self.one[0]
+            out[:, 0] = 1 / (1 + np.exp(-z))
+        if self.multi is not None:
+            z = np.column_stack([np.zeros(len(x)), x @ self.multi.T])    # classes: fewer (base), planned, more
+            p = np.exp(z - z.max(axis=1, keepdims=True))
+            p /= p.sum(axis=1, keepdims=True)
+            out[:, 1], out[:, 2] = p[:, 0], p[:, 2]
+        return np.ascontiguousarray(out).ravel()
+
+
+def gamble_rows(laps, grid, team_wear):
+    """Finishers of a dry race for `GambleModel.fit`: modal, dev, band, wear (from
+    `team_wear`: driver number -> the team's expected wear deviation before the race,
+    % of a lap per lap; missing: 0); None for a wet race or one without laps."""
+    if laps.empty or "PitInTime" not in laps or wet_session(laps):
+        return None
+    total = int(laps.LapNumber.max())
+    cars = []
+    for d, g in laps.groupby(laps.DriverNumber.astype(str)):
+        if g.LapNumber.max() < total - 1 or d not in grid or not np.isfinite(grid[d]):
+            continue
+        cars.append((d, int((g.PitInTime.notna() & (g.LapNumber < total)).sum())))
+    if len(cars) < 8:
+        return None
+    modal = int(pd.Series([c[1] for c in cars]).mode().min())
+    wear = np.array([team_wear.get(d, 0.0) for d, _ in cars], dtype=float)
+    return pd.DataFrame({"modal": modal, "dev": [int(np.clip(k - modal, -1, 1)) for _, k in cars],
+                         "band": grid_band([grid[d] for d, _ in cars]), "wear": wear - wear.mean()})
 
 
 def car_deviations(table, pace):
