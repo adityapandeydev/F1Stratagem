@@ -23,18 +23,22 @@ repository's `data/`.
 The standard recipe (`pace::team_race_pace`) measures each team's race pace from
 one race's own laps:
 
-- Laps: dry tyres, green throughout, after lap 1, no pit in- or out-laps, more
-  than 2 s behind the car ahead at the line.
+- Laps: dry, intermediate and wet tyres, green throughout, after lap 1, no pit in-
+  or out-laps, more than 2 s behind the car ahead at the line.
 - Fit: lap time = driver + compound offset + tyre-wear rate per compound x tyre
   age + a time for every lap number shared by all cars. The lap-number terms take
   up fuel burn, rubbering-in and changing weather lap by lap; tyre age resets at
-  stops, so wear is separable without assuming a fuel rate. Laps more than three
+  stops, so wear is separable without assuming a fuel rate. When every car ran a
+  single stint, wear is not separable and the fit leaves it out.
+- Only differences between cars are reported, anchored to the race's median kept
+  lap. Cars are compared through the laps they share; a car the laps do not
+  connect to the main group is left out. Laps more than three
   robust standard deviations from the fit are dropped once and the fit repeated.
 - Each driver's pace is the fitted lap on the most-run compound at the median tyre
   age and lap; a team's pace is its quicker driver's. Gaps are given in percent of
   the quickest team's lap, or in seconds.
 - A season figure is the mean of a team's per-race gaps over the races it was
-  measured in.
+  measured in; a race counts when at least half of its teams are measured.
 
 ## Modules
 

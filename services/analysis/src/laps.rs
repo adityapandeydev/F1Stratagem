@@ -39,6 +39,10 @@ impl Lap {
         matches!(self.compound.as_deref(), Some("SOFT" | "MEDIUM" | "HARD" | "HYPERSOFT" | "ULTRASOFT" | "SUPERSOFT"))
     }
 
+    pub fn is_wet_tyre(&self) -> bool {
+        matches!(self.compound.as_deref(), Some("INTERMEDIATE" | "WET"))
+    }
+
     pub fn is_pit_lap(&self) -> bool {
         self.pit_in || self.pit_out
     }

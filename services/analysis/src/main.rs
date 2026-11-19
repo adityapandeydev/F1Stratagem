@@ -67,8 +67,8 @@ enum Command {
 /// A team race pace recipe; the defaults are the standard recipe.
 #[derive(clap::Args)]
 struct Recipe {
-    /// all, slick or inter
-    #[arg(long, default_value = "slick")]
+    /// all (dry, intermediate, wet), slick or inter (intermediate and wet)
+    #[arg(long, default_value = "all")]
     compounds: String,
     /// Leave out laps this close or closer to the car ahead (seconds; 0 keeps all).
     #[arg(long, default_value_t = 2.0)]

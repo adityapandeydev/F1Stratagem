@@ -28,8 +28,10 @@ pub enum Agg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compounds {
+    /// Dry, intermediate and wet tyres (laps with no known compound are left out).
     All,
     Slicks,
+    /// Intermediate and wet tyres.
     Inters,
 }
 
@@ -82,10 +84,11 @@ pub struct RaceModel {
 pub const MIN_LAPS: usize = 5;
 
 impl RaceFilter {
-    /// The standard team race pace laps: dry tyres, green, after lap 1, no pit laps,
-    /// more than 2 s behind the car ahead.
+    /// The standard team race pace laps: any known tyre (dry, intermediate, wet), green,
+    /// after lap 1, no pit laps, more than 2 s behind the car ahead. Wet laps let wet
+    /// races be measured; the per-lap terms absorb the change of conditions.
     pub fn standard() -> Self {
-        Self { compounds: Compounds::Slicks, min_gap_s: Some(2.0), ..Self::default() }
+        Self { compounds: Compounds::All, min_gap_s: Some(2.0), ..Self::default() }
     }
 }
 
@@ -140,9 +143,9 @@ pub fn race_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> Vec<(&'a Lap, f64,
         .filter_map(|(lap, gap)| {
             let t = lap.lap_time?;
             let compound_ok = match filter.compounds {
-                Compounds::All => lap.compound.is_some(),
+                Compounds::All => lap.is_slick() || lap.is_wet_tyre(),
                 Compounds::Slicks => lap.is_slick(),
-                Compounds::Inters => lap.compound.as_deref() == Some("INTERMEDIATE"),
+                Compounds::Inters => lap.is_wet_tyre(),
             };
             let keep = compound_ok
                 && lap.is_green()
