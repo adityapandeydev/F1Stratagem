@@ -404,3 +404,14 @@ def test_the_plan_and_the_deviations_reproduce_the_observed_stop_counts(tmp_path
     assert set(np.unique(counts)) == {1, 2}
     # without deviations the plan stays the mean, as before
     assert race_sim.StrategyModel().fit([("x", record, 0.05)]).race("x", 90.0)["stops"] == 1.2
+
+
+def test_pit_noise_scales_slow_stops_and_stop_changes():
+    from predictor.race import SimulatedRace
+    strategy = {"pit_loss": 22.0, "stops": 1.0, "wear": 0.05, "sc_ratio": 0.8, "residuals": np.array([2.0, -1.0]),
+                "deviate": np.full((3, 3), 0.2)}
+    half = SimulatedRace._race_strategy(strategy, {"stint_noise": 0.0, "pit_noise": 0.5})
+    assert np.allclose(half["residuals"], [1.0, -0.5]) and np.allclose(half["deviate"], 0.1)
+    plain = SimulatedRace._race_strategy(strategy, {"stint_noise": 0.0})
+    assert plain["residuals"] is strategy["residuals"] and plain["deviate"] is strategy["deviate"]
+    assert SimulatedRace._race_strategy(None, {}) is None

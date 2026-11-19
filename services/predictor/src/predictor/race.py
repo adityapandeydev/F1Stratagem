@@ -258,6 +258,7 @@ START_NOISES = (0.0, 0.25, 0.5, 1.0, 2.0)   # s: start noise of a car's time
 SIM_SIGMAS = (0.0, 0.15, 0.3, 0.45, 0.6)     # % of a lap: race-day pace noise beyond the pace model's
 PASS_SHIFTS = (-3.0, -2.0, -1.5, -1.0, -0.5, 0.0)   # log-odds added to every pass (pass_shift option)
 STINT_NOISES = (0.0, 1.5, 3.0)   # laps: spread of each car's planned stops (strategy option)
+PIT_NOISES = (0.0, 0.5, 1.0)     # share kept of slow-stop residuals and per-car stop changes (pit_noise option)
 BATTLE_DRAWS = 10       # forecast draws per battle pair when the battle model reads forecast pace
 
 
@@ -282,10 +283,11 @@ class SimulatedRace(RaceModel):
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
-                 car_strategies=False):
+                 car_strategies=False, pit_noise=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
+        self.pit_noise = pit_noise
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
@@ -307,11 +309,13 @@ class SimulatedRace(RaceModel):
     def candidates(self):
         for shift in (PASS_SHIFTS if self.pass_shift else (0.0,)):
             for stint in (STINT_NOISES if self.strategy else (None,)):
-                for start_noise in START_NOISES:
-                    for sigma in SIM_SIGMAS:
-                        yield {"start_noise": start_noise, "sigma": sigma,
-                               **({"pass_shift": shift} if self.pass_shift else {}),
-                               **({"stint_noise": stint} if self.strategy else {})}
+                for pit in (PIT_NOISES if self.pit_noise else (None,)):
+                    for start_noise in START_NOISES:
+                        for sigma in SIM_SIGMAS:
+                            yield {"start_noise": start_noise, "sigma": sigma,
+                                   **({"pass_shift": shift} if self.pass_shift else {}),
+                                   **({"stint_noise": stint} if self.strategy else {}),
+                                   **({"pit_noise": pit} if self.pit_noise else {})}
 
     def neutral(self):
         return {"start_noise": 1.0, "sigma": 0.0}
@@ -504,5 +508,18 @@ class SimulatedRace(RaceModel):
         return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
-                                 {**context["strategy"], "stint_noise": setting.get("stint_noise", race_sim.STINT_NOISE)}
-                                 if context.get("strategy") else None)
+                                 self._race_strategy(context.get("strategy"), setting))
+
+    @staticmethod
+    def _race_strategy(strategy, setting):
+        """The race's strategy inputs under `setting`: its stint noise, and its
+        pit_noise share of the slow-stop residuals and per-car stop changes."""
+        if not strategy:
+            return None
+        out = {**strategy, "stint_noise": setting.get("stint_noise", race_sim.STINT_NOISE)}
+        if "pit_noise" in setting:
+            share = float(setting["pit_noise"])
+            out["residuals"] = np.asarray(strategy["residuals"], dtype=float) * share
+            if strategy.get("deviate") is not None:
+                out["deviate"] = np.asarray(strategy["deviate"], dtype=float) * share
+        return out
