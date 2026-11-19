@@ -238,7 +238,9 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                              float(strategy["stops"]), float(strategy.get("stint_noise", STINT_NOISE)),
                                              STOP_WINDOW,
                                              np.asarray(strategy["residuals"], dtype=float),
-                                             (strategy["gambles"].chances(np.asarray(grid).mean(axis=0),
+                                             (strategy["gambles"].chances(
+                                                  (np.argsort(np.argsort(np.asarray(pace).mean(axis=0))) + 1.0)
+                                                  if strategy.get("gamble_by_pace") else np.asarray(grid).mean(axis=0),
                                                                           *(_team_wear_pct(strategy, lap_seconds, pace.shape[1])
                                                                             if strategy.get("gamble_wear", True)
                                                                             else (np.zeros(pace.shape[1]),)))
