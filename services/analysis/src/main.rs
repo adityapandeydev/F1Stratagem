@@ -62,7 +62,7 @@ fn main() -> Result<()> {
                     continue;
                 }
                 let scores: Vec<_> =
-                    per_event.iter().map(|(_, table, cands)| calibrate::score(&cands[i].gaps, table)).collect();
+                    per_event.iter().map(|(_, table, cands)| calibrate::score(&cands[i], table)).collect();
                 if scores.iter().any(|s| s.missing > 0) {
                     continue;
                 }
@@ -85,13 +85,15 @@ fn main() -> Result<()> {
             }
             for (i, _, _) in rows.iter().take(detail) {
                 for (e, table, cands) in &per_event {
+                    let unit = if table.unit == calibrate::Unit::Seconds { "s" } else { "%" };
                     println!("
-{e}  {}", names[*i]);
+{e}  {}  (gaps in {unit})", names[*i]);
                     println!("{:<18} {:>8} {:>8} {:>8}", "team", "ours", "theirs", "diff");
-                    let mut teams: Vec<_> = table.iter().collect();
+                    let gaps = cands[*i].gaps(table.unit);
+                    let mut teams: Vec<_> = table.gaps.iter().collect();
                     teams.sort_by(|a, b| a.1.total_cmp(b.1));
                     for (team, theirs) in teams {
-                        let ours = cands[*i].gaps[team];
+                        let ours = gaps[team];
                         println!("{:<18} {:>8.3} {:>8.3} {:>+8.3}", team, ours, theirs, ours - theirs);
                     }
                 }
