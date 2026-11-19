@@ -772,26 +772,28 @@ PENALTY_BANDS = (1.0, 2.0, 3.0)    # s: a lap begun within these gaps of the car
 
 
 def start_state(laps):
-    """Each lap's state at its start, from the previous lap's line crossings in
-    their order: DataFrame (aligned with `laps`) of start_gap (s behind the car
-    that crossed just before; inf for the first across, NaN on lap 1 or without a
-    previous crossing) and ahead (that car's number)."""
+    """Each lap's state at its start, from the line crossing that began it (the end
+    of the car's lap before): DataFrame (aligned with `laps`) of start_gap (s behind
+    the other car that crossed the line last before it, on any lap: lapping and
+    lapped cars are traffic too; inf when none had) and ahead (that car's number);
+    NaN / None on lap 1 or without the previous crossing."""
     f = laps.dropna(subset=["Time"])
-    end = {(str(d), int(n)): t for d, n, t in zip(f.DriverNumber, f.LapNumber, f.Time.dt.total_seconds())}
-    by_lap = {}
-    for (d, n), t in end.items():
-        by_lap.setdefault(n, []).append((t, d))
-    order = {n: sorted(v) for n, v in by_lap.items()}
+    times = f.Time.dt.total_seconds().to_numpy()
+    cars = f.DriverNumber.astype(str).to_numpy()
+    end = {(d, int(n)): t for d, n, t in zip(cars, f.LapNumber, times)}
+    order = np.argsort(times, kind="stable")
+    sorted_t, sorted_d = times[order], cars[order]
     gaps, ahead = [], []
     for d, n in zip(laps.DriverNumber.astype(str), laps.LapNumber):
         t = end.get((d, int(n) - 1)) if pd.notna(n) else None
         if t is None:
             gaps.append(np.nan); ahead.append(None)
             continue
-        before = [(u, o) for u, o in order[int(n) - 1] if u < t and o != d]
-        if before:
-            u, o = before[-1]
-            gaps.append(t - u); ahead.append(o)
+        k = int(np.searchsorted(sorted_t, t, side="left")) - 1     # crossings strictly before t
+        while k >= 0 and sorted_d[k] == d:
+            k -= 1
+        if k >= 0:
+            gaps.append(t - sorted_t[k]); ahead.append(sorted_d[k])
         else:
             gaps.append(np.inf); ahead.append(None)
     return pd.DataFrame({"start_gap": gaps, "ahead": ahead}, index=laps.index)
@@ -902,14 +904,21 @@ def fresh_peak(laps):
 
 
 def pooled_fresh_peak(races):
-    """Median per lap of the races' identified peaks (% of a lap); None with fewer than
-    MIN_FRESH_RACES races."""
-    races = [r for r in races if r is not None]
-    if len(races) < MIN_FRESH_RACES:
+    """Median per lap of the races' identified peaks (% of a lap). A lap with fewer than
+    MIN_FRESH_RACES identified (finite) estimates gets no peak (0), and so does every
+    lap after it (the peak fades: a later lap is never supported without an earlier
+    one); None when the first lap is unsupported."""
+    races = [np.asarray(r, dtype=float) for r in races if r is not None]
+    if not races:
         return None
-    values = np.array(races, dtype=float)
-    return np.array([float(np.nanmedian(values[:, k])) if np.isfinite(values[:, k]).any() else 0.0
-                     for k in range(values.shape[1])])
+    values = np.vstack(races)
+    out = np.zeros(values.shape[1])
+    for k in range(values.shape[1]):
+        finite = values[np.isfinite(values[:, k]), k]
+        if len(finite) < MIN_FRESH_RACES:
+            break
+        out[k] = float(np.median(finite))
+    return out if out[0] != 0.0 else None
 
 
 def driver_following_penalties(laps):

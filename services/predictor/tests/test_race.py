@@ -855,7 +855,8 @@ def test_start_gap_follows_the_previous_laps_crossing_order_after_a_pass():
                          "LapTime": [t(100.0), t(100.5), t(90.5), t(89.5), t(90.0), t(90.0)]})
     state = race_sim.start_state(laps)
     assert np.isinf(state.start_gap.iloc[2]) and np.isclose(state.start_gap.iloc[3], 0.5)   # lap 2: car 1 led into it
-    assert np.isclose(state.start_gap.iloc[4], 0.5) and np.isinf(state.start_gap.iloc[5])   # lap 3: car 2 now leads
+    # lap 3: car 2 now leads; the car last across before it is car 1 a lap earlier (90 s): on track, not inf
+    assert np.isclose(state.start_gap.iloc[4], 0.5) and np.isclose(state.start_gap.iloc[5], 90.0)
     assert state.ahead.iloc[3] == "1" and state.ahead.iloc[4] == "2"
     assert cleanair.start_gaps(laps).equals(state.start_gap)
 
@@ -930,3 +931,26 @@ def test_fresh_tyre_peak_is_recovered_after_staggered_stops_and_pooled_within_an
     assert np.allclose(peak, [0.3, 0.2, 0.1], atol=1e-6)
     assert race_sim.pooled_fresh_peak([peak] * (race_sim.MIN_FRESH_RACES - 1)) is None
     assert np.allclose(race_sim.pooled_fresh_peak([peak] * race_sim.MIN_FRESH_RACES), [0.3, 0.2, 0.1])
+
+
+def test_start_gap_sees_a_car_on_another_lap():
+    from predictor import race_sim
+    t = lambda s: pd.Timedelta(seconds=s)
+    # A laps B: A ends lap 11 at 1000 s, B ends lap 10 at 1000.5 s; B's lap 11 starts 0.5 s behind A
+    laps = pd.DataFrame({"DriverNumber": ["A", "B", "A", "B", "A"], "LapNumber": [10, 10, 11, 11, 12],
+                         "Time": [t(900.0), t(1000.5), t(1000.0), t(1100.5), t(1100.0)],
+                         "LapTime": [t(90.0), t(100.0), t(100.0), t(100.0), t(100.0)]})
+    state = race_sim.start_state(laps)
+    assert np.isclose(state.start_gap.iloc[3], 0.5) and state.ahead.iloc[3] == "A"
+    # A's lap 12 starts at 1000 s: no other car crossed before it in these laps
+    assert np.isinf(state.start_gap.iloc[4]) and state.ahead.iloc[4] is None
+
+
+def test_fresh_peak_support_counts_identified_estimates_per_lap():
+    from predictor import race_sim
+    nan = [np.nan] * 3
+    assert race_sim.pooled_fresh_peak([[0.3, 0.2, 0.1]] + [nan] * (race_sim.MIN_FRESH_RACES - 1)) is None
+    some = [[0.3, 0.2, np.nan]] * race_sim.MIN_FRESH_RACES
+    assert np.allclose(race_sim.pooled_fresh_peak(some), [0.3, 0.2, 0.0])        # lap 3 unsupported: none
+    gap = [[0.3, np.nan, 0.1]] * race_sim.MIN_FRESH_RACES
+    assert np.allclose(race_sim.pooled_fresh_peak(gap), [0.3, 0.0, 0.0])         # nothing after an unsupported lap

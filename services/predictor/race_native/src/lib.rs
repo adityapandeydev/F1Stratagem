@@ -588,7 +588,11 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
     };
     let mut next = vec![0usize; n];
     let mut age = vec![0.0f64; n];
-    let mut fresh_set = vec![false; n]; // on a set fitted at a stop (the fresh-tyre peak applies)
+    // on a set fitted at a pit stop (the fresh-tyre peak applies). The peak's clock is
+    // `tyre_laps` (laps on the set, neutralised ones too), as `race_sim.fresh_peak` counts
+    // laps into a stint by lap number: the lap after the stop is the out-lap (tyre_laps 0
+    // during it; its time is in the stop's loss), peak[k] is on the lap with tyre_laps k + 1
+    let mut fresh_set = vec![false; n];
     let wear = if pits { strategy.car_wear(n, rng) } else { vec![] };
     let mut effective = seconds.to_vec();
     let mut neutral_left = 0usize;
@@ -626,7 +630,8 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
             if hazard {
                 if kind == RED {
                     age.iter_mut().for_each(|a| *a = 0.0);
-                    fresh_set.iter_mut().for_each(|f| *f = true);
+                    // a set changed under the red flag has no out-lap: not a fresh-peak set (as fitted)
+                    fresh_set.iter_mut().for_each(|f| *f = false);
                     stops.iter_mut().for_each(|k| *k += 1);
                 } else {
                     let on_lap: Vec<f64> = tyre_laps.iter().map(|a| a + 1.0).collect();
@@ -654,8 +659,8 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 for car in 0..n {
                     let due = next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window;
                     if kind == RED {
-                        age[car] = 0.0;
-                        fresh_set[car] = true; // tyres may be changed under the red flag
+                        age[car] = 0.0; // tyres may be changed under the red flag
+                        fresh_set[car] = false; // no out-lap: not a fresh-peak set (as fitted)
                         if due {
                             next[car] += 1;
                         }
@@ -764,8 +769,8 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
         if pits {
             for car in 0..n {
                 effective[car] = seconds[car] + wear[car] * age[car];
-                if fresh_set[car] {
-                    if let Some(&peak) = race.fresh_peak.get(age[car] as usize) {
+                if fresh_set[car] && tyre_laps[car] >= 1.0 {
+                    if let Some(&peak) = race.fresh_peak.get(tyre_laps[car] as usize - 1) {
                         effective[car] -= peak;
                     }
                 }
@@ -1183,6 +1188,46 @@ mod tests {
                                  pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 },
         };
         race_times(&race, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(7)), &Diag::default(), None).0[0]
+    }
+
+    /// Per-lap times of `fresh_car`'s race (lap k's time = trace time at k - at k-1).
+    fn fresh_laps(peak: Vec<f64>, hazard_lap: Option<usize>) -> Vec<f64> {
+        let laps = 20;
+        let mut hazard = vec![0.0; laps];
+        if let Some(l) = hazard_lap {
+            hazard[l - 1] = 1.0;
+        }
+        let race = Race {
+            coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
+            term: 0.0, shift: 0.0, laps, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
+            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak,
+            neutral: Neutral { hazard, kinds: [0.0, 1.0, 0.0], lengths: [vec![1], vec![2], vec![1]],
+                               sc_gap: 0.52, red_end: 0.0 },
+            strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
+                                 residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                 pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 },
+        };
+        let mut trace = Trace::new(laps, 1);
+        race_times(&race, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(7)), &Diag::default(),
+                   Some(&mut trace));
+        (0..laps).map(|k| trace.time[k] - if k > 0 { trace.time[k - 1] } else { 0.0 }).collect()
+    }
+
+    #[test]
+    fn fresh_tyre_peak_starts_on_the_first_flying_lap_after_the_out_lap() {
+        // one stop planned at the end of lap 10 (20 laps): lap 10 carries the stop, lap 11
+        // is the out-lap, the peak is on laps 12, 13, 14 (as fitted: laps 2-4 into the stint)
+        let (base, peak) = (fresh_laps(vec![], None), fresh_laps(vec![0.5, 0.3, 0.1], None));
+        let gain: Vec<f64> = base.iter().zip(&peak).map(|(b, p)| b - p).collect();
+        for (k, g) in gain.iter().enumerate() {
+            let want = match k + 1 { 12 => 0.5, 13 => 0.3, 14 => 0.1, _ => 0.0 };
+            assert!((g - want).abs() < 1e-9, "lap {}: gain {g}, want {want}", k + 1);
+        }
+        // a virtual safety car on laps 12-13 advances the set's clock (as lap numbers do in
+        // the fit): only lap 14's 0.1 s is left on a green lap
+        let (base, peak) = (fresh_laps(vec![], Some(12)), fresh_laps(vec![0.5, 0.3, 0.1], Some(12)));
+        let total: f64 = base.iter().zip(&peak).map(|(b, p)| b - p).sum();
+        assert!((total - 0.1).abs() < 1e-9, "{total}");
     }
 
     #[test]
