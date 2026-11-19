@@ -40,6 +40,7 @@ predictor-native:
 
 predictor-test:
 	python -m pytest services/predictor
+	cd services/predictor/race_native && cargo test --release
 
 # --- Frontend ---
 frontend:

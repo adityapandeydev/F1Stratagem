@@ -336,3 +336,44 @@ def test_strategy_runs_reproducibly_and_off_means_the_same_races():
     run = lambda s: race_sim.simulate(pace, grid, model, 0.0, 40, 90.0, 0.3, np.random.default_rng(1), strategy=s)
     assert np.array_equal(run(strategy), run(strategy))
     assert not np.array_equal(run(strategy), run(None))
+
+
+def test_cars_take_their_own_stop_count_by_pace_band():
+    from predictor import race_sim
+    pace = np.tile(np.arange(20, dtype=float), (5, 1))       # car 0 fastest
+    table = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]])
+    flat = race_sim.car_deviations(table, pace).reshape(20, 3)
+    assert np.allclose(flat[0], table[0]) and np.allclose(flat[8], table[1]) and np.allclose(flat[19], table[2])
+    assert race_sim.car_deviations(None, pace).size == 0
+    assert list(race_sim.stop_band([0, 1, 8, 9, 14, 15])) == [2, 0, 0, 1, 1, 2]
+
+
+def test_an_extra_stop_without_wear_costs_its_cars_places():
+    from predictor import race_sim
+    rng = np.random.default_rng(3)
+    pace = np.linspace(-0.4, 0.4, 16)[None] + rng.normal(0, 0.05, (400, 16))
+    grid = np.arange(1, 17, dtype=float)[None]
+    model = race_sim.PassModel()
+    model.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    base = {"pit_loss": 22.0, "stops": 1.0, "wear": 0.0, "sc_ratio": 0.8, "residuals": np.zeros(1), "stint_noise": 0.0}
+    middle = np.zeros((3, 3)); middle[1, 0] = 1.0                 # pace ranks 9-14 stop twice in a one-stop race
+    run = lambda s: race_sim.simulate(pace, grid, model, 0.0, 40, 90.0, 0.0, np.random.default_rng(1), strategy=s)
+    usual = run(base)
+    assert np.array_equal(usual, run(base))                        # no table: no extra random numbers
+    extra = run({**base, "deviate": middle})
+    assert extra[:, 8:14].mean() > usual[:, 8:14].mean() + 0.5
+    assert extra[:, :8].mean() <= usual[:, :8].mean()
+
+
+def test_stop_history_never_reads_past_2024(tmp_path):
+    from predictor import race_sim
+    tables = tmp_path / "external" / "jolpica" / "tables"
+    tables.mkdir(parents=True)
+    rows = [(s, 1, d, "22.0" if d != "c" else "26.0") for s in (2023, 2024, 2025) for d in ("a", "b", "c")]
+    pd.DataFrame(rows, columns=["season", "round", "driverId", "duration"]).to_parquet(tables / "pitstops.parquet")
+    res = [(str(s), "1", str(g), "50", "Finished", d) for s in (2023, 2024, 2025) for g, d in enumerate("abc", 1)]
+    pd.DataFrame(res, columns=["season", "round", "grid", "laps", "status", "Driver_driverId"]).to_parquet(
+        tables / "results.parquet")
+    assert len(race_sim.history_stops(tmp_path, 2026)["residuals"]) == 6     # 2023-2024 only
+    assert len(race_sim.history_stops(tmp_path, 2024)["residuals"]) == 3
+    assert race_sim.history_stops(tmp_path, 2023) is None

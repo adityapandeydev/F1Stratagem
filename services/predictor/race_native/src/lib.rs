@@ -14,14 +14,20 @@
 //! ends the race with probability `red_end`. With every hazard zero no random
 //! number is drawn for them, so races are exactly those without neutralisations.
 //!
-//! Strategy (optional, `pit_loss` > 0): every car of a simulated race plans the
-//! same number of stops (the circuit's typical count, rounded at random once per
-//! race) at evenly spread laps moved by noise of its own; its tyres lose `wear` seconds per lap of age, which also counts in the
+//! Strategy (optional, `pit_loss` > 0): a simulated race has a planned number of
+//! stops (the circuit's typical count, rounded at random once per race). With
+//! `deviate` (three chances per car: one more stop when the plan is one stop, one
+//! fewer and one more when it is two or more) each car may take another count,
+//! never fewer than one stop; without it every car keeps the plan. A car's stops
+//! fall at evenly spread laps moved by noise of its own; its tyres lose `wear`
+//! seconds per lap of age, which also counts in the
 //! pace difference that decides passes (fresh tyres pass more easily). A stop costs
 //! `pit_loss` plus a slow-stop residual drawn from observed ones and resets the
 //! tyres. When a safety car or virtual safety car comes out, cars with a stop due
 //! within `window` laps stop at once for `sc_ratio` of the loss, before the field
-//! closes up; a red flag gives everyone new tyres. Without strategy no random
+//! closes up; so do cars whose stop comes due within `window` laps on a later lap
+//! of the same neutralisation (behind a safety car the field closes up again). A
+//! red flag gives everyone new tyres. Without strategy no random
 //! number is drawn for it.
 //!
 //! Random numbers are drawn here: each draw has its own PCG64 generator, its state
@@ -133,6 +139,7 @@ struct Strategy {
     stint_noise: f64,
     window: usize,
     residuals: Vec<f64>,
+    deviate: Vec<f64>,
 }
 
 impl Strategy {
@@ -140,12 +147,30 @@ impl Strategy {
         self.pit_loss > 0.0
     }
 
-    /// Stops of one simulated race: the circuit's typical count rounded at random,
-    /// the same for every car (teams converge on the faster strategy; between cars
-    /// a different count would differ by much more than real strategies do).
+    /// Planned stops of one simulated race: the circuit's typical count rounded at
+    /// random, shared by the field (rounding per car would split it far more often
+    /// than real strategies do; cars leave the plan through `deviate`).
     fn count(&self, rng: &mut Pcg64) -> usize {
         let whole = self.stops_mean.floor();
         (whole as usize + usize::from(rng.gen::<f64>() < self.stops_mean - whole)).max(1)
+    }
+
+    /// Stops of `car` in a race planned for `count` (no random number without `deviate`).
+    fn own(&self, car: usize, count: usize, rng: &mut Pcg64) -> usize {
+        if self.deviate.is_empty() {
+            return count;
+        }
+        let chance = &self.deviate[3 * car..3 * car + 3];
+        let u = rng.gen::<f64>();
+        if count == 1 {
+            1 + usize::from(u < chance[0])
+        } else if u < chance[1] {
+            count - 1
+        } else if u < chance[1] + chance[2] {
+            count + 1
+        } else {
+            count
+        }
     }
 
     /// Planned stop laps (1-based, ascending) of one car making `count` stops.
@@ -204,6 +229,16 @@ fn close_up(time: &mut [f64], order: &mut Vec<usize>, gap: f64) {
 /// One draw: the race from the grid to the flag; writes finishing positions (1 =
 /// first) into `positions`.
 fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, positions: &mut [i64]) {
+    let time = race_times(race, seconds, grid, rng);
+    let mut order: Vec<usize> = (0..time.len()).collect();
+    order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
+    for (position, &car) in order.iter().enumerate() {
+        positions[car] = position as i64 + 1;
+    }
+}
+
+/// Each car's race time of one draw (s against the start).
+fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Vec<f64> {
     let n = seconds.len();
     let mut time: Vec<f64> = grid
         .iter()
@@ -216,7 +251,12 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
     let pits = strategy.enabled();
     let plans: Vec<Vec<usize>> = if pits {
         let count = strategy.count(rng);
-        (0..n).map(|_| strategy.plan(race.laps, count, rng)).collect()
+        (0..n)
+            .map(|car| {
+                let own = strategy.own(car, count, rng);
+                strategy.plan(race.laps, own, rng)
+            })
+            .collect()
     } else {
         vec![]
     };
@@ -224,8 +264,10 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
     let mut age = vec![0.0f64; n];
     let mut effective = seconds.to_vec();
     let mut neutral_left = 0usize;
+    let mut neutral_kind = SC;
     for lap in 0..race.laps {
         let lap1 = lap + 1;
+        let mut started = false;
         if neutral_left == 0 && race.neutral.hazard[lap] > 0.0 && rng.gen::<f64>() < race.neutral.hazard[lap] {
             let pick = rng.gen::<f64>();
             let kind = if pick < race.neutral.kinds[0] {
@@ -235,6 +277,8 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
             } else {
                 RED
             };
+            neutral_kind = kind;
+            started = true;
             let lengths = &race.neutral.lengths[kind];
             neutral_left = if lengths.is_empty() { 1 } else { lengths[rng.gen_range(0..lengths.len())].max(1) };
             if kind == RED && rng.gen::<f64>() < race.neutral.red_end {
@@ -260,6 +304,23 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
             }
         }
         if neutral_left > 0 {
+            // a stop coming due later in a long safety car or virtual safety car is
+            // taken then, still at the neutralised loss; behind a safety car the car
+            // rejoins the queue
+            if pits && !started && neutral_kind != RED {
+                let mut stopped = false;
+                for car in 0..n {
+                    if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window {
+                        time[car] += strategy.sc_ratio * strategy.cost(rng);
+                        age[car] = 0.0;
+                        next[car] += 1;
+                        stopped = true;
+                    }
+                }
+                if stopped && neutral_kind == SC {
+                    close_up(&mut time, &mut order, race.neutral.sc_gap);
+                }
+            }
             neutral_left -= 1; // neutralised: nobody passes, pace does not act
             continue;
         }
@@ -302,12 +363,7 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
             }
         }
     }
-    order.clear();
-    order.extend(0..n);
-    order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
-    for (position, &car) in order.iter().enumerate() {
-        positions[car] = position as i64 + 1;
-    }
+    time
 }
 
 /// Finishing positions (draws x entrants, 1 = first) of `laps` laps. `seconds`:
@@ -343,6 +399,7 @@ fn simulate<'py>(
     stint_noise: f64,
     window: usize,
     residuals: PyReadonlyArray1<f64>,
+    deviate: PyReadonlyArray1<f64>,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -365,6 +422,10 @@ fn simulate<'py>(
         red_end,
     };
     let (draws, n) = (shape[0], shape[1]);
+    let deviate = deviate.as_slice()?.to_vec();
+    if !deviate.is_empty() && deviate.len() != 3 * n {
+        return Err(PyValueError::new_err("three deviation chances per entrant"));
+    }
     let race = Race {
         coef: coefficients(coef.as_slice()?)?,
         term,
@@ -384,6 +445,7 @@ fn simulate<'py>(
             stint_noise,
             window,
             residuals: residuals.as_slice()?.to_vec(),
+            deviate,
         },
     };
     let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
@@ -425,4 +487,56 @@ fn predictor_race_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate, m)?)?;
     m.add_function(wrap_pyfunction!(pass_probability, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One car, no lap time or noise: its race time is what its stops cost.
+    fn lone_car(hazard_lap: usize, length: usize, laps: usize) -> f64 {
+        let mut hazard = vec![0.0; laps];
+        hazard[hazard_lap - 1] = 1.0;
+        let race = Race {
+            coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
+            term: 0.0,
+            shift: 0.0,
+            laps,
+            start_noise: 0.0,
+            start_spacing: 0.25,
+            scale: 0.0,
+            battle_gap: 2.5,
+            min_follow: 0.35,
+            neutral: Neutral {
+                hazard,
+                kinds: [1.0, 0.0, 0.0],
+                lengths: [vec![length], vec![1], vec![1]],
+                sc_gap: 0.52,
+                red_end: 0.0,
+            },
+            strategy: Strategy {
+                wear: 0.0,
+                pit_loss: 22.0,
+                sc_ratio: 0.5,
+                stops_mean: 1.0,
+                stint_noise: 0.0,
+                window: 6,
+                residuals: vec![],
+                deviate: vec![],
+            },
+        };
+        race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(7))[0]
+    }
+
+    #[test]
+    fn a_stop_coming_due_late_in_a_long_safety_car_is_taken_under_it() {
+        // 20 laps, one stop planned on lap 10; safety car from lap 3 through lap 12:
+        // the stop is outside the 6-lap window when the safety car comes out but
+        // comes due on lap 4, so it costs the neutralised share, not a green stop
+        assert!((lone_car(3, 10, 20) - 0.5 * 22.0).abs() < 1e-9);
+        // a one-lap safety car (lap 3) ends before the stop is due: a green stop
+        assert!((lone_car(3, 1, 20) - 22.0).abs() < 1e-9);
+        // two laps (3-4): on lap 4 the stop is within the window, so it is taken then
+        assert!((lone_car(3, 2, 20) - 0.5 * 22.0).abs() < 1e-9);
+    }
 }

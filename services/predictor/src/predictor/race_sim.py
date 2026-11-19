@@ -48,6 +48,9 @@ PIT_LOSS, STOPS, WEAR = 23.0, 1.66, 0.05   # typical pit loss (s), stops per car
 SC_PIT_RATIO = 0.83     # loss of a stop under a safety car or virtual one, against a green-flag stop
 STINT_NOISE = 3.0       # laps: spread of a planned stop around evenly spread stints (default; fitted in race.py)
 STOP_WINDOW = 6         # laps: a stop due this soon is taken under a safety car
+FIRST_STOP_SEASON = 2014     # Jolpica pit stops used from the hybrid era on
+LAST_STOP_SEASON = 2024      # never later: 2025-2026 are the sealed holdout
+STOP_BANDS = (8, 14)         # pace rank: front cars up to 8, middle up to 14, back after
 CIRCUIT_PRIOR = 2.0     # races: weight of the typical value in a circuit's pit loss, stops and wear
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
@@ -186,7 +189,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     `pace`: race pace draws (% of a lap, lower is faster); `grid`: slots, one row or
     one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
     added to every pass's log-odds; `neutral`: `NeutralModel.race(...)` (None: no
-    neutralisations); `strategy`: `StrategyModel.race(...)` (None: no stops or wear)."""
+    neutralisations); `strategy`: `StrategyModel.race(...)` (None: no stops or wear;
+    with `deviate`, each car's own stop count by its pace rank)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -204,8 +208,66 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           *((float(strategy["wear"]), float(strategy["pit_loss"]), float(strategy["sc_ratio"]),
                                              float(strategy["stops"]), float(strategy.get("stint_noise", STINT_NOISE)),
                                              STOP_WINDOW,
-                                             np.asarray(strategy["residuals"], dtype=float)) if strategy else
-                                            (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0))))
+                                             np.asarray(strategy["residuals"], dtype=float),
+                                             car_deviations(strategy.get("deviate"), pace))
+                                            if strategy else (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0), np.zeros(0))))
+
+
+def car_deviations(table, pace):
+    """Each entrant's three chances of another stop count (flat, entrant-major) from
+    the per-band `table` and its rank by mean race pace; empty without a table."""
+    if table is None:
+        return np.zeros(0)
+    ranks = np.argsort(np.argsort(np.asarray(pace).mean(axis=0))) + 1
+    return np.ascontiguousarray(np.asarray(table, dtype=float)[stop_band(ranks)]).ravel()
+
+
+def stop_band(rank):
+    """0 front, 1 middle, 2 back for a 1-based rank (pace or grid; 0 = pit lane)."""
+    rank = np.asarray(rank)
+    return np.where((rank <= 0) | (rank > STOP_BANDS[1]), 2, np.where(rank <= STOP_BANDS[0], 0, 1))
+
+
+def history_stops(root, before_season):
+    """Jolpica pit stops of the dry-looking races (1 or 2 stops most common among
+    finishers) from FIRST_STOP_SEASON to before `before_season`, never after
+    LAST_STOP_SEASON: dict residuals (each stop's pit-lane time against its race's
+    median, s) and deviate (3 x 3: per grid band, the chance of one more stop in a
+    one-stop race, one fewer and one more in a race of two or more); None without
+    the tables."""
+    tables = root / "external" / "jolpica" / "tables"
+    if not (tables / "pitstops.parquet").exists() or not (tables / "results.parquet").exists():
+        return None
+    last = min(int(before_season) - 1, LAST_STOP_SEASON)
+    stops = pd.read_parquet(tables / "pitstops.parquet", columns=["season", "round", "driverId", "duration"])
+    stops = stops[stops.season.astype(int).between(FIRST_STOP_SEASON, last)]
+    if stops.empty:
+        return None
+    stops = stops.assign(season=stops.season.astype(int), round=stops["round"].astype(int),
+                         d=pd.to_numeric(stops.duration, errors="coerce"))     # m:ss = red-flag waits: dropped
+    timed = stops.dropna(subset=["d"])
+    residuals = (timed.d - timed.groupby(["season", "round"]).d.transform("median")).to_numpy(dtype=float)
+    results = pd.read_parquet(tables / "results.parquet",
+                              columns=["season", "round", "grid", "laps", "status", "Driver_driverId"])
+    results = results.assign(season=results.season.astype(int), round=results["round"].astype(int),
+                             laps=results.laps.astype(int), grid=results.grid.astype(int))
+    results = results[results.season.between(FIRST_STOP_SEASON, last)]
+    full = results.groupby(["season", "round"]).laps.transform("max")
+    finished = results[(results.laps >= full - 2) & results.status.astype(str).str.match(r"^(Finished|\+)")]
+    count = stops.groupby(["season", "round", "driverId"]).size().rename("stops")
+    raced = set(zip(stops.season, stops["round"]))
+    finished = finished[[k in raced for k in zip(finished.season, finished["round"])]]
+    finished = finished.join(count, on=["season", "round", "Driver_driverId"]).fillna({"stops": 0})
+    plan = finished.groupby(["season", "round"]).stops.transform(lambda s: s.mode().min())
+    finished = finished.assign(plan=plan, band=stop_band(finished.grid))[plan.between(1, 2)]
+    deviate = np.zeros((3, 3))
+    for band in range(3):
+        one = finished[(finished.band == band) & (finished.plan == 1)]
+        two = finished[(finished.band == band) & (finished.plan == 2)]
+        deviate[band] = [(one.stops > 1).mean() if len(one) else 0.0,
+                         (two.stops < 2).mean() if len(two) else 0.0,
+                         (two.stops > 2).mean() if len(two) else 0.0]
+    return {"residuals": residuals, "deviate": deviate}
 
 
 def stop_record(laps):
@@ -253,8 +315,10 @@ class StrategyModel:
     residuals of green-flag stops against their race's median; a stop under a safety
     car or virtual one costs the observed ratio of the two losses."""
 
-    def fit(self, races):
-        """`races`: [(circuit, record from `stop_record`, wear)] of earlier dry races."""
+    def fit(self, races, stops=None):
+        """`races`: [(circuit, record from `stop_record`, wear)] of earlier dry races;
+        `stops`: `history_stops` (pit-lane slow stops and per-car stop counts), or
+        None for slow stops from the races' own losses and the plan for every car."""
         records = [(c, r, w) for c, r, w in races if r is not None]
         green = [np.median(r["green"]) for _, r, _ in records if len(r["green"]) >= 4]
         self.pit_loss = float(np.median(green)) if green else PIT_LOSS
@@ -263,6 +327,11 @@ class StrategyModel:
         self.wear = float(np.median(wears)) if wears else WEAR
         residuals = [x - np.median(r["green"]) for _, r, _ in records if len(r["green"]) >= 4 for x in r["green"]]
         self.residuals = np.array(residuals) if residuals else np.zeros(1)
+        self.deviate = None
+        if stops is not None and stops.get("residuals") is not None and len(stops["residuals"]):
+            self.residuals = np.asarray(stops["residuals"], dtype=float)
+        if stops is not None and stops.get("deviate") is not None:
+            self.deviate = np.asarray(stops["deviate"], dtype=float)
         under = [x for _, r, _ in records for x in r["neutral"]]
         all_green = [x for _, r, _ in records for x in r["green"]]
         self.sc_ratio = float(np.median(under) / np.median(all_green)) if under and all_green else SC_PIT_RATIO
@@ -278,10 +347,14 @@ class StrategyModel:
         return self
 
     def race(self, circuit, lap_seconds):
-        """Strategy inputs of one race at `circuit` (wear in s per lap of age)."""
+        """Strategy inputs of one race at `circuit` (wear in s per lap of age);
+        `deviate`: the per-band chances of another stop count, if fitted."""
         here = self.circuits.get(circuit, {"pit_loss": self.pit_loss, "stops": self.stops, "wear": self.wear})
-        return {"pit_loss": here["pit_loss"], "stops": max(here["stops"], 1.0), "wear": here["wear"] * lap_seconds / 100,
-                "sc_ratio": self.sc_ratio, "residuals": self.residuals}
+        out = {"pit_loss": here["pit_loss"], "stops": max(here["stops"], 1.0), "wear": here["wear"] * lap_seconds / 100,
+               "sc_ratio": self.sc_ratio, "residuals": self.residuals}
+        if self.deviate is not None:
+            out["deviate"] = self.deviate
+        return out
 
 
 def neutral_periods(laps):

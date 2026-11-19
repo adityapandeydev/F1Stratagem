@@ -257,6 +257,12 @@ def model_registry():
             "race3a": lambda: _race_model("pace3wrqwt", "race:v3a", simulated=True, forecast_battles=True,
                                           neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                           strategy=True),
+            "race3b": lambda: _race_model("pace3wrqwt", "race:v3b", simulated=True, forecast_battles=True,
+                                          neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                          strategy=True, pit_lane=True),
+            "race3c": lambda: _race_model("pace3wrqwt", "race:v3c", simulated=True, forecast_battles=True,
+                                          neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                          strategy=True, pit_lane=True, car_strategies=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
                                             season_skills=("straight", "slow", "medium", "fast"))}
 

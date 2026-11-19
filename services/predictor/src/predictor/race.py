@@ -235,7 +235,8 @@ class RaceModel:
         return self.forecast(example, positions, seed, {
             "grid": "known" if known_grid else "simulated",
             "context": {k: (v["factor"] if k == "neutral" else
-                            {x: y for x, y in v.items() if x != "residuals"} if k == "strategy" else v)
+                            {x: (y.tolist() if x == "deviate" else y) for x, y in v.items() if x != "residuals"}
+                            if k == "strategy" else v)
                         for k, v in context.items()},
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
@@ -280,9 +281,11 @@ class SimulatedRace(RaceModel):
     latest earlier race at the circuit, which stays the source before qualifying."""
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
-                 weekend_lap=False, detailed_retirements=False, strategy=False):
+                 weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
+                 car_strategies=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
+        self.pit_lane, self.car_strategies = pit_lane, car_strategies
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
@@ -343,7 +346,13 @@ class SimulatedRace(RaceModel):
                 self._stops[race.session_id] = (record, race_sim.race_wear(laps) if record is not None else None)
             record, wear = self._stops[race.session_id]
             races.append((self.pace.circuit(view, race.event_key), record, wear))
-        return race_sim.StrategyModel().fit(races)
+        stops = None
+        if self.pit_lane or self.car_strategies:
+            stops = race_sim.history_stops(self._archive.root, season)
+            if stops is not None:
+                stops = {"residuals": stops["residuals"] if self.pit_lane else None,
+                         "deviate": stops["deviate"] if self.car_strategies else None}
+        return race_sim.StrategyModel().fit(races, stops)
 
     def _race_periods(self, view, race):
         if race.session_id not in self._periods:
