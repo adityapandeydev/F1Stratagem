@@ -29,7 +29,7 @@ import pandas as pd
 import predictor_race_native
 from scipy.optimize import minimize
 
-from .laps import race_pace, wet_session
+from .laps import FUEL, practice_laps, race_pace, wet_session
 
 BATTLE_GAP = 2.5        # s: pairs further apart are not battles
 MIN_FOLLOW = 0.35       # s: closest a car is held behind the car ahead
@@ -51,6 +51,9 @@ STOP_WINDOW = 6         # laps: a stop due this soon is taken under a safety car
 FIRST_STOP_SEASON = 2014     # Jolpica pit stops used from the hybrid era on
 LAST_STOP_SEASON = 2024      # never later: 2025-2026 are the sealed holdout
 STOP_BANDS = (8, 14)         # pace rank: front cars up to 8, middle up to 14, back after
+TYRE_ERAS = (2022,)          # first seasons of new tyre eras (18-inch wheels from 2022)
+MIN_ERA_RACES = 10           # fewer dry races in the era: tyre history from every era
+MIN_WEAR_PAIRS = 15          # races with practice and race wear needed to calibrate weekend wear
 CIRCUIT_PRIOR = 2.0     # races: weight of the typical value in a circuit's pit loss, stops and wear
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
@@ -302,6 +305,59 @@ def stop_record(laps):
     modal = int(counts.mode().min()) if len(counts) else None
     return {"green": green, "neutral": under, "stops_per_car": stops / max(laps.DriverNumber.nunique(), 1),
             "modal": modal}
+
+
+def tyre_era(season):
+    """0 for seasons before the first TYRE_ERAS boundary, 1 after it, ..."""
+    return sum(int(season) >= first for first in TYRE_ERAS)
+
+
+PRACTICE_STINT_LAPS, PRACTICE_STINT_AGES, PRACTICE_STINTS = 5, 4, 3
+
+
+def practice_wear(laps):
+    """Field tyre wear of a dry practice session: the median over its long-run
+    stints (PRACTICE_STINT_LAPS laps, PRACTICE_STINT_AGES tyre ages) of the slope
+    of 100 log lap time on tyre age, fuel burn added back (% of a lap per lap of
+    age); (wear, stints), or None with fewer than PRACTICE_STINTS stints. Per stint,
+    not per driver: most drivers run one compound, which leaves a driver + compound
+    + wear fit unidentified (it fails in more than half of the sessions)."""
+    if laps.empty or wet_session(laps):
+        return None
+    frame = practice_laps(laps)
+    frame = frame[frame.run == "long"]
+    slopes = [np.polyfit(g.TyreLife.astype(float), 100 * np.log(g.seconds.to_numpy()), 1)[0]
+              for _, g in frame.groupby(["driver_number", "Stint"])
+              if len(g) >= PRACTICE_STINT_LAPS and g.TyreLife.nunique() >= PRACTICE_STINT_AGES]
+    return (float(np.median(slopes)) - FUEL, len(slopes)) if len(slopes) >= PRACTICE_STINTS else None
+
+
+def shrunk_mean(values, typical, prior=CIRCUIT_PRIOR):
+    """Mean of `values` shrunk towards `typical` by `prior` pseudo-values."""
+    values = [v for v in values if v is not None and np.isfinite(v)]
+    return (sum(values) + prior * typical) / (len(values) + prior)
+
+
+class WeekendWear:
+    """Race wear from this weekend's practice long-run wear and the circuit's past
+    wear: least squares race = a + b practice + c past over earlier races (measured
+    2018-2024 with `practice_wear`, 132 of 134 dry weekends: practice wear
+    correlates 0.51 with race wear on 18-inch tyres, 0.38 on 13-inch)."""
+
+    def fit(self, pairs):
+        """`pairs`: [(practice, past, race)] of earlier races."""
+        rows = np.array([p for p in pairs if all(v is not None and np.isfinite(v) for v in p)], dtype=float)
+        self.coef = None
+        if len(rows) >= MIN_WEAR_PAIRS:
+            x = np.c_[np.ones(len(rows)), rows[:, 0], rows[:, 1]]
+            self.coef, *_ = np.linalg.lstsq(x, rows[:, 2], rcond=None)
+        return self
+
+    def predict(self, practice, past):
+        """Race wear (%/lap of age) or None without a calibration or practice."""
+        if self.coef is None or practice is None or not np.isfinite(practice):
+            return None
+        return float(np.clip(self.coef @ [1.0, practice, past], 0.0, 0.3))
 
 
 def race_wear(laps):

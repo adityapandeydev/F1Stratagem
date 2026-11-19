@@ -415,3 +415,16 @@ def test_pit_noise_scales_slow_stops_and_stop_changes():
     plain = SimulatedRace._race_strategy(strategy, {"stint_noise": 0.0})
     assert plain["residuals"] is strategy["residuals"] and plain["deviate"] is strategy["deviate"]
     assert SimulatedRace._race_strategy(None, {}) is None
+
+
+def test_tyre_eras_and_weekend_wear_calibration():
+    from predictor import race_sim
+    assert [race_sim.tyre_era(s) for s in (2019, 2021, 2022, 2026)] == [0, 0, 1, 1]
+    rng = np.random.default_rng(0)
+    practice, past = rng.uniform(0.0, 0.2, 40), rng.uniform(0.02, 0.08, 40)
+    race = 0.01 + 0.3 * practice + 0.5 * past
+    model = race_sim.WeekendWear().fit(list(zip(practice, past, race)))
+    assert np.isclose(model.predict(0.1, 0.05), 0.01 + 0.03 + 0.025)
+    assert model.predict(None, 0.05) is None
+    assert race_sim.WeekendWear().fit(list(zip(practice, past, race))[:5]).predict(0.1, 0.05) is None   # too few races
+    assert np.isclose(race_sim.shrunk_mean([0.1, None, np.nan], 0.04, prior=2.0), (0.1 + 0.08) / 3)

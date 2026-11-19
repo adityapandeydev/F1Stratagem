@@ -283,11 +283,13 @@ class SimulatedRace(RaceModel):
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
-                 car_strategies=False, pit_noise=False):
+                 car_strategies=False, pit_noise=False, weekend_wear=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
         self.pit_noise = pit_noise
+        self.weekend_wear = weekend_wear
+        self._wear_models, self._practice = {}, {}
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
@@ -342,14 +344,19 @@ class SimulatedRace(RaceModel):
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
-        races = []
-        for race in view.sessions[view.sessions.session_type == "R"].itertuples():
+        races, rows = [], view.sessions[view.sessions.session_type == "R"]
+        if self.weekend_wear:       # tyre history from the season's tyre era when it has enough races
+            same = rows[rows.season.map(race_sim.tyre_era) == race_sim.tyre_era(season)]
+            rows = same if len(same) >= race_sim.MIN_ERA_RACES else rows
+        for race in rows.sort_values("scheduled_start_utc").itertuples():
             if race.session_id not in self._stops:
                 laps = view.laps(race.session_id)
                 record = race_sim.stop_record(laps)
                 self._stops[race.session_id] = (record, race_sim.race_wear(laps) if record is not None else None)
             record, wear = self._stops[race.session_id]
             races.append((self.pace.circuit(view, race.event_key), record, wear))
+        if self.weekend_wear:
+            self._wear_models[season] = self._fit_weekend_wear(view, rows, races)
         stops = None
         if self.pit_lane or self.car_strategies:
             stops = race_sim.history_stops(self._archive.root, season)
@@ -357,6 +364,32 @@ class SimulatedRace(RaceModel):
                 stops = {"residuals": stops["residuals"] if self.pit_lane else None,
                          "deviate": stops["deviate"] if self.car_strategies else None}
         return race_sim.StrategyModel().fit(races, stops)
+
+    def _practice_wear(self, view, event_key):
+        """Field wear of this event's dry practice long runs readable in `view`
+        (sessions weighted by their stints)."""
+        practice = view.sessions[(view.sessions.event_key == event_key)
+                                 & view.sessions.session_type.isin(("FP1", "FP2", "FP3"))]
+        values = []
+        for session in practice.session_id:
+            if session not in self._practice:
+                self._practice[session] = race_sim.practice_wear(view.laps(session))
+            if self._practice[session] is not None:
+                values.append(self._practice[session])
+        return float(np.average([w for w, _ in values], weights=[n for _, n in values])) if values else None
+
+    def _fit_weekend_wear(self, view, rows, races):
+        """Calibrate race wear on practice wear and the circuit's past wear over the
+        earlier races (in order: each race's past is the races before it)."""
+        typical = [w for _, r, w in races if r is not None and w is not None and np.isfinite(w)]
+        typical = float(np.median(typical)) if typical else race_sim.WEAR
+        seen, pairs = {}, []
+        for race, (circuit, record, wear) in zip(rows.sort_values("scheduled_start_utc").itertuples(), races):
+            if record is not None and wear is not None and np.isfinite(wear):
+                past = race_sim.shrunk_mean(seen.get(circuit, []), typical)
+                pairs.append((self._practice_wear(view, race.event_key), past, wear))
+                seen.setdefault(circuit, []).append(wear)
+        return race_sim.WeekendWear().fit(pairs)
 
     def _race_periods(self, view, race):
         if race.session_id not in self._periods:
@@ -495,6 +528,12 @@ class SimulatedRace(RaceModel):
             context["neutral"] = self._neutral.race(circuit, laps)
         if self.strategy and self._strategy is not None:
             context["strategy"] = self._strategy.race(circuit, lap)
+            calibration = self._wear_models.get(int(example.season)) if self.weekend_wear else None
+            if calibration is not None:
+                past = self._strategy.circuits.get(circuit, {}).get("wear", self._strategy.wear)
+                weekend = calibration.predict(self._practice_wear(view, example.event_key), past)
+                if weekend is not None:
+                    context["strategy"]["wear"] = weekend * lap / 100
         return context
 
     def _shape(self, view, race):
