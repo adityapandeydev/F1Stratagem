@@ -823,3 +823,60 @@ def test_corrected_race_pace_keeps_every_lap_and_frees_following_laps():
     assert np.isinf(gaps.iloc[2]) and np.isclose(gaps.iloc[3], 0.5) and np.isnan(gaps.iloc[1])   # lap 1 has no start gap
     model = model_registry()["race1afp"]()
     assert isinstance(model.pace, cleanair.CorrectedPaceModel) and model.pace.name.endswith(f"-fp{cleanair.CORRECTED_VERSION}")
+
+
+def _synthetic_race(stops, wear=0.0, laps=30, spacing=0.5, compounds=("MEDIUM", "MEDIUM")):
+    """Eight cars `spacing` s apart, lap times 100 s * exp((wear * tyre age - 0.03 *
+    lap) / 100) plus a driver offset; car i stops at the end of lap stops[i] (in and
+    out laps marked), onto compounds[1]."""
+    t, rows = pd.Timedelta, []
+    for i, stop in enumerate(stops):
+        clock = i * spacing
+        for lap in range(1, laps + 1):
+            stint = 1 if lap <= stop else 2
+            age = lap if stint == 1 else lap - stop
+            seconds = 100 * np.exp((wear * age - 0.03 * lap + 0.1 * i) / 100)
+            clock += seconds
+            rows.append({"DriverNumber": str(i + 1), "LapNumber": lap, "LapTime": t(seconds=seconds),
+                         "Time": t(seconds=clock), "Position": float(i + 1), "TrackStatus": "1",
+                         "PitInTime": t(seconds=clock) if lap == stop else pd.NaT,
+                         "PitOutTime": t(seconds=clock - seconds) if lap == stop + 1 else pd.NaT,
+                         "Compound": compounds[stint - 1], "TyreLife": float(age), "Stint": float(stint)})
+    return pd.DataFrame(rows)
+
+
+def test_start_gap_follows_the_previous_laps_crossing_order_after_a_pass():
+    from predictor import cleanair, race_sim
+    t = lambda s: pd.Timedelta(seconds=s)
+    # car 2 passes car 1 on lap 2; positions are end-of-lap
+    laps = pd.DataFrame({"DriverNumber": ["1", "2", "1", "2", "1", "2"], "LapNumber": [1, 1, 2, 2, 3, 3],
+                         "Position": [1.0, 2.0, 2.0, 1.0, 2.0, 1.0],
+                         "Time": [t(100.0), t(100.5), t(190.5), t(190.0), t(280.5), t(280.0)],
+                         "LapTime": [t(100.0), t(100.5), t(90.5), t(89.5), t(90.0), t(90.0)]})
+    state = race_sim.start_state(laps)
+    assert np.isinf(state.start_gap.iloc[2]) and np.isclose(state.start_gap.iloc[3], 0.5)   # lap 2: car 1 led into it
+    assert np.isclose(state.start_gap.iloc[4], 0.5) and np.isinf(state.start_gap.iloc[5])   # lap 3: car 2 now leads
+    assert state.ahead.iloc[3] == "1" and state.ahead.iloc[4] == "2"
+    assert cleanair.start_gaps(laps).equals(state.start_gap)
+
+
+def test_a_following_penalty_confounded_with_stint_effects_is_not_measured_or_removed():
+    from predictor import cleanair, race_sim
+    laps = _synthetic_race([15] * 8)            # cars start 0.5 s apart and drift back 0.1 s a lap; no penalty
+    penalty, counts, se = race_sim.following_penalty(laps)
+    assert counts[0] > 0 and np.isnan(penalty[:2]).all()          # the close bands: confounded with the stints
+    assert np.all(np.isnan(penalty) | (np.abs(penalty) < 1e-6))    # a band that is identified reads its true 0
+    out = cleanair.following_corrected(laps)
+    assert np.allclose(out.LapTime.dt.total_seconds(), laps.LapTime.dt.total_seconds())
+
+
+def test_lap_effect_wear_is_none_when_stops_are_synchronised_and_recovered_when_staggered():
+    from predictor import race_sim
+    assert race_sim.lap_effect_wear(_synthetic_race([15] * 8, compounds=("SOFT", "HARD"))) is None
+    assert race_sim.lap_effect_wear(_synthetic_race([15] * 8, wear=0.05, compounds=("SOFT", "HARD"))) is None
+    staggered = race_sim.lap_effect_wear(_synthetic_race([10, 11, 12, 14, 16, 18, 19, 20], wear=0.05))
+    assert staggered is not None and np.isclose(staggered, 0.05, atol=1e-6)
+    staggered = race_sim.lap_effect_wear(_synthetic_race([10, 11, 12, 14, 16, 18, 19, 20], wear=0.0))
+    assert staggered is not None and abs(staggered) < 1e-6
+    changed = race_sim.lap_effect_wear(_synthetic_race([10, 11, 12, 14, 16, 18, 19, 20], wear=0.05, compounds=("SOFT", "HARD")))
+    assert changed is not None and np.isclose(changed, 0.05, atol=1e-6)      # staggered stops onto another compound

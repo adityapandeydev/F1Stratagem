@@ -768,37 +768,67 @@ def held_runs(laps, pace=None):
 PENALTY_BANDS = (1.0, 2.0, 3.0)    # s: a lap begun within these gaps of the car ahead (against 3 s or more)
 
 
+def start_state(laps):
+    """Each lap's state at its start, from the previous lap's line crossings in
+    their order: DataFrame (aligned with `laps`) of start_gap (s behind the car
+    that crossed just before; inf for the first across, NaN on lap 1 or without a
+    previous crossing) and ahead (that car's number)."""
+    f = laps.dropna(subset=["Time"])
+    end = {(str(d), int(n)): t for d, n, t in zip(f.DriverNumber, f.LapNumber, f.Time.dt.total_seconds())}
+    by_lap = {}
+    for (d, n), t in end.items():
+        by_lap.setdefault(n, []).append((t, d))
+    order = {n: sorted(v) for n, v in by_lap.items()}
+    gaps, ahead = [], []
+    for d, n in zip(laps.DriverNumber.astype(str), laps.LapNumber):
+        t = end.get((d, int(n) - 1)) if pd.notna(n) else None
+        if t is None:
+            gaps.append(np.nan); ahead.append(None)
+            continue
+        before = [(u, o) for u, o in order[int(n) - 1] if u < t and o != d]
+        if before:
+            u, o = before[-1]
+            gaps.append(t - u); ahead.append(o)
+        else:
+            gaps.append(np.inf); ahead.append(None)
+    return pd.DataFrame({"start_gap": gaps, "ahead": ahead}, index=laps.index)
+
+
+ESTIMABLE_TOL = 1e-6
+
+
+def estimable(x, columns):
+    """For each column index: is its coefficient identified (its unit vector in the
+    row space of the design `x`)? Least squares returns a minimum-norm number for
+    one that is not, which must not be read as a measurement."""
+    projection = np.linalg.pinv(x) @ x
+    return [bool(np.abs(projection[j] - np.eye(x.shape[1])[j]).max() < ESTIMABLE_TOL) for j in columns]
+
+
 def following_penalty(laps, pace=None):
     """A dry race's following penalty (% of a lap) of laps begun within 1, 2 and 3 s
-    of the car ahead, against the same drivers' laps 3 s or more back in the same
-    stint: least squares of 100 log lap time on lap effects (fuel burn, track
-    evolution), stint effects, each stint's tyre-age slope and the three bands.
-    (penalties, laps per band); None without enough data. `pace`: driver -> race pace;
-    with it, laps behind a car the driver is faster than (held up: the simulator's
-    holding rules already charge for that) are left out, so the penalty is what
-    following costs a car that is not being held. Measured 2018-2024 so: about 0.43%
-    within 1 s, 0.29% at 1-2 s, 0.13% at 2-3 s (of a lap)."""
-    if laps.empty or wet_session(laps) or "Position" not in laps:
+    of the car ahead (`start_state`), against the same drivers' laps begun 3 s or
+    more back in the same stint: least squares of 100 log lap time on lap effects
+    (fuel burn, track evolution), stint effects, each stint's tyre-age slope and the
+    three bands. (penalties, laps per band, standard errors); a band whose penalty is
+    not identified (its laps confounded with stint effects, e.g. drivers who never
+    leave it within a stint) is NaN. None without enough data. `pace`: driver -> race
+    pace; with it, laps behind a car the driver is faster than (held up: the
+    simulator's holding rules already charge for that) are left out."""
+    if laps.empty or wet_session(laps):
         return None
-    f = clean_race_laps(laps).dropna(subset=["Time", "Position"])
+    f = clean_race_laps(laps)
     if f.empty:
         return None
-    f = f.assign(end=f.Time.dt.total_seconds(), position=f.Position.astype(int))
-    crossing = {(lap, pos): t for lap, pos, t in zip(f.LapNumber, f.position, f.end)}
-    who = {(lap, pos): d for lap, pos, d in zip(f.LapNumber, f.position, f.driver_number)}
-    previous = {(d, lap): t for d, lap, t in zip(f.driver_number, f.LapNumber, f.end)}
-    # the gap at the START of the lap: the previous lap's crossings
-    start = {(lap + 1, pos): t for (lap, pos), t in crossing.items()}
-    gap = [previous.get((d, lap - 1), np.nan) - start.get((lap, pos - 1), np.nan)
-           if pos > 1 else np.inf for d, lap, pos in zip(f.driver_number, f.LapNumber, f.position)]
-    ahead = [who.get((lap - 1, pos - 1)) for lap, pos in zip(f.LapNumber, f.position)]
-    f = f.assign(gap=gap, stint=f.driver_number + "-" + f.Stint.astype(str), age=f.TyreLife.astype(float),
-                 y=100 * np.log(f.seconds.to_numpy()), ahead=ahead)
+    state = start_state(laps).loc[f.index]
+    f = f.assign(gap=state.start_gap.to_numpy(), ahead=state.ahead.to_numpy(),
+                 stint=f.driver_number + "-" + f.Stint.astype(str), age=f.TyreLife.astype(float),
+                 y=100 * np.log(f.seconds.to_numpy()))
+    f = f[f.gap.notna()]
     if pace is not None:
         held = [(a is not None and g < PENALTY_BANDS[-1] and pace.get(d, np.inf) < pace.get(a, -np.inf))
                 for d, a, g in zip(f.driver_number, f.ahead, f.gap)]
         f = f[~np.asarray(held, dtype=bool)]
-    f = f[np.isfinite(f.gap) | (f.position == 1)]
     f = f[f.stint.map(f.stint.value_counts()) >= 8]
     if f.stint.nunique() < 6:
         return None
@@ -809,17 +839,25 @@ def following_penalty(laps, pace=None):
     edges = (0.0,) + PENALTY_BANDS
     bands = np.column_stack([((f.gap >= lo) & (f.gap < hi)).to_numpy(float) for lo, hi in zip(edges, edges[1:])])
     columns.append(pd.DataFrame(bands, index=f.index, columns=["b1", "b2", "b3"]))
-    x = pd.concat(columns, axis=1)
-    beta, *_ = np.linalg.lstsq(x.to_numpy(), f.y.to_numpy(), rcond=None)
-    return beta[-3:], bands.sum(axis=0)
+    x = pd.concat(columns, axis=1).to_numpy()
+    y = f.y.to_numpy()
+    pinv = np.linalg.pinv(x)
+    beta = pinv @ y
+    residual = y - x @ beta
+    sigma2 = residual @ residual / max(len(y) - np.linalg.matrix_rank(x), 1)
+    band_columns = list(range(x.shape[1] - 3, x.shape[1]))
+    ok = estimable(x, band_columns)
+    se = np.sqrt(np.clip(np.diag(sigma2 * (pinv @ pinv.T))[band_columns], 0, None))
+    penalty = np.where(ok, beta[band_columns], np.nan)
+    return penalty, bands.sum(axis=0), np.where(ok, se, np.nan)
 
 
 def pooled_penalty(races, min_laps=15):
-    """Median per band of the races' penalties with at least `min_laps` laps in the
-    band (% of a lap); None without races."""
+    """Median per band of the races' identified penalties with at least `min_laps`
+    laps in the band (% of a lap); None without races."""
     out = []
     for band in range(3):
-        vals = [p[band] for p, n in (r for r in races if r is not None) if n[band] >= min_laps]
+        vals = [r[0][band] for r in races if r is not None and r[1][band] >= min_laps and np.isfinite(r[0][band])]
         out.append(float(np.median(vals)) if vals else 0.0)
     return np.array(out) if any(out) else None
 
@@ -858,7 +896,9 @@ def lap_effect_wear(laps):
     over its compounds, from 100 log lap time on lap effects (fuel burn and track
     evolution, shared by the field, so no fuel rate is assumed), driver effects,
     compound offsets and wear per compound: at a given lap, drivers on different
-    stint phases run different tyre ages. None without a fit. Against `race_wear`
+    stint phases run different tyre ages. Only compounds whose wear is identified
+    count (synchronised stops leave tyre age explained by lap effects); None when
+    none is, or without a fit. Against `race_wear`
     (a fixed fuel rate) it reads 13-inch wear about a third higher (0.042 against
     0.031, 2019-2021 medians) and 18-inch wear about the same (0.061 against 0.064)."""
     if laps.empty or wet_session(laps):
@@ -879,8 +919,13 @@ def lap_effect_wear(laps):
                                     index=f.index))
     x = pd.concat(columns, axis=1)
     beta = dict(zip(x.columns, np.linalg.lstsq(x.to_numpy(), 100 * np.log(f.seconds.to_numpy()), rcond=None)[0]))
+    names = list(x.columns)
+    ok = estimable(x.to_numpy(), [names.index(f"wear:{c}") for c in compounds])
+    known = [c for c, k in zip(compounds, ok) if k]
+    if not known:                    # tyre age not separable from the lap and driver effects
+        return None
     used = f.compound.value_counts()
-    wear = float(np.average([beta[f"wear:{c}"] for c in compounds], weights=[used[c] for c in compounds]))
+    wear = float(np.average([beta[f"wear:{c}"] for c in known], weights=[used[c] for c in known]))
     return wear if np.isfinite(wear) else None
 
 

@@ -55,39 +55,34 @@ def with_clean_air(model, min_gap):
     return model
 
 
-CORRECTED_VERSION = 1
+CORRECTED_VERSION = 2
 
 
 def start_gaps(laps):
-    """Each lap's gap (s) at its start to the car ahead (the previous lap's line
-    crossings; NaN where unknown, inf for the leader), aligned with `laps`."""
-    f = laps.dropna(subset=["Time", "Position"])
-    if f.empty:
-        return pd.Series(np.nan, index=laps.index)
-    end = dict(zip(zip(f.DriverNumber.astype(str), f.LapNumber), f.Time.dt.total_seconds()))
-    at = dict(zip(zip(f.LapNumber, f.Position.astype(int)), f.Time.dt.total_seconds()))
-    out = []
-    for d, lap, pos in zip(laps.DriverNumber.astype(str), laps.LapNumber, laps.Position):
-        if pd.isna(pos):
-            out.append(np.nan)
-        elif int(pos) == 1:
-            out.append(np.inf)
-        else:
-            out.append(end.get((d, lap - 1), np.nan) - at.get((lap - 1, int(pos) - 1), np.nan))
-    return pd.Series(out, index=laps.index, dtype=float)
+    """Each lap's gap at its start to the car ahead (`race_sim.start_state`, the
+    previous lap's crossings in their order)."""
+    from .race_sim import start_state
+    return start_state(laps).start_gap
+
+
+SUPPORT = 2.0          # a band's penalty is removed only when identified and this many standard errors above 0
 
 
 def following_corrected(laps):
-    """`laps` with each lap's time freed of the race's following penalty: the
-    penalty of the lap's start gap band (`race_sim.following_penalty` over all the
-    race's laps, held-up ones included: every cost of following comes out),
-    clipped to 0-2% of a lap. The race pace read from the result is each car's
-    clean-air pace, from every lap."""
+    """`laps` with each lap's time freed of the race's following penalty for its
+    start gap band (`race_sim.following_penalty` over all the race's laps, held-up
+    ones included), only for bands whose penalty is identified and clearly positive
+    (SUPPORT standard errors); other bands are left as they are. The race pace read
+    from the result is each car's clean-air pace where the race supports it."""
     from .race_sim import PENALTY_BANDS, following_penalty
     fitted = following_penalty(laps)
     if fitted is None or laps.empty:
         return laps
-    penalty = np.clip(np.asarray(fitted[0], dtype=float), 0.0, 2.0)
+    penalty, _, se = (np.asarray(v, dtype=float) for v in fitted)
+    supported = np.isfinite(penalty) & np.isfinite(se) & (penalty > SUPPORT * se)
+    penalty = np.where(supported, penalty, 0.0)
+    if not penalty.any():
+        return laps
     gaps = start_gaps(laps).to_numpy()
     edges = (0.0,) + PENALTY_BANDS
     cut = np.zeros(len(laps))
