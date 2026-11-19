@@ -18,6 +18,15 @@ SERVICE_ROOT = Path(__file__).resolve().parents[2]
 DEVELOPMENT_SEASONS = (2019, 2020, 2021, 2022, 2023)
 
 
+def _claim(folder):
+    """Create `folder` if it does not exist yet; False if another run took it."""
+    try:
+        folder.mkdir(parents=True, exist_ok=False)
+        return True
+    except FileExistsError:
+        return False
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="predictor", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -42,6 +51,8 @@ def main(argv=None):
     fit_cache = None if args.no_fit_cache else FitCache(SERVICE_ROOT / "data" / "fits")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = SERVICE_ROOT / "data" / "runs" / f"{stamp}-{args.session}-{args.cutoff}{'-screen' if args.screen_base else ''}"
+    while out.exists() or not _claim(out):          # two runs started in the same second must not share a folder
+        out = out.with_name(out.name + "-b")
     scores, overall, _, comparison, manifest = evaluation.run(args.session, args.cutoff, args.seasons, args.models,
                                                          allow_holdout=args.allow_holdout, out=out,
                                                          reference=args.reference, fit_cache=fit_cache,
