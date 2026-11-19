@@ -239,7 +239,9 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                              STOP_WINDOW,
                                              np.asarray(strategy["residuals"], dtype=float),
                                              (strategy["gambles"].chances(np.asarray(grid).mean(axis=0),
-                                                                          *_team_wear_pct(strategy, lap_seconds, pace.shape[1]))
+                                                                          *(_team_wear_pct(strategy, lap_seconds, pace.shape[1])
+                                                                            if strategy.get("gamble_wear", True)
+                                                                            else (np.zeros(pace.shape[1]),)))
                                               * float(strategy.get("gamble_share", 1.0))
                                               if strategy.get("gambles") is not None
                                               else car_deviations(strategy.get("deviate"), pace)),

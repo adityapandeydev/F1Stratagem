@@ -307,7 +307,7 @@ class SimulatedRace(RaceModel):
         self._windows, self._window_tables, self._window = {}, {}, None
         self.start_roles = start_roles
         self._roles, self._role_tables, self._role = {}, {}, None
-        self.gambles = gambles
+        self.gambles = gambles            # True: grid band and team wear; "grid": grid band only
         self._gamble_rows, self._gamble_models, self._gamble = {}, {}, None
         self._penalties, self._penalty_tables, self._penalty = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
@@ -462,7 +462,7 @@ class SimulatedRace(RaceModel):
         before it)."""
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         races = view.sessions[view.sessions.session_type == "R"].sort_values("scheduled_start_utc")
-        team_model = self._team_models.get(season)
+        team_model = self._team_models.get(season) if self.gambles != "grid" else None
         frames = []
         for race in races.itertuples():
             if race.session_id not in self._gamble_rows:
@@ -754,6 +754,7 @@ class SimulatedRace(RaceModel):
             strategy.update(pit_coef=self._pit.coef, passing=0.0 if rate is None else rate - self._pit.centre)
         if self._gamble is not None:
             strategy["gambles"] = self._gamble
+            strategy["gamble_wear"] = self.gambles != "grid"
         if self._team is not None:
             n = len(example.driver_numbers)
             lineages = list(example.lineage_ids) if len(example.lineage_ids) == n else [None] * n

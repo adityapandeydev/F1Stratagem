@@ -375,6 +375,12 @@ def model_registry():
                                              strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                              team_wear=True, following=True, windows=True, gambles=True),
             "race_mix3ffng1a": lambda: ForecastMixture(["race3ffng", "race1a"], [0.5, 0.5], "race:mix3ffng1a"),
+            # diagnostic: the gamble model on grid bands only (no team wear term)
+            "race3ffngg": lambda: _race_model("pace3wrqwt", "race:v3ffngg", simulated=True, forecast_battles=True,
+                                              neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                              strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                              team_wear=True, following=True, windows=True, gambles="grid"),
+            "race_mix3ffngg1a": lambda: ForecastMixture(["race3ffngg", "race1a"], [0.5, 0.5], "race:mix3ffngg1a"),
             # starting tyre roles on the after-qualifying champion's simulator (learned windows)
             "race3ffnr": lambda: _race_model("pace3wrqwt", "race:v3ffnr", simulated=True, forecast_battles=True,
                                              neutralisations=True, weekend_lap=True, detailed_retirements=True,
