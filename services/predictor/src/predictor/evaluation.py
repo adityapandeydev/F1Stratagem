@@ -607,6 +607,12 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     train = prepare(archive, session_type, cutoff_label, warmup, allow_holdout=False)
     examples = prepare(archive, session_type, cutoff_label, seasons, allow_holdout=allow_holdout)
     scores = walk_forward(examples, models, archive, train, fit_cache, screen_base)
+    if out is not None:             # saved first: a failing comparison must not lose the run
+        out.mkdir(parents=True, exist_ok=True)
+        scores.to_csv(out / "scores.csv", index=False)
+    if reference != "uniform" and reference not in set(scores.model):
+        raise ValueError(f"reference {reference} was not evaluated: add its model to --models"
+                         + (f" (scores saved in {out})" if out is not None else ""))
     overall, by_season = summarise(scores)
     comparison = compare(scores, reference)
     stages = stage_comparison(scores, reference)
