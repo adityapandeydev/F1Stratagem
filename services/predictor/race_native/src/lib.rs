@@ -451,6 +451,8 @@ fn rank(time: &[f64], positions: &mut [i64]) {
 struct Diag<'a> {
     fixed: Option<&'a [i64]>,
     free: bool,
+    /// each car's planned stop laps (1-based), instead of evenly spread ones
+    laps_of: Option<&'a [Vec<usize>]>,
 }
 
 /// What happened in one draw, lap by lap (`lap * n + car`): race time at the lap's
@@ -505,6 +507,8 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
     let (mut event, mut held, mut intended) = (vec![0i64; n], vec![0.0f64; n], vec![0.0f64; n]);
     let plans: Vec<Vec<usize>> = if hazard {
         vec![vec![]; n]
+    } else if pits && diag.laps_of.is_some() {
+        diag.laps_of.unwrap().to_vec()
     } else if pits {
         match diag.fixed {
             Some(fixed) => (0..n).map(|car| strategy.plan(car, race.laps, fixed[car].max(0) as usize, rng)).collect(),
@@ -792,6 +796,7 @@ fn simulate<'py>(
     keyed: bool,
     free_traffic: bool,
     fixed_counts: PyReadonlyArray2<i64>,
+    stop_laps: PyReadonlyArray2<i64>,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -862,7 +867,12 @@ fn simulate<'py>(
     if !fixed.is_empty() && fixed.len() != draws * n {
         return Err(PyValueError::new_err("fixed stop counts: one per draw and entrant"));
     }
-    if trace || keyed || free_traffic || !fixed.is_empty() {
+    let laps_of: Vec<Vec<usize>> = stop_laps.as_array().rows().into_iter()
+        .map(|row| row.iter().filter(|&&l| l > 0).map(|&l| l as usize).collect()).collect();
+    if !laps_of.is_empty() && laps_of.len() != n {
+        return Err(PyValueError::new_err("stop laps: one row per entrant"));
+    }
+    if trace || keyed || free_traffic || !fixed.is_empty() || !laps_of.is_empty() {
         // diagnostics: optionally keyed random numbers (paired variants share scenarios),
         // fixed per-car stop counts, no traffic; the lap-by-lap trace
         let runs: Vec<(Vec<i64>, Vec<i64>, Trace)> = py.allow_threads(|| {
@@ -873,7 +883,8 @@ fn simulate<'py>(
                     let mut generator = Pcg64::seed_from_u64(draw_seed);
                     let mut rng = if keyed { Rand::Keyed(draw_seed) } else { Rand::Seq(&mut generator) };
                     let cars = d * n..(d + 1) * n;
-                    let diag = Diag { fixed: if fixed.is_empty() { None } else { Some(&fixed[cars.clone()]) }, free: free_traffic };
+                    let diag = Diag { fixed: if fixed.is_empty() { None } else { Some(&fixed[cars.clone()]) }, free: free_traffic,
+                                      laps_of: if laps_of.is_empty() { None } else { Some(&laps_of) } };
                     let mut record = Trace::new(laps, n);
                     let (time, made) = race_times(&race, &seconds[cars.clone()], &grid[cars], &mut rng, &diag, Some(&mut record));
                     let mut positions = vec![0i64; n];

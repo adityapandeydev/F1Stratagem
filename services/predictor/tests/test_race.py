@@ -735,3 +735,17 @@ def test_the_state_after_a_stop_has_the_whole_stop_behind_the_car():
     assert after(whole).equals(after(split))
     # 25 s behind its old place: car 1 now runs behind car 3 (18 s back) and ahead of car 4 (30 s back)
     assert after(whole).query("lap == 7 and driver == '1'").position.iloc[0] == 3
+
+
+def test_race_labels_map_to_the_nominated_compound():
+    from predictor import tyres
+    t = tyres.compounds()
+    assert t.season.between(2018, 2024).all() and t.event_key.is_unique
+    assert t.groupby("season").size().to_dict() == {2018: 21, 2019: 21, 2020: 17, 2021: 22, 2022: 22, 2023: 22, 2024: 24}
+    # hard is the hardest of the three nominated, soft the softest, at every race
+    assert (t.apply(lambda r: tyres.softness(r.hard) < tyres.softness(r.medium) < tyres.softness(r.soft), axis=1)).all()
+    key = t[(t.season == 2023) & (t.event_name.str.startswith("Bahrain"))].event_key.iloc[0]
+    assert tyres.identity(key, "SOFT") == ("18in", "C3", 3) and tyres.identity(key, "hard") == ("18in", "C1", 1)
+    monaco = t[(t.season == 2018) & (t.event_name.str.startswith("Monaco"))].event_key.iloc[0]
+    assert tyres.identity(monaco, "SOFT") == ("2018", "hypersoft", 6)
+    assert tyres.identity(key, "INTERMEDIATE") is None

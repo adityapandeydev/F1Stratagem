@@ -1,0 +1,150 @@
+event_key,season,round,event_name,hard,medium,soft,source
+2018-01,2018,1,Australian Grand Prix,soft,supersoft,ultrasoft,wikipedia race article
+2018-02,2018,2,Bahrain Grand Prix,medium,soft,supersoft,formula1.com
+2018-03,2018,3,Chinese Grand Prix,medium,soft,ultrasoft,formula1.com
+2018-04,2018,4,Azerbaijan Grand Prix,soft,supersoft,ultrasoft,wikipedia race article
+2018-05,2018,5,Spanish Grand Prix,medium,soft,supersoft,news report (one source)
+2018-06,2018,6,Monaco Grand Prix,supersoft,ultrasoft,hypersoft,news reports
+2018-07,2018,7,Canadian Grand Prix,supersoft,ultrasoft,hypersoft,wikipedia race article
+2018-08,2018,8,French Grand Prix,soft,supersoft,ultrasoft,wikipedia race article
+2018-09,2018,9,Austrian Grand Prix,soft,supersoft,ultrasoft,racefans.net/crash.net
+2018-10,2018,10,British Grand Prix,hard,medium,soft,news report (one source)
+2018-11,2018,11,German Grand Prix,medium,soft,ultrasoft,wikipedia race article
+2018-12,2018,12,Hungarian Grand Prix,medium,soft,ultrasoft,news report (one source)
+2018-13,2018,13,Belgian Grand Prix,medium,soft,supersoft,autosport.com
+2018-14,2018,14,Italian Grand Prix,medium,soft,supersoft,news reports
+2018-15,2018,15,Singapore Grand Prix,soft,ultrasoft,hypersoft,wikipedia race article
+2018-16,2018,16,Russian Grand Prix,soft,ultrasoft,hypersoft,news reports
+2018-17,2018,17,Japanese Grand Prix,medium,soft,supersoft,wikipedia race article
+2018-18,2018,18,United States Grand Prix,soft,supersoft,ultrasoft,wikipedia race article
+2018-19,2018,19,Mexican Grand Prix,supersoft,ultrasoft,hypersoft,news report (one source)
+2018-20,2018,20,Brazilian Grand Prix,medium,soft,supersoft,news report (one source)
+2018-21,2018,21,Abu Dhabi Grand Prix,supersoft,ultrasoft,hypersoft,news report (one source)
+2019-01,2019,1,Australian Grand Prix,C2,C3,C4,wikipedia race article
+2019-02,2019,2,Bahrain Grand Prix,C1,C2,C3,crash.net/autosport.com
+2019-03,2019,3,Chinese Grand Prix,C2,C3,C4,crash.net/autosport.com
+2019-04,2019,4,Azerbaijan Grand Prix,C2,C3,C4,crash.net/autosport.com
+2019-05,2019,5,Spanish Grand Prix,C1,C2,C3,news reports
+2019-06,2019,6,Monaco Grand Prix,C3,C4,C5,news reports
+2019-07,2019,7,Canadian Grand Prix,C3,C4,C5,news reports
+2019-08,2019,8,French Grand Prix,C2,C3,C4,Pirelli press preview
+2019-09,2019,9,Austrian Grand Prix,C2,C3,C4,Pirelli press preview
+2019-10,2019,10,British Grand Prix,C1,C2,C3,news report (one source)
+2019-11,2019,11,German Grand Prix,C2,C3,C4,Pirelli press preview
+2019-12,2019,12,Hungarian Grand Prix,C2,C3,C4,Pirelli press preview
+2019-13,2019,13,Belgian Grand Prix,C1,C2,C3,Pirelli press preview
+2019-14,2019,14,Italian Grand Prix,C2,C3,C4,Pirelli press preview
+2019-15,2019,15,Singapore Grand Prix,C3,C4,C5,Pirelli press preview
+2019-16,2019,16,Russian Grand Prix,C2,C3,C4,Pirelli press preview
+2019-17,2019,17,Japanese Grand Prix,C1,C2,C3,Pirelli press preview
+2019-18,2019,18,Mexican Grand Prix,C2,C3,C4,Pirelli press preview
+2019-19,2019,19,United States Grand Prix,C2,C3,C4,Pirelli press preview
+2019-20,2019,20,Brazilian Grand Prix,C1,C2,C3,Pirelli press preview
+2019-21,2019,21,Abu Dhabi Grand Prix,C3,C4,C5,Pirelli press preview
+2020-01,2020,1,Austrian Grand Prix,C2,C3,C4,wikipedia race article
+2020-02,2020,2,Styrian Grand Prix,C2,C3,C4,wikipedia race article
+2020-03,2020,3,Hungarian Grand Prix,C2,C3,C4,wikipedia race article
+2020-04,2020,4,British Grand Prix,C1,C2,C3,wikipedia race article
+2020-05,2020,5,70th Anniversary Grand Prix,C2,C3,C4,wikipedia race article
+2020-06,2020,6,Spanish Grand Prix,C1,C2,C3,wikipedia race article
+2020-07,2020,7,Belgian Grand Prix,C2,C3,C4,wikipedia race article
+2020-08,2020,8,Italian Grand Prix,C2,C3,C4,wikipedia race article
+2020-09,2020,9,Tuscan Grand Prix,C1,C2,C3,wikipedia race article
+2020-10,2020,10,Russian Grand Prix,C3,C4,C5,wikipedia race article
+2020-11,2020,11,Eifel Grand Prix,C2,C3,C4,wikipedia race article
+2020-12,2020,12,Portuguese Grand Prix,C1,C2,C3,wikipedia race article
+2020-13,2020,13,Emilia Romagna Grand Prix,C2,C3,C4,wikipedia race article
+2020-14,2020,14,Turkish Grand Prix,C1,C2,C3,wikipedia race article
+2020-15,2020,15,Bahrain Grand Prix,C2,C3,C4,wikipedia race article
+2020-16,2020,16,Sakhir Grand Prix,C2,C3,C4,wikipedia race article
+2020-17,2020,17,Abu Dhabi Grand Prix,C3,C4,C5,wikipedia race article
+2021-01,2021,1,Bahrain Grand Prix,C2,C3,C4,wikipedia race article
+2021-02,2021,2,Emilia Romagna Grand Prix,C2,C3,C4,wikipedia race article
+2021-03,2021,3,Portuguese Grand Prix,C1,C2,C3,wikipedia race article
+2021-04,2021,4,Spanish Grand Prix,C1,C2,C3,wikipedia race article
+2021-05,2021,5,Monaco Grand Prix,C3,C4,C5,wikipedia race article
+2021-06,2021,6,Azerbaijan Grand Prix,C3,C4,C5,wikipedia race article
+2021-07,2021,7,French Grand Prix,C2,C3,C4,wikipedia race article
+2021-08,2021,8,Styrian Grand Prix,C2,C3,C4,wikipedia race article
+2021-09,2021,9,Austrian Grand Prix,C3,C4,C5,wikipedia race article
+2021-10,2021,10,British Grand Prix,C1,C2,C3,wikipedia race article
+2021-11,2021,11,Hungarian Grand Prix,C2,C3,C4,wikipedia race article
+2021-12,2021,12,Belgian Grand Prix,C2,C3,C4,wikipedia race article
+2021-13,2021,13,Dutch Grand Prix,C1,C2,C3,wikipedia race article
+2021-14,2021,14,Italian Grand Prix,C2,C3,C4,wikipedia race article
+2021-15,2021,15,Russian Grand Prix,C3,C4,C5,wikipedia race article
+2021-16,2021,16,Turkish Grand Prix,C2,C3,C4,wikipedia race article
+2021-17,2021,17,United States Grand Prix,C2,C3,C4,wikipedia race article
+2021-18,2021,18,Mexico City Grand Prix,C2,C3,C4,wikipedia race article
+2021-19,2021,19,São Paulo Grand Prix,C2,C3,C4,wikipedia race article
+2021-20,2021,20,Qatar Grand Prix,C1,C2,C3,wikipedia race article
+2021-21,2021,21,Saudi Arabian Grand Prix,C2,C3,C4,Pirelli press preview
+2021-22,2021,22,Abu Dhabi Grand Prix,C3,C4,C5,wikipedia race article
+2022-01,2022,1,Bahrain Grand Prix,C1,C2,C3,wikipedia race article
+2022-02,2022,2,Saudi Arabian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-03,2022,3,Australian Grand Prix,C2,C3,C5,FIA event notes (Pirelli preview)
+2022-04,2022,4,Emilia Romagna Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-05,2022,5,Miami Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-06,2022,6,Spanish Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2022-07,2022,7,Monaco Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2022-08,2022,8,Azerbaijan Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2022-09,2022,9,Canadian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2022-10,2022,10,British Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2022-11,2022,11,Austrian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2022-12,2022,12,French Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-13,2022,13,Hungarian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-14,2022,14,Belgian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-15,2022,15,Dutch Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2022-16,2022,16,Italian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-17,2022,17,Singapore Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2022-18,2022,18,Japanese Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2022-19,2022,19,United States Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-20,2022,20,Mexico City Grand Prix,C2,C3,C4,wikipedia race article
+2022-21,2022,21,São Paulo Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2022-22,2022,22,Abu Dhabi Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-01,2023,1,Bahrain Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2023-02,2023,2,Saudi Arabian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2023-03,2023,3,Australian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2023-04,2023,4,Azerbaijan Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-05,2023,5,Miami Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2023-06,2023,6,Monaco Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-07,2023,7,Spanish Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2023-08,2023,8,Canadian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-09,2023,9,Austrian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-10,2023,10,British Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2023-11,2023,11,Hungarian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-12,2023,12,Belgian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2023-13,2023,13,Dutch Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2023-14,2023,14,Italian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-15,2023,15,Singapore Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-16,2023,16,Japanese Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2023-17,2023,17,Qatar Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2023-18,2023,18,United States Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2023-19,2023,19,Mexico City Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-20,2023,20,São Paulo Grand Prix,C2,C3,C4,wikipedia race article
+2023-21,2023,21,Las Vegas Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2023-22,2023,22,Abu Dhabi Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-01,2024,1,Bahrain Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2024-02,2024,2,Saudi Arabian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2024-03,2024,3,Australian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-04,2024,4,Japanese Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2024-05,2024,5,Chinese Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2024-06,2024,6,Miami Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2024-07,2024,7,Emilia Romagna Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-08,2024,8,Monaco Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-09,2024,9,Canadian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-10,2024,10,Spanish Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2024-11,2024,11,Austrian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-12,2024,12,British Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2024-13,2024,13,Hungarian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-14,2024,14,Belgian Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2024-15,2024,15,Dutch Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2024-16,2024,16,Italian Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-17,2024,17,Azerbaijan Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-18,2024,18,Singapore Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-19,2024,19,United States Grand Prix,C2,C3,C4,FIA event notes (Pirelli preview)
+2024-20,2024,20,Mexico City Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-21,2024,21,São Paulo Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-22,2024,22,Las Vegas Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)
+2024-23,2024,23,Qatar Grand Prix,C1,C2,C3,FIA event notes (Pirelli preview)
+2024-24,2024,24,Abu Dhabi Grand Prix,C3,C4,C5,FIA event notes (Pirelli preview)

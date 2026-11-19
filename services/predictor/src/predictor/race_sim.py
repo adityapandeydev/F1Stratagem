@@ -185,7 +185,8 @@ def circuit_propensity(frame, base):
 
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
-             strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None):
+             strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
+             stop_laps=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -202,7 +203,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     under a red flag, time lost held up) and laps run per draw; `keyed`: random
     numbers keyed by draw, lap, car and purpose, so variants share their scenarios;
     `free_traffic`: nobody is held up or passes; `fixed_counts`: each car's planned
-    stop count per draw (draws x entrants)."""
+    stop count per draw (draws x entrants); `stop_laps`: each entrant's planned stop
+    laps (entrants x k, 1-based, padded with 0)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -232,6 +234,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                                               np.zeros(0), 0.0, float(lap_seconds))), bool(with_stops),
                                           bool(trace), bool(keyed), bool(free_traffic),
                                           np.ascontiguousarray(np.zeros((0, 0)) if fixed_counts is None else fixed_counts,
+                                                               dtype=np.int64),
+                                          np.ascontiguousarray(np.zeros((0, 0)) if stop_laps is None else stop_laps,
                                                                dtype=np.int64))
 
 
