@@ -196,7 +196,7 @@ def test_race_champions_route_by_forecast_moment():
     assert router.name == "race_champion" and router.champions == RACE_CHAMPIONS
     before = types.SimpleNamespace(cutoff_label="pre_weekend")
     after = types.SimpleNamespace(cutoff_label="last")
-    assert router.models[router.route(before)].name == "race:mix3f"
+    assert router.models[router.route(before)].name == "race:mix3fw2a"
     assert router.models[router.route(after)].name == "race:mix3ff1a"
 
 
@@ -880,3 +880,39 @@ def test_lap_effect_wear_is_none_when_stops_are_synchronised_and_recovered_when_
     assert staggered is not None and abs(staggered) < 1e-6
     changed = race_sim.lap_effect_wear(_synthetic_race([10, 11, 12, 14, 16, 18, 19, 20], wear=0.05, compounds=("SOFT", "HARD")))
     assert changed is not None and np.isclose(changed, 0.05, atol=1e-6)      # staggered stops onto another compound
+
+
+def test_a_car_in_traffic_all_race_keeps_the_race_penalty_with_its_full_uncertainty(monkeypatch):
+    from predictor import cleanair, race_sim
+    laps = _synthetic_race([15] * 8)
+    monkeypatch.setattr(race_sim, "following_penalty",
+                        lambda laps, pace=None: (np.array([0.4, 0.2, 0.1]), np.array([50, 50, 50]), np.array([0.05, 0.05, 0.2])))
+    own = pd.DataFrame([{"driver": "1", "band": 0, "penalty": 0.8, "se": 0.1, "laps": 20},
+                        {"driver": "2", "band": 0, "penalty": 0.0, "se": 0.1, "laps": 20},
+                        {"driver": "3", "band": 0, "penalty": 0.4, "se": 0.1, "laps": 20}])
+    monkeypatch.setattr(race_sim, "driver_following_penalties", lambda laps: own)
+    c = cleanair.following_correction(laps)
+    race, race_se = c["race"]
+    assert np.allclose(race, [0.4, 0.2, 0.0]) and np.allclose(race_se, [0.05, 0.05, 0.0])   # band 3: not 2 se above 0
+    tau2 = (0.16 + 0.16 + 0.0) / 3 - 0.01
+    w = tau2 / (tau2 + 0.01)
+    car1, var1 = c["cars"]["1"]
+    assert np.isclose(car1[0], 0.4 + w * 0.4) and np.isclose(var1[0], w * 0.01)              # its own evidence, shrunk
+    car5, var5 = c["cars"]["5"]
+    assert np.isclose(car5[0], 0.4) and np.isclose(var5[0], tau2)                             # none: race value, tau^2
+    assert car5[2] == 0.0 and var5[2] == 0.0                                                  # unsupported band: untouched
+
+
+def test_the_correction_widens_the_pace_error_of_a_car_that_spent_its_race_in_traffic():
+    from predictor import cleanair
+    laps = _synthetic_race([15] * 8, spacing=4.0)          # 4 s apart: everyone in clean air ...
+    t = pd.Timedelta
+    stuck = laps.DriverNumber == "2"                       # ... except car 2, 0.5 s behind car 1 all race
+    laps.loc[stuck, "Time"] = laps.loc[laps.DriverNumber == "1", "Time"].to_numpy() + t(seconds=0.5)
+    correction = {"race": (np.array([0.4, 0.0, 0.0]), np.array([0.05, 0.0, 0.0])),
+                  "cars": {d: (np.array([0.4, 0.0, 0.0]), np.array([0.09, 0.0, 0.0])) for d in map(str, range(1, 9))}}
+    drivers = [str(d) for d in range(1, 9)]
+    added = cleanair.correction_covariance(laps, correction, drivers)
+    variance = np.diag(added)
+    assert variance[1] > 10 * variance[0] and np.allclose(added, added.T)
+    assert np.isclose(added.sum(), 0.0, atol=1e-12)        # centred on the field

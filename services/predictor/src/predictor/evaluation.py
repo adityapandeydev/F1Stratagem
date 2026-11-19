@@ -167,7 +167,7 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # after qualifying and worse than race:v3f before the weekend (+0.00052). With held cars
 # able to leave their gap and attack (re-gated): -0.00060 [-0.00093, -0.00028], 15+
 # -0.00065, 2024 -0.00119, winner log loss better: confirmed.
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race_mix3ff1a"}
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3fw2a", "after_session": "race_mix3ff1a"}
 
 
 class ChampionRouter:
@@ -400,6 +400,13 @@ def model_registry():
                                             team_wear=True, following=True, follow_penalty=True),
             "race_mix3fpc1a": lambda: ForecastMixture(["race3fpc", "race1a"], [0.5, 0.5], "race:mix3fpc1a"),
             "race_mix3fpc2a": lambda: ForecastMixture(["race3fpc", "race2a"], [0.5, 0.5], "race:mix3fpc2a"),
+            # the same on the pre-weekend champion's lap-effect wear
+            "race3fpcw": lambda: _race_model("pace3wrqwtfp", "race:v3fpcw", simulated=True, forecast_battles=True,
+                                             neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                             strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                             team_wear=True, following=True, follow_penalty=True,
+                                             lap_effect_wear=True),
+            "race_mix3fpcw2a": lambda: ForecastMixture(["race3fpcw", "race2a"], [0.5, 0.5], "race:mix3fpcw2a"),
             "race3fl": lambda: _race_model("pace3wrlqwt", "race:v3fl", simulated=True, forecast_battles=True,
                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,

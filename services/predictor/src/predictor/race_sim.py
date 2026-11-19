@@ -815,6 +815,17 @@ def following_penalty(laps, pace=None):
     leave it within a stint) is NaN. None without enough data. `pace`: driver -> race
     pace; with it, laps behind a car the driver is faster than (held up: the
     simulator's holding rules already charge for that) are left out."""
+    f = _following_frame(laps, pace)
+    if f is None:
+        return None
+    bands = _bands(f)
+    beta, se, ok = _identified_fit(_nuisance(f) + [bands], f.y.to_numpy(), 3)
+    return np.where(ok, beta, np.nan), bands.sum(axis=0), np.where(ok, se, np.nan)
+
+
+def _following_frame(laps, pace=None):
+    """Clean laps of a dry race with their start gap, car ahead, stint and tyre age
+    (stints of 8+ laps, 6+ stints); None otherwise. `pace`: see `following_penalty`."""
     if laps.empty or wet_session(laps):
         return None
     f = clean_race_laps(laps)
@@ -830,26 +841,55 @@ def following_penalty(laps, pace=None):
                 for d, a, g in zip(f.driver_number, f.ahead, f.gap)]
         f = f[~np.asarray(held, dtype=bool)]
     f = f[f.stint.map(f.stint.value_counts()) >= 8]
-    if f.stint.nunique() < 6:
-        return None
-    columns = [pd.get_dummies(f.LapNumber, prefix="lap", drop_first=True, dtype=float),
-               pd.get_dummies(f.stint, prefix="st", dtype=float)]
-    for st in f.stint.unique():
-        columns.append(pd.DataFrame({f"age:{st}": (f.stint == st).to_numpy(float) * f.age}, index=f.index))
+    return None if f.stint.nunique() < 6 else f
+
+
+def _bands(f):
+    """Indicators (laps x 3) of a lap begun within 1, 2-1, 3-2 s of the car ahead."""
     edges = (0.0,) + PENALTY_BANDS
-    bands = np.column_stack([((f.gap >= lo) & (f.gap < hi)).to_numpy(float) for lo, hi in zip(edges, edges[1:])])
-    columns.append(pd.DataFrame(bands, index=f.index, columns=["b1", "b2", "b3"]))
-    x = pd.concat(columns, axis=1).to_numpy()
-    y = f.y.to_numpy()
+    return np.column_stack([((f.gap >= lo) & (f.gap < hi)).to_numpy(float) for lo, hi in zip(edges, edges[1:])])
+
+
+def _nuisance(f):
+    """Lap effects, stint effects and each stint's tyre-age slope (column blocks)."""
+    blocks = [pd.get_dummies(f.LapNumber, prefix="lap", drop_first=True, dtype=float).to_numpy(),
+              pd.get_dummies(f.stint, prefix="st", dtype=float).to_numpy()]
+    stints = f.stint.to_numpy()
+    blocks.append(np.column_stack([(stints == st) * f.age.to_numpy() for st in f.stint.unique()]))
+    return blocks
+
+
+def _identified_fit(blocks, y, k):
+    """Least squares of `y` on the column blocks; (coefficients, standard errors,
+    identified) of the last `k` columns."""
+    x = np.hstack(blocks)
     pinv = np.linalg.pinv(x)
     beta = pinv @ y
     residual = y - x @ beta
     sigma2 = residual @ residual / max(len(y) - np.linalg.matrix_rank(x), 1)
-    band_columns = list(range(x.shape[1] - 3, x.shape[1]))
-    ok = estimable(x, band_columns)
-    se = np.sqrt(np.clip(np.diag(sigma2 * (pinv @ pinv.T))[band_columns], 0, None))
-    penalty = np.where(ok, beta[band_columns], np.nan)
-    return penalty, bands.sum(axis=0), np.where(ok, se, np.nan)
+    last = list(range(x.shape[1] - k, x.shape[1]))
+    se = np.sqrt(np.clip(np.diag(sigma2 * (pinv @ pinv.T))[last], 0, None))
+    return beta[last], se, np.asarray(estimable(x, last))
+
+
+def driver_following_penalties(laps):
+    """Each driver's own following penalty per band (% of a lap) in a dry race, from
+    the `following_penalty` regression with a band effect per driver: DataFrame
+    (driver, band 0-2, penalty, se, laps), identified (driver, band) pairs only;
+    None without enough data."""
+    f = _following_frame(laps)
+    if f is None:
+        return None
+    bands = _bands(f)
+    drivers = sorted(f.driver_number.unique())
+    own = f.driver_number.to_numpy()
+    columns = [(d, b) for d in drivers for b in range(3) if bands[own == d, b].sum() > 0]
+    if not columns:
+        return None
+    x = np.column_stack([(own == d) * bands[:, b] for d, b in columns])
+    beta, se, ok = _identified_fit(_nuisance(f) + [x], f.y.to_numpy(), len(columns))
+    return pd.DataFrame([{"driver": d, "band": b, "penalty": p, "se": s, "laps": int(bands[own == d, b].sum())}
+                         for (d, b), p, s, k in zip(columns, beta, se, ok) if k])
 
 
 def pooled_penalty(races, min_laps=15):
