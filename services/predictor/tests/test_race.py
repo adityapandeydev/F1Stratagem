@@ -612,3 +612,67 @@ def test_the_pit_model_learns_that_losing_places_deters_a_stop():
     model = race_sim.PitModel().fit([(f, -1.0)] * 1 + [(f.iloc[:10], -1.2)] * 5)
     lost = model.coef[1 + race_sim.PIT_FEATURES.index("lost")]
     assert model.coef is not None and lost < -1.5          # per 10 cars: about -3
+
+
+def _pit_race(offsets=(0.0, 8.0, 18.0, 30.0), stop_lap=6, stopper="1", delay=25.0, neutral_laps=(), laps=12):
+    """Cars at fixed gaps (s, at lap 1's end), 90 s laps; `stopper` pits at the end
+    of `stop_lap`, its in-lap `delay` s slower."""
+    rows = []
+    for k, offset in enumerate(offsets):
+        d = str(k + 1)
+        clock, age, stint = offset, 0, 1
+        for lap in range(1, laps + 1):
+            age += 1
+            seconds = 90.0 + (delay if d == stopper and lap == stop_lap else 0.0)
+            clock += seconds
+            rows.append({"LapNumber": lap, "DriverNumber": d, "Time": pd.Timedelta(seconds=clock),
+                         "LapTime": pd.Timedelta(seconds=seconds), "TyreLife": float(age), "Stint": stint,
+                         "Compound": "MEDIUM", "TrackStatus": "4" if lap in neutral_laps else "1",
+                         "PitInTime": pd.Timedelta(seconds=clock) if d == stopper and lap == stop_lap else pd.NaT,
+                         "PitOutTime": pd.NaT})
+            if d == stopper and lap == stop_lap:
+                age, stint = 0, 2
+    return pd.DataFrame(rows)
+
+
+def test_pit_features_are_decided_before_the_stop_happens():
+    """The stopping car's in-lap delay must not change the state its stop is
+    labelled from (the field at the end of the lap before)."""
+    from predictor import race_sim
+    rows = lambda delay: race_sim.pit_decisions(_pit_race(delay=delay), 22.0, {}).query("driver == '1' and lap == 6")
+    quick, slow = rows(5.0), rows(40.0)
+    assert quick.pit.iloc[0] and slow.pit.iloc[0]
+    columns = ["age", "stops", "position", "lost", "clean_air", "gap_ahead", "gap_behind"]
+    assert quick[columns].equals(slow[columns])
+    assert quick.position.iloc[0] == 1 and quick.age.iloc[0] == 6.0
+
+
+def test_a_neutralised_lap_counts_places_at_the_neutralised_loss():
+    """Car 1 has car 2 8 s and car 3 18 s behind: a 22 s green stop loses both, an
+    0.8 x 22 = 17.6 s stop under a safety car only car 2."""
+    from predictor import race_sim
+    green = race_sim.pit_decisions(_pit_race(), 22.0, {}, sc_ratio=0.8).query("driver == '1' and lap == 6")
+    under = race_sim.pit_decisions(_pit_race(neutral_laps=(6,)), 22.0, {}, sc_ratio=0.8).query("driver == '1' and lap == 6")
+    assert green.lost.iloc[0] == 2 and under.lost.iloc[0] == 1 and under.neutral.iloc[0]
+
+
+def test_training_and_the_simulator_build_the_same_features_from_one_race_state():
+    import predictor_race_native
+    from predictor import race_sim
+    laps = _pit_race(neutral_laps=(6,))
+    pace = {"1": -0.3, "2": 0.1, "3": 0.0, "4": 0.4}
+    rows = race_sim.pit_decisions(laps, 22.0, pace, wear=0.06, sc_ratio=0.8)
+    for lap in (4, 6):
+        here = rows[rows.lap == lap].sort_values("driver")
+        before = laps[laps.LapNumber == lap - 1].sort_values("DriverNumber")
+        python = race_sim.pit_features(here.age, here.stops, here.lap, 12, here.neutral, here.position, here.lost,
+                                       here.clean_air, here.gap_ahead, here.gap_behind, here.cover_behind, here.cover_ahead,
+                                       here.pace_adv, 0.25, here.wear)
+        lap_seconds = 90.0
+        native = predictor_race_native.pit_state_features(
+            lap, 12, bool(here.neutral.iloc[0]), 22.0 * (0.8 if here.neutral.iloc[0] else 1.0),
+            before.Time.dt.total_seconds().tolist(), [pace[d] * lap_seconds / 100 for d in before.DriverNumber],
+            here.age.tolist(), [0.06 * lap_seconds / 100] * 4, here.stops.astype(int).tolist(),
+            [bool(((laps.LapNumber == lap - 1) & (laps.DriverNumber == d) & laps.PitInTime.notna()).any())
+             for d in before.DriverNumber], 0.25, lap_seconds)
+        assert np.allclose(np.array(native), python)

@@ -576,11 +576,16 @@ def pit_features(age, stops, lap, laps, neutral, position, lost, clean_air, gap_
     return np.column_stack(columns)
 
 
-def pit_decisions(laps, loss, pace, wear=None):
-    """Every car's racing laps of a dry race with whether it pitted at the lap's end
-    and what was visible then: DataFrame of `pit_features` inputs plus `pit`; empty
-    for a wet race. `loss`: the race's pit loss (s); `pace`: driver -> race pace (%);
-    `wear`: the race's tyre wear (%/lap of age; WEAR without)."""
+def pit_decisions(laps, loss, pace, wear=None, sc_ratio=SC_PIT_RATIO):
+    """Every car's racing laps of a dry race, each with whether the car pitted at
+    the lap's end and the state it was decided from: DataFrame of `pit_features`
+    inputs plus `pit`; empty for a wet race. The state is the one the simulator
+    decides from (`predictor_race_native`): the field as it crossed the line at the
+    end of the lap before (no consequence of this lap's stop can enter it), the
+    car's tyre age on this lap (TyreLife), whether this lap is neutralised (then
+    places lost and clean air use `sc_ratio` x `loss`), and who pitted at the end of
+    the lap before. `loss`: the race's green pit loss (s); `pace`: driver -> race
+    pace (%); `wear`: the race's tyre wear (%/lap of age; WEAR without)."""
     if laps.empty or wet_session(laps) or "PitInTime" not in laps:
         return pd.DataFrame()
     total = int(laps.LapNumber.max())
@@ -588,21 +593,30 @@ def pit_decisions(laps, loss, pace, wear=None):
     pitted = set(zip(f.d[f.PitInTime.notna()], f.LapNumber[f.PitInTime.notna()]))
     status = laps.groupby("LapNumber").TrackStatus.agg(lambda v: "".join(str(x) for x in v.dropna()))
     neutral = {n for n, v in status.items() if any(c in v for c in "4567")}
+    by_lap = {n: g for n, g in f.groupby("LapNumber")}
     rows = []
-    for lap, g in f.groupby("LapNumber"):
-        if lap < PIT_FIRST_LAP or lap > total - PIT_LAST_LAPS:
+    for lap in range(PIT_FIRST_LAP, total - PIT_LAST_LAPS + 1):
+        if lap - 1 not in by_lap or lap not in by_lap:
             continue
-        g = g.sort_values("end")
-        ends, drivers = g.end.to_numpy(), g.d.to_numpy()
-        for i, row in enumerate(g.itertuples()):
+        field = by_lap[lap - 1].sort_values("end")
+        ends, drivers = field.end.to_numpy(), field.d.to_numpy()
+        now = by_lap[lap].set_index("d")
+        expected = loss * (sc_ratio if lap in neutral else 1.0)
+        for i, d in enumerate(drivers):
+            if d not in now.index:
+                continue
+            row = now.loc[d]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
             if pd.isna(row.TyreLife) or str(row.Compound).upper() not in DRY_COMPOUNDS:
                 continue
-            t, rejoin = ends[i], ends[i] + loss
-            passing_cars = (ends > t) & (ends <= rejoin)
-            before = ends[(ends <= rejoin) & (np.arange(len(ends)) != i)]
-            after = ends[ends > rejoin]
+            t, rejoin = ends[i], ends[i] + expected
+            others = np.arange(len(ends)) != i
+            passing_cars = others & (ends > t) & (ends <= rejoin)
+            before = ends[others & (ends <= rejoin)]
+            after = ends[others & (ends > rejoin)]
             target = drivers[passing_cars][-1] if passing_cars.any() else None
-            rows.append({"driver": row.d, "lap": int(lap), "age": float(row.TyreLife),
+            rows.append({"driver": d, "lap": lap, "age": float(row.TyreLife),
                          "stops": max(int(row.Stint) - 1, 0) if pd.notna(row.Stint) else 0,
                          "neutral": lap in neutral, "position": i + 1, "lost": int(passing_cars.sum()),
                          "clean_air": min(rejoin - before.max() if len(before) else GAP_CAP,
@@ -611,8 +625,8 @@ def pit_decisions(laps, loss, pace, wear=None):
                          "gap_behind": ends[i + 1] - t if i + 1 < len(ends) else GAP_CAP,
                          "cover_behind": i + 1 < len(ends) and (drivers[i + 1], lap - 1) in pitted and ends[i + 1] - t < COVER_GAP,
                          "cover_ahead": i > 0 and (drivers[i - 1], lap - 1) in pitted and t - ends[i - 1] < COVER_GAP,
-                         "pace_adv": (pace.get(target, np.nan) - pace.get(row.d, np.nan)) if target else 0.0,
-                         "pit": (row.d, lap) in pitted})
+                         "pace_adv": (pace.get(target, np.nan) - pace.get(d, np.nan)) if target else 0.0,
+                         "pit": (d, lap) in pitted})
     out = pd.DataFrame(rows)
     if not out.empty:
         out["pace_adv"] = out.pace_adv.fillna(0.0)

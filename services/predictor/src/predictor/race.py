@@ -418,7 +418,9 @@ class SimulatedRace(RaceModel):
                 loss = float(np.median(record["green"])) if record and len(record["green"]) >= 4 else race_sim.PIT_LOSS
                 pace = race_sim.race_pace(laps)
                 pace = dict(zip(pace.driver_number.astype(str), pace.pace)) if not pace.empty else {}
-                self._pit_rows[race.session_id] = race_sim.pit_decisions(laps, loss, pace, race_sim.race_wear(laps))
+                ratio = (float(np.median(record["neutral"]) / np.median(record["green"]))
+                         if record and record["neutral"] and len(record["green"]) >= 4 else race_sim.SC_PIT_RATIO)
+                self._pit_rows[race.session_id] = race_sim.pit_decisions(laps, loss, pace, race_sim.race_wear(laps), ratio)
             rate = self._circuit_passing(view, self.pace.circuit(view, race.event_key), race.event_key)
             data.append((self._pit_rows[race.session_id], np.nan if rate is None else rate))
         return race_sim.PitModel().fit(data)
