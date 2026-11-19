@@ -42,6 +42,16 @@ enum Command {
         #[arg(long)]
         filter: Option<String>,
     },
+    /// Team race pace of one race.
+    Race {
+        /// Event key, e.g. 2024-20.
+        #[arg(long)]
+        event: String,
+        #[command(flatten)]
+        recipe: Recipe,
+        #[arg(long, default_value_t = 5)]
+        min_laps: usize,
+    },
     /// Run one team race pace recipe on every race of a season and average it.
     Season {
         #[arg(long)]
@@ -168,6 +178,19 @@ fn main() -> Result<()> {
                         println!("{:<18} {:>8.3} {:>8.3} {:>+8.3}", team, ours, theirs, ours - theirs);
                     }
                 }
+            }
+        }
+        Command::Race { event, recipe, min_laps } => {
+            let (filter, model, agg) = recipe.parts()?;
+            let Some(race) = archive.session_of_type(&event, "R")? else { anyhow::bail!("{event} has no archived race") };
+            let laps = archive.laps(&race.session_id)?;
+            let times = analysis::pace::race_model_team_times(&laps, &filter, &model, agg, min_laps);
+            let (pct, secs) = (analysis::pace::gaps_pct(&times), analysis::pace::gaps_s(&times));
+            let mut teams: Vec<_> = pct.iter().collect();
+            teams.sort_by(|a, b| a.1.total_cmp(b.1));
+            println!("{:<18} {:>8} {:>8}", "team", "gap %", "gap s");
+            for (team, p) in teams {
+                println!("{:<18} {:>8.3} {:>8.3}", team, p, secs[team]);
             }
         }
         Command::Season { season, recipe, min_laps } => {

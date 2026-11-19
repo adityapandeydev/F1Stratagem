@@ -212,18 +212,49 @@ fn observations(race: &[Lap], filter: &RaceFilter, agg: Agg, min_laps: usize) ->
 /// Entities are compared at a common reference (most-run compound, median tyre age
 /// and lap number, free air), so cars are compared on equal tyres and fuel. The
 /// returned time is the race's median kept lap plus the entity's fitted difference
-/// to the most-measured entity.
+/// to the most comparable entity.
+///
+/// Tyre wear is measured from cars running different tyre ages on the same lap.
+/// When every car ran a single dry stint (stops a lap or two apart) wear cannot be
+/// told apart from the lap terms and the gaps would depend on it, so the fit is
+/// repeated without the wear term and the version that compares more cars is kept.
 pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceModel, agg: Agg, min_laps: usize) -> TeamTimes {
-    let mut obs = observations(race, filter, agg, min_laps);
+    let obs = observations(race, filter, agg, min_laps);
     if obs.is_empty() {
         return TeamTimes::new();
     }
+    let (with_wear, all_compared) = fit_cars(obs.clone(), model, true);
+    let cars = if all_compared {
+        with_wear
+    } else {
+        let (without_wear, _) = fit_cars(obs, model, false);
+        if without_wear.len() > with_wear.len() { without_wear } else { with_wear }
+    };
+
+    let mut by_team: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for (team, t) in cars {
+        by_team.entry(team).or_default().push(t);
+    }
+    by_team
+        .into_iter()
+        .map(|(team, ts)| {
+            let v = match agg {
+                Agg::Best | Agg::LapBest => ts.iter().copied().fold(f64::INFINITY, f64::min),
+                Agg::Mean => ts.iter().sum::<f64>() / ts.len() as f64,
+            };
+            (team, v)
+        })
+        .collect()
+}
+
+/// One fit: (team, time) per comparable entity, and whether every entity was comparable.
+fn fit_cars(mut obs: Vec<Obs>, model: &RaceModel, wear: bool) -> (Vec<(String, f64)>, bool) {
     let mut fit = None;
     for pass in 0..2 {
-        let design = Design::new(&obs, model);
+        let design = Design::new(&obs, model, wear);
         let (x, y) = design.matrix(&obs);
         let svd = x.clone().svd(true, true);
-        let Ok(beta) = svd.solve(&y, 1e-10) else { return TeamTimes::new() };
+        let Ok(beta) = svd.solve(&y, 1e-10) else { return (Vec::new(), false) };
         let residuals = &y - &x * &beta;
         fit = Some((design, beta, svd));
         // Trim once, then refit; the final fit and its laps stay together.
@@ -250,7 +281,6 @@ pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceMode
         let e = counts.entry(o.entity.as_str()).or_insert((0, o.team.as_str()));
         e.0 += 1;
     }
-    let reference_entity = counts.iter().max_by_key(|(_, (n, _))| *n).map(|(e, _)| *e).expect("laps kept");
     let at = |entity: &str, team: &str| Obs {
         entity: entity.to_string(),
         team: team.to_string(),
@@ -260,39 +290,33 @@ pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceMode
         time: 0.0,
         gap: None,
     };
-    let reference_row = design.row(&at(reference_entity, counts[reference_entity].1));
-    let reference_time = design.predict(&beta, &at(reference_entity, counts[reference_entity].1));
     let row_space = RowSpace::new(&svd);
+    let rows: BTreeMap<&str, Vec<f64>> = counts.iter().map(|(e, (_, team))| (*e, design.row(&at(e, team)))).collect();
+    let comparable = |a: &[f64], b: &[f64]| {
+        let contrast: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
+        row_space.contains(&contrast)
+    };
+    // Cars can only be compared through laps they share (directly or via others). The
+    // reference is the car comparable with the most others, then the most measured.
+    let reference_entity = counts
+        .iter()
+        .max_by_key(|(e, (n, _))| (rows.values().filter(|r| comparable(&rows[*e], r)).count(), *n))
+        .map(|(e, _)| *e)
+        .expect("laps kept");
+    let reference_row = rows[reference_entity].clone();
+    let reference_time = design.predict(&beta, &at(reference_entity, counts[reference_entity].1));
 
     // Only differences between cars are reported, anchored to the race's median kept
     // lap: when every car stops on the same lap, tyre age and the lap terms cannot be
     // told apart and the fitted absolute lap time is arbitrary, but the gaps between
-    // cars are not. A car whose gap the laps do not determine is left out.
+    // cars are not. A car the laps do not connect to the reference is left out.
     let fitted: Vec<(String, f64)> = counts
         .iter()
-        .filter_map(|(entity, (_, team))| {
-            let point = at(entity, team);
-            let contrast: Vec<f64> = design.row(&point).iter().zip(&reference_row).map(|(a, b)| a - b).collect();
-            row_space
-                .contains(&contrast)
-                .then(|| (team.to_string(), base + design.predict(&beta, &point) - reference_time))
-        })
+        .filter(|(e, _)| comparable(&rows[*e], &reference_row))
+        .map(|(e, (_, team))| (team.to_string(), base + design.predict(&beta, &at(e, team)) - reference_time))
         .collect();
-
-    let mut by_team: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for (team, t) in fitted {
-        by_team.entry(team).or_default().push(t);
-    }
-    by_team
-        .into_iter()
-        .map(|(team, ts)| {
-            let v = match agg {
-                Agg::Best | Agg::LapBest => ts.iter().copied().fold(f64::INFINITY, f64::min),
-                Agg::Mean => ts.iter().sum::<f64>() / ts.len() as f64,
-            };
-            (team, v)
-        })
-        .collect()
+    let all_compared = fitted.len() == counts.len();
+    (fitted, all_compared)
 }
 
 /// The row space of a design matrix: the linear functions of the coefficients
@@ -324,6 +348,8 @@ impl RowSpace {
 /// Column layout of the regression.
 struct Design<'a> {
     model: &'a RaceModel,
+    /// Whether tyre age enters the fit.
+    wear: bool,
     entities: Vec<String>,
     compounds: Vec<String>,
     reference_compound: String,
@@ -332,7 +358,7 @@ struct Design<'a> {
 }
 
 impl<'a> Design<'a> {
-    fn new(obs: &[Obs], model: &'a RaceModel) -> Self {
+    fn new(obs: &[Obs], model: &'a RaceModel, wear: bool) -> Self {
         let unique = |f: &dyn Fn(&Obs) -> String| -> Vec<String> {
             obs.iter().map(f).collect::<BTreeSet<_>>().into_iter().collect()
         };
@@ -344,6 +370,7 @@ impl<'a> Design<'a> {
             compound_counts.iter().max_by_key(|(_, n)| **n).map(|(c, _)| c.to_string()).unwrap_or_default();
         Self {
             model,
+            wear,
             entities: unique(&|o| o.entity.clone()),
             compounds: unique(&|o| o.compound.clone()),
             reference_compound,
@@ -363,7 +390,9 @@ impl<'a> Design<'a> {
         self.offsets_start() + self.compounds.len() - 1
     }
     fn wear_columns(&self) -> usize {
-        if self.model.team_wear { self.teams.len() } else { self.compounds.len() }
+        if !self.wear {
+            0
+        } else if self.model.team_wear { self.teams.len() } else { self.compounds.len() }
     }
     fn trend_start(&self) -> usize {
         self.wear_start() + self.wear_columns()
@@ -394,7 +423,9 @@ impl<'a> Design<'a> {
         }
         let ci = self.compounds.iter().position(|c| *c == o.compound).unwrap_or(0);
         let wear = if self.model.team_wear { self.teams.iter().position(|t| *t == o.team).unwrap_or(0) } else { ci };
-        r[self.wear_start() + wear] = o.age;
+        if self.wear {
+            r[self.wear_start() + wear] = o.age;
+        }
         match self.model.lap_trend {
             LapTrend::Linear => r[self.trend_start()] = o.lap as f64,
             LapTrend::LinearPerCompound => r[self.trend_start() + ci] = o.lap as f64,
@@ -494,6 +525,42 @@ mod tests {
         assert!((s["Beta"] - 0.9).abs() < 1e-6 && (s["Gamma"] - 1.8).abs() < 1e-6, "{s:?}");
         let pct = gaps_pct(&times);
         assert!((pct["Gamma"] - 1.8 / 90.0 * 100.0).abs() < 0.1, "{pct:?}");
+    }
+
+    #[test]
+    fn separate_running_groups_keep_the_larger_group() {
+        // Two cars on slicks early only, three cars on slicks late only: the groups
+        // share no laps, so only the larger group is compared.
+        let mut race = Vec::new();
+        for (driver, team, pace, laps) in [
+            ("E1", "Early", 0.0, 2..=10u32),
+            ("E2", "Early2", 0.2, 2..=10u32),
+            ("L1", "Late", 0.5, 30..=45u32),
+            ("L2", "Late2", 0.9, 30..=45u32),
+            ("L3", "Late3", 1.4, 30..=45u32),
+        ] {
+            for n in laps {
+                race.push(lap(driver, team, n, 90.0 + pace + 0.03 * n as f64, "MEDIUM", n as f64));
+            }
+        }
+        let s = gaps_s(&team_race_pace(&race));
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert!((s["Late2"] - 0.4).abs() < 1e-6 && (s["Late3"] - 0.9).abs() < 1e-6, "{s:?}");
+    }
+
+    #[test]
+    fn single_stints_fall_back_to_no_wear() {
+        // Every car runs one dry stint from a slightly different stop lap: wear is not
+        // separable, so the fit drops it and still compares every car.
+        let mut race = Vec::new();
+        for (driver, team, pace, stop) in [("A1", "Alpha", 0.0, 40u32), ("B1", "Beta", 0.4, 41), ("C1", "Gamma", 0.8, 42)] {
+            for n in (stop + 1)..=52 {
+                race.push(lap(driver, team, n, 88.0 + pace - 0.1 * n as f64, "MEDIUM", (n - stop) as f64));
+            }
+        }
+        let s = gaps_s(&team_race_pace(&race));
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert!((s["Beta"] - 0.4).abs() < 1e-6 && (s["Gamma"] - 0.8).abs() < 1e-6, "{s:?}");
     }
 
     #[test]
