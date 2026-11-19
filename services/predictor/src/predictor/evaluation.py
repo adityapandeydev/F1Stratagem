@@ -144,7 +144,11 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # season better, 2024 -0.00023: promoted. Its mixture with race:v1a (race:mix3f1a)
 # after qualifying: -0.00038 [-0.00073, -0.00003], 15+ within noise, but 2024 level
 # (+0.00002): not promoted under the rule (2024 must confirm); race:v1a stays.
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race1a"}
+# race:v3ff (held-up cars keep a gap of their own) after qualifying: -0.00058 against
+# race:v1a (noise), 2024 -0.0019. Its 50/50 mixture with race:v1a (race:mix3ff1a,
+# frozen): -0.00055 [-0.00086, -0.00025], 15+ better, 2024 -0.00132 (rule amended
+# beforehand: 2024 within +0.0001): promoted after qualifying.
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race_mix3ff1a"}
 
 
 class ChampionRouter:
