@@ -159,7 +159,9 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # gap kept while held), race:mix3ff1a after qualifying: -0.00047 [-0.00083, -0.00011]
 # against race:v1a, 15+ better (-0.00053), 2024 -0.00109: promoted. Most of the gain is
 # the mixture (race:v3f with race:v1a: -0.00038); race:v3ff alone is level with v1a
-# after qualifying and worse than race:v3f before the weekend (+0.00052).
+# after qualifying and worse than race:v3f before the weekend (+0.00052). With held cars
+# able to leave their gap and attack (re-gated): -0.00060 [-0.00093, -0.00028], 15+
+# -0.00065, 2024 -0.00119, winner log loss better: confirmed.
 RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race_mix3ff1a"}
 
 
