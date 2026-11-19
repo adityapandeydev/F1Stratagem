@@ -469,6 +469,9 @@ struct Race {
     follow_release: f64,
     /// lap-time penalty (s) of a car starting the lap within 1, 2 or 3 s of the car ahead
     follow_penalty: [f64; 3],
+    /// fresh-tyre peak (s faster) on the 1st, 2nd, ... green lap of a set fitted at a
+    /// stop (not the starting set), on top of the wear line; empty: none
+    fresh_peak: Vec<f64>,
     neutral: Neutral,
     strategy: Strategy,
 }
@@ -585,6 +588,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
     };
     let mut next = vec![0usize; n];
     let mut age = vec![0.0f64; n];
+    let mut fresh_set = vec![false; n]; // on a set fitted at a stop (the fresh-tyre peak applies)
     let wear = if pits { strategy.car_wear(n, rng) } else { vec![] };
     let mut effective = seconds.to_vec();
     let mut neutral_left = 0usize;
@@ -622,6 +626,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
             if hazard {
                 if kind == RED {
                     age.iter_mut().for_each(|a| *a = 0.0);
+                    fresh_set.iter_mut().for_each(|f| *f = true);
                     stops.iter_mut().for_each(|k| *k += 1);
                 } else {
                     let on_lap: Vec<f64> = tyre_laps.iter().map(|a| a + 1.0).collect();
@@ -635,6 +640,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                             }
                             time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
                             age[car] = 0.0;
+                        fresh_set[car] = true;
                             tyre_laps[car] = 0.0;
                             stops[car] += 1;
                             if event[car] == 0 {
@@ -648,13 +654,15 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 for car in 0..n {
                     let due = next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window;
                     if kind == RED {
-                        age[car] = 0.0; // tyres may be changed under the red flag
+                        age[car] = 0.0;
+                        fresh_set[car] = true; // tyres may be changed under the red flag
                         if due {
                             next[car] += 1;
                         }
                     } else if due {
                         time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
                         age[car] = 0.0;
+                        fresh_set[car] = true;
                         tyre_laps[car] = 0.0;
                         next[car] += 1;
                         event[car] = 2;
@@ -681,6 +689,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                             }
                             time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
                             age[car] = 0.0;
+                        fresh_set[car] = true;
                             tyre_laps[car] = 0.0;
                             stops[car] += 1;
                             if event[car] == 0 {
@@ -707,6 +716,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                         if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window {
                             time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
                             age[car] = 0.0;
+                        fresh_set[car] = true;
                             tyre_laps[car] = 0.0;
                             next[car] += 1;
                             stopped = true;
@@ -754,6 +764,11 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
         if pits {
             for car in 0..n {
                 effective[car] = seconds[car] + wear[car] * age[car];
+                if fresh_set[car] {
+                    if let Some(&peak) = race.fresh_peak.get(age[car] as usize) {
+                        effective[car] -= peak;
+                    }
+                }
             }
         }
         for car in 0..n {
@@ -794,6 +809,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 if boxed[car] {
                     time[car] += strategy.cost(lap1, car, rng);
                     age[car] = 0.0;
+                        fresh_set[car] = true;
                     tyre_laps[car] = 0.0;
                     stops[car] += 1;
                     if event[car] == 0 {
@@ -810,6 +826,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 {
                     time[car] += strategy.cost(lap1, car, rng); // in and out of the pits: the field goes by
                     age[car] = 0.0;
+                        fresh_set[car] = true;
                     tyre_laps[car] = 0.0;
                     next[car] += 1;
                     event[car] = 1;
@@ -875,6 +892,7 @@ fn simulate<'py>(
     follow: PyReadonlyArray1<f64>,
     follow_release: f64,
     follow_penalty: PyReadonlyArray1<f64>,
+    fresh_peak: PyReadonlyArray1<f64>,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -936,6 +954,7 @@ fn simulate<'py>(
                 p.try_into().map_err(|_| PyValueError::new_err("three following penalties: <1 s, 1-2 s, 2-3 s"))?
             }
         },
+        fresh_peak: fresh_peak.as_slice()?.to_vec(),
         neutral,
         strategy: Strategy {
             wear,
@@ -1149,6 +1168,31 @@ fn predictor_race_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
 
+    /// One car, one planned stop, no neutralisation: its race time is the stop's cost
+    /// less the fresh-tyre peak on the set fitted at the stop (never the starting set).
+    fn fresh_car(peak: Vec<f64>) -> f64 {
+        let laps = 20;
+        let race = Race {
+            coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
+            term: 0.0, shift: 0.0, laps, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
+            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak,
+            neutral: Neutral { hazard: vec![0.0; laps], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
+                               sc_gap: 0.52, red_end: 0.0 },
+            strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
+                                 residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                 pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 },
+        };
+        race_times(&race, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(7)), &Diag::default(), None).0[0]
+    }
+
+    #[test]
+    fn fresh_tyre_peak_applies_only_after_a_stop() {
+        let base = fresh_car(vec![]);
+        assert!((base - 22.0).abs() < 1e-9, "{base}");
+        // the first two green laps on the new set are 0.5 s and 0.3 s faster; the starting set gets nothing
+        assert!((fresh_car(vec![0.5, 0.3]) - (22.0 - 0.8)).abs() < 1e-9);
+    }
+
     /// One car, no lap time or noise: its race time is what its stops cost.
     fn lone_car(hazard_lap: usize, length: usize, laps: usize) -> f64 {
         let mut hazard = vec![0.0; laps];
@@ -1165,7 +1209,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3],
+            follow_penalty: [0.0; 3], fresh_peak: vec![],
             neutral: Neutral {
                 hazard,
                 kinds: [1.0, 0.0, 0.0],
@@ -1203,7 +1247,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3],
+            follow_penalty: [0.0; 3], fresh_peak: vec![],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1232,7 +1276,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3],
+            follow_penalty: [0.0; 3], fresh_peak: vec![],
             neutral: Neutral { hazard: vec![0.0; 22], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1267,7 +1311,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3],
+            follow_penalty: [0.0; 3], fresh_peak: vec![],
             neutral: Neutral { hazard: neutral_hazard, kinds: [1.0, 0.0, 0.0], lengths: [vec![3], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.8, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1301,7 +1345,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![2.0, 2.0],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3],
+            follow_penalty: [0.0; 3], fresh_peak: vec![],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1322,7 +1366,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
             term: 0.0, shift: 0.0, laps: 10, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3],
+            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3], fresh_peak: vec![],
             neutral: Neutral { hazard: vec![0.0; 10], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,

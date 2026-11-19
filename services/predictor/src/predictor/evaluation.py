@@ -400,6 +400,17 @@ def model_registry():
                                             team_wear=True, following=True, follow_penalty=True),
             "race_mix3fpc1a": lambda: ForecastMixture(["race3fpc", "race1a"], [0.5, 0.5], "race:mix3fpc1a"),
             "race_mix3fpc2a": lambda: ForecastMixture(["race3fpc", "race2a"], [0.5, 0.5], "race:mix3fpc2a"),
+            # the fresh-tyre peak after a stop, on each champion's simulator
+            "race3ffk": lambda: _race_model("pace3wrqwt", "race:v3ffk", simulated=True, forecast_battles=True,
+                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                            team_wear=True, following=True, fresh_peak=True),
+            "race3fwk": lambda: _race_model("pace3wrqwt", "race:v3fwk", simulated=True, forecast_battles=True,
+                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                            team_wear=True, lap_effect_wear=True, fresh_peak=True),
+            "race_mix3ffk1a": lambda: ForecastMixture(["race3ffk", "race1a"], [0.5, 0.5], "race:mix3ffk1a"),
+            "race_mix3fwk2a": lambda: ForecastMixture(["race3fwk", "race2a"], [0.5, 0.5], "race:mix3fwk2a"),
             # the same on the pre-weekend champion's lap-effect wear
             "race3fpcw": lambda: _race_model("pace3wrqwtfp", "race:v3fpcw", simulated=True, forecast_battles=True,
                                              neutralisations=True, weekend_lap=True, detailed_retirements=True,

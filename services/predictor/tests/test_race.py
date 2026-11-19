@@ -916,3 +916,17 @@ def test_the_correction_widens_the_pace_error_of_a_car_that_spent_its_race_in_tr
     variance = np.diag(added)
     assert variance[1] > 10 * variance[0] and np.allclose(added, added.T)
     assert np.isclose(added.sum(), 0.0, atol=1e-12)        # centred on the field
+
+
+def test_fresh_tyre_peak_is_recovered_after_staggered_stops_and_pooled_within_an_era():
+    from predictor import race_sim
+    laps = _synthetic_race([10, 11, 12, 14, 16, 18, 19, 20], wear=0.05, spacing=4.0)
+    t = laps.LapTime.dt.total_seconds().to_numpy()
+    out = laps[laps.PitOutTime.notna()].set_index("DriverNumber").LapNumber
+    into = laps.LapNumber - laps.DriverNumber.map(out) + 1
+    boost = np.select([into == 2, into == 3, into == 4], [0.3, 0.2, 0.1], 0.0)
+    laps["LapTime"] = pd.to_timedelta(t * np.exp(-boost / 100), unit="s")
+    peak = race_sim.fresh_peak(laps)
+    assert np.allclose(peak, [0.3, 0.2, 0.1], atol=1e-6)
+    assert race_sim.pooled_fresh_peak([peak] * (race_sim.MIN_FRESH_RACES - 1)) is None
+    assert np.allclose(race_sim.pooled_fresh_peak([peak] * race_sim.MIN_FRESH_RACES), [0.3, 0.2, 0.1])

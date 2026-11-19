@@ -284,7 +284,7 @@ class SimulatedRace(RaceModel):
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
                  car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False,
-                 following=False, follow_penalty=False, lap_effect_wear=False):
+                 following=False, follow_penalty=False, lap_effect_wear=False, fresh_peak=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -300,6 +300,8 @@ class SimulatedRace(RaceModel):
         self._runs, self._release = {}, 0.0
         self.follow_penalty = follow_penalty
         self.lap_effect_wear = lap_effect_wear
+        self.fresh_peak = fresh_peak
+        self._peaks, self._peak_tables, self._peak = {}, {}, None
         self._penalties, self._penalty_tables, self._penalty = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
@@ -366,6 +368,7 @@ class SimulatedRace(RaceModel):
         follow = self._follow_tables.get(season) if self.following else None
         self._follow, self._release = (follow if follow is not None else (None, 0.0))
         self._penalty = self._penalty_tables.get(season) if self.follow_penalty else None
+        self._peak = self._peak_tables.get(season) if self.fresh_peak else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -432,6 +435,16 @@ class SimulatedRace(RaceModel):
                 self._penalties[race.session_id] = race_sim.following_penalty(laps, pace)
         races = [self._penalties[r.session_id] for r in view.sessions[view.sessions.session_type == "R"].itertuples()]
         return race_sim.pooled_penalty(races)
+
+    def _fit_peak(self, season):
+        """The fresh-tyre peak from the dry races before `season` of its tyre era."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        races = view.sessions[(view.sessions.session_type == "R")
+                              & (view.sessions.season.astype(int).map(race_sim.tyre_era) == race_sim.tyre_era(season))]
+        for race in races.itertuples():
+            if race.session_id not in self._peaks:
+                self._peaks[race.session_id] = race_sim.fresh_peak(view.laps(race.session_id))
+        return race_sim.pooled_fresh_peak([self._peaks[r.session_id] for r in races.itertuples()])
 
     def _pass_rate(self, view, race):
         if race.session_id not in self._pass_rates:
@@ -598,6 +611,8 @@ class SimulatedRace(RaceModel):
             self._follow_tables[season] = self._fit_following(season)
         if self.follow_penalty and season not in self._penalty_tables:
             self._penalty_tables[season] = self._fit_penalty(season)
+        if self.fresh_peak and season not in self._peak_tables:
+            self._peak_tables[season] = self._fit_peak(season)
         if self.strategy and season not in self._strategies:
             self._strategies[season] = self._fit_strategy(season)
         self._activate(season)
@@ -682,7 +697,8 @@ class SimulatedRace(RaceModel):
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
                                  self._race_strategy(context.get("strategy"), setting),
-                                 follow=self._follow, follow_release=self._release, follow_penalty=self._penalty)
+                                 follow=self._follow, follow_release=self._release, follow_penalty=self._penalty,
+                                 fresh_peak=self._peak)
 
     @staticmethod
     def _race_strategy(strategy, setting):

@@ -193,7 +193,7 @@ def circuit_propensity(frame, base):
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
              strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
-             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None):
+             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None, fresh_peak=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -214,7 +214,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     laps (entrants x k, 1-based, padded with 0). `follow`: the quantiles of the gap a
     held-up car keeps behind the car ahead (None: held at MIN_FOLLOW);
     `follow_release`: the per-lap chance that a held car leaves its gap to attack;
-    `follow_penalty`: lap-time penalties (% of a lap) of a lap begun within 1, 2, 3 s
+    `fresh_peak`: % of a lap faster on the 1st, 2nd, ... green lap of a set fitted at
+    a stop (None: none); `follow_penalty`: lap-time penalties (% of a lap) of a lap begun within 1, 2, 3 s
     of the car ahead (None: none)."""
     laps = int(laps)
     if neutral is None:
@@ -251,7 +252,9 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           np.asarray(() if follow is None else follow, dtype=float),
                                           float(follow_release),
                                           np.asarray(() if follow_penalty is None else
-                                                     np.asarray(follow_penalty, dtype=float) * lap_seconds / 100, dtype=float))
+                                                     np.asarray(follow_penalty, dtype=float) * lap_seconds / 100, dtype=float),
+                                          np.asarray(() if fresh_peak is None else
+                                                     np.asarray(fresh_peak, dtype=float) * lap_seconds / 100, dtype=float))
 
 
 def car_deviations(table, pace):
@@ -870,6 +873,43 @@ def _identified_fit(blocks, y, k):
     last = list(range(x.shape[1] - k, x.shape[1]))
     se = np.sqrt(np.clip(np.diag(sigma2 * (pinv @ pinv.T))[last], 0, None))
     return beta[last], se, np.asarray(estimable(x, last))
+
+
+FRESH_LAPS = 3          # green laps of a new set with their own fresh-tyre peak
+MIN_FRESH_RACES = 10    # same-tyre-era races needed for a peak; fewer: none
+
+
+def fresh_peak(laps):
+    """A dry race's fresh-tyre peak (% of a lap faster, positive) on the 1st, 2nd and
+    3rd flying lap of a set fitted at a stop, beyond the stint's tyre-age line: the
+    `following_penalty` regression (lap, stint and stint-age effects, start gap
+    bands) with an indicator per lap into such a stint. NaN where not identified;
+    None without enough data. Measured 2019-2024 (median over races): about 0.34% on
+    the first flying lap with 13-inch tyres, 0.11% with 18-inch, fading over three
+    laps; drivers push new tyres before managing them, and the new set peaks."""
+    f = _following_frame(laps)
+    if f is None:
+        return None
+    out = laps[laps.PitOutTime.notna()]
+    starts = {(str(d), s): n for d, s, n in zip(out.DriverNumber, out.Stint, out.LapNumber)}
+    into = np.array([n - starts[(d, s)] + 1 if (d, s) in starts else -1
+                     for d, s, n in zip(f.driver_number, f.Stint, f.LapNumber)], dtype=float)
+    marks = np.column_stack([(into == k + 2).astype(float) for k in range(FRESH_LAPS)])
+    if not marks.any():
+        return None
+    beta, _, ok = _identified_fit(_nuisance(f) + [_bands(f), marks], f.y.to_numpy(), FRESH_LAPS)
+    return np.where(ok & (marks.sum(axis=0) > 0), -beta, np.nan)
+
+
+def pooled_fresh_peak(races):
+    """Median per lap of the races' identified peaks (% of a lap); None with fewer than
+    MIN_FRESH_RACES races."""
+    races = [r for r in races if r is not None]
+    if len(races) < MIN_FRESH_RACES:
+        return None
+    values = np.array(races, dtype=float)
+    return np.array([float(np.nanmedian(values[:, k])) if np.isfinite(values[:, k]).any() else 0.0
+                     for k in range(values.shape[1])])
 
 
 def driver_following_penalties(laps):
