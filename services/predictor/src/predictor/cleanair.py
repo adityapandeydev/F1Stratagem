@@ -53,3 +53,68 @@ def with_clean_air(model, min_gap):
     model.min_gap = float(min_gap)
     model.name = f"{model.name}-air{min_gap:g}v{VERSION}"
     return model
+
+
+CORRECTED_VERSION = 1
+
+
+def start_gaps(laps):
+    """Each lap's gap (s) at its start to the car ahead (the previous lap's line
+    crossings; NaN where unknown, inf for the leader), aligned with `laps`."""
+    f = laps.dropna(subset=["Time", "Position"])
+    if f.empty:
+        return pd.Series(np.nan, index=laps.index)
+    end = dict(zip(zip(f.DriverNumber.astype(str), f.LapNumber), f.Time.dt.total_seconds()))
+    at = dict(zip(zip(f.LapNumber, f.Position.astype(int)), f.Time.dt.total_seconds()))
+    out = []
+    for d, lap, pos in zip(laps.DriverNumber.astype(str), laps.LapNumber, laps.Position):
+        if pd.isna(pos):
+            out.append(np.nan)
+        elif int(pos) == 1:
+            out.append(np.inf)
+        else:
+            out.append(end.get((d, lap - 1), np.nan) - at.get((lap - 1, int(pos) - 1), np.nan))
+    return pd.Series(out, index=laps.index, dtype=float)
+
+
+def following_corrected(laps):
+    """`laps` with each lap's time freed of the race's following penalty: the
+    penalty of the lap's start gap band (`race_sim.following_penalty` over all the
+    race's laps, held-up ones included: every cost of following comes out),
+    clipped to 0-2% of a lap. The race pace read from the result is each car's
+    clean-air pace, from every lap."""
+    from .race_sim import PENALTY_BANDS, following_penalty
+    fitted = following_penalty(laps)
+    if fitted is None or laps.empty:
+        return laps
+    penalty = np.clip(np.asarray(fitted[0], dtype=float), 0.0, 2.0)
+    gaps = start_gaps(laps).to_numpy()
+    edges = (0.0,) + PENALTY_BANDS
+    cut = np.zeros(len(laps))
+    for band, (lo, hi) in enumerate(zip(edges, edges[1:])):
+        cut[(gaps >= lo) & (gaps < hi)] = penalty[band]
+    out = laps.copy()
+    out["LapTime"] = out.LapTime * np.exp(-cut / 100)
+    return out
+
+
+class CorrectedPaceModel(PaceModel):
+    """`PaceModel` whose race observations come from every lap, each freed of the
+    race's following penalty (`following_corrected`)."""
+
+    def observations(self, view, session):
+        if base_type(session.session_type) == "R" and session.session_id not in self._observations:
+            laps = following_corrected(view.laps(session.session_id))
+            groups, covariances = race_observations(laps, view.entrants(session.session_id), with_covariance=True,
+                                                    drying=session.session_type != "R")
+            self._observations[session.session_id] = groups
+            self._covariances[session.session_id] = covariances
+        return super().observations(view, session)
+
+
+def with_corrected_pace(model):
+    """`model` (a PaceModel) reading race pace from every lap freed of the following
+    penalty; its name (and fit-cache key) gains CORRECTED_VERSION."""
+    model.__class__ = CorrectedPaceModel
+    model.name = f"{model.name}-fp{CORRECTED_VERSION}"
+    return model

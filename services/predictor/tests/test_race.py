@@ -811,3 +811,15 @@ def test_clean_air_pace_leaves_out_laps_in_dirty_air():
     model = model_registry()["race1aa1"]()
     assert isinstance(model.pace, cleanair.CleanAirPaceModel) and model.pace.min_gap == 1.0
     assert model.pace.name.endswith(f"-air1v{cleanair.VERSION}")
+
+
+def test_corrected_race_pace_keeps_every_lap_and_frees_following_laps():
+    from predictor import cleanair
+    from predictor.evaluation import model_registry
+    t = lambda s: pd.Timedelta(seconds=s)
+    laps = pd.DataFrame({"DriverNumber": ["1", "2", "1", "2"], "LapNumber": [1, 1, 2, 2], "Position": [1.0, 2.0, 1.0, 2.0],
+                         "Time": [t(100.0), t(100.5), t(190.0), t(190.6)], "LapTime": [t(100.0), t(100.5), t(90.0), t(90.1)]})
+    gaps = cleanair.start_gaps(laps)
+    assert np.isinf(gaps.iloc[2]) and np.isclose(gaps.iloc[3], 0.5) and np.isnan(gaps.iloc[1])   # lap 1 has no start gap
+    model = model_registry()["race1afp"]()
+    assert isinstance(model.pace, cleanair.CorrectedPaceModel) and model.pace.name.endswith(f"-fp{cleanair.CORRECTED_VERSION}")

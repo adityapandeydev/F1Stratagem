@@ -111,6 +111,11 @@ def _clean_air(model, min_gap):
     return with_clean_air(model, min_gap)
 
 
+def _corrected(model):
+    from .cleanair import with_corrected_pace
+    return with_corrected_pace(model)
+
+
 def _race_model(pace, name, simulated=False, **options):
     from .race import RaceModel, SimulatedRace
     if simulated:
@@ -279,6 +284,9 @@ def model_registry():
                                                            robust=True), 1.0),
             "pace3wrqwta15": lambda: _clean_air(_pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                             robust=True), 1.5),
+            # race pace from every lap, each freed of the race's following penalty (cleanair.py)
+            "pace3wrqwtfp": lambda: _corrected(_pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                           robust=True)),
             "pace3wrlqwt": lambda: _pace_model(3, weekend=True, races=True, long_runs=True, knockout=True, wet_noise=True,
                                                robust=True),
             "pace3wrqwp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, push="split"),
@@ -319,6 +327,7 @@ def model_registry():
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
             "race1aa1": lambda: _race_model("pace3wrqwta1", "race:v1aa1"),
             "race1aa15": lambda: _race_model("pace3wrqwta15", "race:v1aa15"),
+            "race1afp": lambda: _race_model("pace3wrqwtfp", "race:v1afp"),
             "race2a": lambda: _race_model("pace3wrqwt", "race:v2a", simulated=True),
             "race2as": lambda: _race_model("pace3wrqwt", "race:v2as", simulated=True, pass_shift=True),
             "race2af": lambda: _race_model("pace3wrqwt", "race:v2af", simulated=True, forecast_battles=True),
