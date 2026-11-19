@@ -579,3 +579,36 @@ def test_a_mixture_pools_whole_forecasts_and_reports_its_components():
     one, two = forecast.metadata["components"]
     assert np.allclose(forecast.position_probs, 0.25 * one.position_probs + 0.75 * two.position_probs)
     assert forecast.model == "mix" and [c.model for c in (one, two)] == ["one", "two"]
+
+
+def test_the_simulator_computes_the_pit_features_it_was_fitted_on():
+    import predictor_race_native
+    from predictor import race_sim
+    rng = np.random.default_rng(4)
+    for _ in range(200):
+        args = dict(age=float(rng.integers(0, 50)), stops=int(rng.integers(0, 3)), lap=int(rng.integers(2, 60)), laps=60,
+                    neutral=bool(rng.random() < 0.3), position=int(rng.integers(1, 21)), lost=float(rng.integers(0, 12)),
+                    clean_air=float(rng.uniform(0, 30)), gap_ahead=float(rng.uniform(0, 30)), gap_behind=float(rng.uniform(0, 30)),
+                    cover_behind=bool(rng.random() < 0.2), cover_ahead=bool(rng.random() < 0.2),
+                    pace_adv=float(rng.normal(0, 2)), passing=float(rng.normal(0, 0.5)), wear=float(rng.uniform(-0.05, 0.4)))
+        native = predictor_race_native.pit_features(**args)
+        python = race_sim.pit_features(*[np.array([args[k]]) for k in ("age", "stops", "lap")], args["laps"],
+                                       *[np.array([args[k]]) for k in ("neutral", "position", "lost", "clean_air", "gap_ahead",
+                                                                        "gap_behind", "cover_behind", "cover_ahead", "pace_adv")],
+                                       args["passing"], np.array([args["wear"]]))[0]
+        assert len(native) == len(race_sim.PIT_FEATURES) and np.allclose(native, python)
+
+
+def test_the_pit_model_learns_that_losing_places_deters_a_stop():
+    from predictor import race_sim
+    rng = np.random.default_rng(5)
+    n = 30000
+    f = pd.DataFrame({"age": rng.integers(0, 40, n).astype(float), "stops": 0, "lap": rng.integers(2, 50, n), "laps": 55,
+                      "neutral": False, "position": rng.integers(1, 21, n), "lost": rng.integers(0, 10, n).astype(float),
+                      "clean_air": rng.uniform(0, 10, n), "gap_ahead": rng.uniform(0, 10, n), "gap_behind": rng.uniform(0, 10, n),
+                      "cover_behind": False, "cover_ahead": False, "pace_adv": 0.0, "wear": 0.05})
+    z = -4 + 0.08 * f.age - 0.3 * f.lost
+    f["pit"] = rng.random(n) < 1 / (1 + np.exp(-z))
+    model = race_sim.PitModel().fit([(f, -1.0)] * 1 + [(f.iloc[:10], -1.2)] * 5)
+    lost = model.coef[1 + race_sim.PIT_FEATURES.index("lost")]
+    assert model.coef is not None and lost < -1.5          # per 10 cars: about -3

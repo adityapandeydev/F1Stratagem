@@ -283,7 +283,7 @@ class SimulatedRace(RaceModel):
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
-                 car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False):
+                 car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -293,6 +293,8 @@ class SimulatedRace(RaceModel):
         self._ratio, self._wear = race_sim.RACE_TO_QUALIFYING, None
         self.team_wear = team_wear
         self._team_devs, self._team_models, self._team = {}, {}, None
+        self.pit_model = pit_model
+        self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
         self._qualifying, self._ratios = {}, {}
@@ -353,6 +355,7 @@ class SimulatedRace(RaceModel):
         self._ratio = self._ratios.get(season, race_sim.RACE_TO_QUALIFYING)
         self._wear = self._wear_models.get(season) if self.weekend_wear else None
         self._team = self._team_models.get(season) if self.team_wear else None
+        self._pit = self._pit_models.get(season) if self.pit_model else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -370,6 +373,8 @@ class SimulatedRace(RaceModel):
             races.append((self.pace.circuit(view, race.event_key), record, wear))
         if self.weekend_wear:
             self._wear_models[season] = self._fit_weekend_wear(view, rows, races)
+        if self.pit_model:
+            self._pit_models[season] = self._fit_pit(view, season)
         if self.team_wear:
             # the spreads and recency weight from the tyre era, or every era while it is young;
             # a team's own pool is always its era's races (`_strategy_inputs`)
@@ -385,6 +390,38 @@ class SimulatedRace(RaceModel):
                 stops = {"residuals": stops["residuals"] if self.pit_lane else None,
                          "deviate": stops["deviate"] if self.car_strategies else None}
         return race_sim.StrategyModel().fit(races, stops)
+
+    def _pass_rate(self, view, race):
+        if race.session_id not in self._pass_rates:
+            self._pass_rates[race.session_id] = race_sim.log_pass_rate(view.laps(race.session_id))
+        return self._pass_rates[race.session_id]
+
+    def _circuit_passing(self, view, circuit, exclude):
+        """Mean log pass rate of the circuit's dry races readable in `view` other than
+        `exclude` (an event key); None without any."""
+        races = view.sessions[(view.sessions.session_type == "R") & (view.sessions.event_key != exclude)]
+        rates = [self._pass_rate(view, r) for r in races.itertuples() if self.pace.circuit(view, r.event_key) == circuit]
+        rates = [r for r in rates if r is not None]
+        return float(np.mean(rates)) if rates else None
+
+    def _fit_pit(self, view, season):
+        """The pit hazard from the dry races before `season` in its tyre era (every
+        era while that has fewer than MIN_PIT_RACES)."""
+        races = view.sessions[view.sessions.session_type == "R"]
+        same = races[races.season.map(race_sim.tyre_era) == race_sim.tyre_era(season)]
+        races = same if len(same) >= race_sim.MIN_PIT_RACES else races
+        data = []
+        for race in races.sort_values("scheduled_start_utc").itertuples():
+            if race.session_id not in self._pit_rows:
+                laps = view.laps(race.session_id)
+                record = race_sim.stop_record(laps)
+                loss = float(np.median(record["green"])) if record and len(record["green"]) >= 4 else race_sim.PIT_LOSS
+                pace = race_sim.race_pace(laps)
+                pace = dict(zip(pace.driver_number.astype(str), pace.pace)) if not pace.empty else {}
+                self._pit_rows[race.session_id] = race_sim.pit_decisions(laps, loss, pace, race_sim.race_wear(laps))
+            rate = self._circuit_passing(view, self.pace.circuit(view, race.event_key), race.event_key)
+            data.append((self._pit_rows[race.session_id], np.nan if rate is None else rate))
+        return race_sim.PitModel().fit(data)
 
     def _race_team_devs(self, view, race):
         """A race's team wear deviations (cached; a dry race's laps are final)."""
@@ -573,6 +610,9 @@ class SimulatedRace(RaceModel):
             weekend = self._wear.predict(self._practice_wear(view, example.event_key), past)
             if weekend is not None:
                 strategy["wear"] = weekend * lap / 100
+        if self._pit is not None and self._pit.coef is not None:
+            rate = self._circuit_passing(view, circuit, example.event_key)
+            strategy.update(pit_coef=self._pit.coef, passing=0.0 if rate is None else rate - self._pit.centre)
         if self._team is not None:
             n = len(example.driver_numbers)
             lineages = list(example.lineage_ids) if len(example.lineage_ids) == n else [None] * n

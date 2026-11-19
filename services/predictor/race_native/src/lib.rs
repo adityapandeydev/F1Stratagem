@@ -28,7 +28,12 @@
 //! closes up; so do cars whose stop comes due within `window` laps on a later lap
 //! of the same neutralisation (behind a safety car the field closes up again). A
 //! red flag gives everyone new tyres. Without strategy no random
-//! number is drawn for it. With team wear, each team's wear deviation from the
+//! number is drawn for it. With a pit hazard there are no plans: at every lap's
+//! end (and on each neutralised lap, at the neutralised loss) each car pits with
+//! the hazard of what it sees: tyre age, the race's progress, places it would lose
+//! and the clean air where it would rejoin, the gaps around it, a rival who pitted
+//! on the lap before, its pace against the car it would rejoin behind and the
+//! circuit's passing. A car without a stop is called in 3 laps from the end. With team wear, each team's wear deviation from the
 //! field is drawn once per simulated race from its mean and spread, shared by
 //! teammates, so tyre outcomes differ between simulated races.
 //!
@@ -148,7 +153,22 @@ struct Strategy {
     team: Vec<usize>,
     team_mean: Vec<f64>,
     team_sd: Vec<f64>,
+    /// Pit hazard (optional): intercept then one coefficient per feature (the order
+    /// of `predictor.race_sim.PIT_FEATURES`); `passing`: the circuit's centred log
+    /// pass rate; `lap_seconds`: a typical lap. Empty: stops follow the plans.
+    pit_coef: Vec<f64>,
+    passing: f64,
+    lap_seconds: f64,
 }
+
+const AGE_EDGES: [f64; 7] = [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0];
+const PIT_FEATURES: usize = 27;
+const PIT_FIRST_LAP: usize = 2;
+const PIT_LAST_LAPS: usize = 3;
+const END_LAPS: f64 = 8.0;
+const OLD_TYRES: f64 = 10.0;
+const COVER_GAP: f64 = 3.0;
+const GAP_CAP: f64 = 20.0;
 
 impl Strategy {
     fn enabled(&self) -> bool {
@@ -209,6 +229,87 @@ impl Strategy {
         self.team.iter().map(|&t| (self.wear + draws[t]).max(0.0)).collect()
     }
 
+    fn hazard(&self) -> bool {
+        !self.pit_coef.is_empty()
+    }
+
+    /// The pit hazard's features of one car at a lap's end (as `race_sim.pit_features`).
+    #[allow(clippy::too_many_arguments)]
+    fn features(&self, age: f64, stops: usize, lap: usize, laps: usize, neutral: bool, position: usize, lost: f64,
+                clean_air: f64, gap_ahead: f64, gap_behind: f64, cover_behind: bool, cover_ahead: bool,
+                pace_adv: f64, wear: f64) -> [f64; PIT_FEATURES] {
+        let mut x = [0.0; PIT_FEATURES];
+        for (k, &edge) in AGE_EDGES.iter().enumerate() {
+            let above_next = AGE_EDGES.get(k + 1).map_or(false, |&next| age > next);
+            x[k] = f64::from(u8::from(age > edge && !above_next));
+        }
+        let frac = lap as f64 / laps as f64;
+        let adv = pace_adv.clamp(-3.0, 3.0);
+        let flag = |b: bool| f64::from(u8::from(b));
+        let cap = |g: f64| g.min(GAP_CAP).ln_1p();
+        let rest = [flag(stops == 0), frac, frac * frac, flag(laps as f64 - lap as f64 <= END_LAPS), flag(neutral),
+                    flag(neutral && age >= OLD_TYRES), position as f64 / 20.0, lost / 10.0, cap(clean_air), cap(gap_ahead),
+                    cap(gap_behind), flag(cover_behind), flag(cover_ahead), adv, self.passing, adv * self.passing,
+                    lost / 10.0 * self.passing];
+        x[7..24].copy_from_slice(&rest);
+        let wear = wear.clamp(0.0, 0.3);
+        x[24] = wear * age;
+        x[25] = x[24] * x[24];
+        x[26] = wear;
+        x
+    }
+
+    /// Which cars pit at the end of `lap` (1-based): each by the hazard of its
+    /// features, a car without a stop forced in PIT_LAST_LAPS from the end. `loss`:
+    /// the stop's expected loss (less under a neutralisation).
+    #[allow(clippy::too_many_arguments)]
+    fn decide(&self, lap: usize, laps: usize, neutral: bool, loss: f64, time: &[f64], pace: &[f64], age: &[f64],
+              wear: &[f64], stops: &[usize], pitted: &[bool], rng: &mut Pcg64) -> Vec<bool> {
+        let n = time.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
+        let mut out = vec![false; n];
+        if lap < PIT_FIRST_LAP || lap + PIT_LAST_LAPS > laps {
+            return out;
+        }
+        for (i, &car) in order.iter().enumerate() {
+            if stops[car] == 0 && lap + PIT_LAST_LAPS == laps {
+                out[car] = true; // a dry race needs a stop
+                continue;
+            }
+            let (t, rejoin) = (time[car], time[car] + loss);
+            let (mut lost, mut before, mut after, mut target) = (0.0, f64::NEG_INFINITY, f64::INFINITY, None);
+            for &other in order.iter() {
+                if other == car {
+                    continue;
+                }
+                let u = time[other];
+                if u > t && u <= rejoin {
+                    lost += 1.0;
+                    target = Some(other); // the last car to pass: the one it rejoins behind
+                }
+                if u <= rejoin {
+                    before = before.max(u);
+                } else {
+                    after = after.min(u);
+                }
+            }
+            let clean_air = (if before.is_finite() { rejoin - before } else { GAP_CAP })
+                .min(if after.is_finite() { after - rejoin } else { GAP_CAP });
+            let gap_ahead = if i > 0 { t - time[order[i - 1]] } else { GAP_CAP };
+            let gap_behind = if i + 1 < n { time[order[i + 1]] - t } else { GAP_CAP };
+            let cover_behind = i + 1 < n && pitted[order[i + 1]] && gap_behind < COVER_GAP;
+            let cover_ahead = i > 0 && pitted[order[i - 1]] && gap_ahead < COVER_GAP;
+            let pace_adv = target.map_or(0.0, |o| (pace[o] - pace[car]) / self.lap_seconds * 100.0);
+            // the car's wear in % of a lap per lap of age (the simulator's is in s)
+            let x = self.features(age[car], stops[car], lap, laps, neutral, i + 1, lost, clean_air, gap_ahead, gap_behind,
+                                  cover_behind, cover_ahead, pace_adv, wear[car] / self.lap_seconds * 100.0);
+            let z = self.pit_coef[0] + x.iter().zip(&self.pit_coef[1..]).map(|(a, b)| a * b).sum::<f64>();
+            out[car] = rng.gen::<f64>() < 1.0 / (1.0 + (-z).exp());
+        }
+        out
+    }
+
     fn cost(&self, rng: &mut Pcg64) -> f64 {
         let extra = if self.residuals.is_empty() {
             0.0
@@ -250,8 +351,11 @@ fn close_up(time: &mut [f64], order: &mut Vec<usize>, gap: f64) {
 
 /// One draw: the race from the grid to the flag; writes finishing positions (1 =
 /// first) into `positions`.
-fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, positions: &mut [i64]) {
-    let time = race_times(race, seconds, grid, rng);
+fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, positions: &mut [i64], stops: &mut [i64]) {
+    let (time, made) = race_times(race, seconds, grid, rng);
+    for (out, &k) in stops.iter_mut().zip(&made) {
+        *out = k as i64;
+    }
     let mut order: Vec<usize> = (0..time.len()).collect();
     order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
     for (position, &car) in order.iter().enumerate() {
@@ -259,8 +363,8 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
     }
 }
 
-/// Each car's race time of one draw (s against the start).
-fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Vec<f64> {
+/// Each car's race time of one draw (s against the start) and its pit stops.
+fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (Vec<f64>, Vec<usize>) {
     let n = seconds.len();
     let mut time: Vec<f64> = grid
         .iter()
@@ -271,7 +375,12 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
         (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
     let strategy = &race.strategy;
     let pits = strategy.enabled();
-    let plans: Vec<Vec<usize>> = if pits {
+    let hazard = pits && strategy.hazard();
+    let mut stops = vec![0usize; n];
+    let mut pitted = vec![false; n];
+    let plans: Vec<Vec<usize>> = if hazard {
+        vec![vec![]; n]
+    } else if pits {
         let count = strategy.count(rng);
         (0..n)
             .map(|car| {
@@ -307,7 +416,23 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
             if kind == RED && rng.gen::<f64>() < race.neutral.red_end {
                 break; // the race is not restarted: classified as it stands
             }
-            if pits {
+            if hazard {
+                if kind == RED {
+                    age.iter_mut().for_each(|a| *a = 0.0); // tyres may be changed under the red flag
+                    stops.iter_mut().for_each(|k| *k += 1);
+                } else {
+                    let stop = strategy.decide(lap1, race.laps, true, strategy.sc_ratio * strategy.pit_loss, &time, seconds,
+                                               &age, &wear, &stops, &pitted, rng);
+                    for car in 0..n {
+                        if stop[car] {
+                            time[car] += strategy.sc_ratio * strategy.cost(rng);
+                            age[car] = 0.0;
+                            stops[car] += 1;
+                        }
+                    }
+                    pitted = stop;
+                }
+            } else if pits {
                 for car in 0..n {
                     let due = next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window;
                     if kind == RED {
@@ -330,7 +455,21 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
             // a stop coming due later in a long safety car or virtual safety car is
             // taken then, still at the neutralised loss; behind a safety car the car
             // rejoins the queue
-            if pits && !started && neutral_kind != RED {
+            if hazard && !started && neutral_kind != RED {
+                let stop = strategy.decide(lap1, race.laps, true, strategy.sc_ratio * strategy.pit_loss, &time, seconds,
+                                           &age, &wear, &stops, &pitted, rng);
+                for car in 0..n {
+                    if stop[car] {
+                        time[car] += strategy.sc_ratio * strategy.cost(rng);
+                        age[car] = 0.0;
+                        stops[car] += 1;
+                    }
+                }
+                if stop.iter().any(|&b| b) && neutral_kind == SC {
+                    close_up(&mut time, &mut order, race.neutral.sc_gap);
+                }
+                pitted = stop;
+            } else if pits && !started && neutral_kind != RED {
                 let mut stopped = false;
                 for car in 0..n {
                     if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window {
@@ -374,7 +513,20 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
             &mut after,
             &mut own,
         );
-        if pits {
+        if hazard {
+            let stop = strategy.decide(lap1, race.laps, false, strategy.pit_loss, &time, seconds, &age, &wear, &stops,
+                                       &pitted, rng);
+            for car in 0..n {
+                if stop[car] {
+                    time[car] += strategy.cost(rng);
+                    age[car] = 0.0;
+                    stops[car] += 1;
+                } else {
+                    age[car] += 1.0;
+                }
+            }
+            pitted = stop;
+        } else if pits {
             for car in 0..n {
                 if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 {
                     time[car] += strategy.cost(rng); // in and out of the pits: the field goes by
@@ -386,7 +538,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> Ve
             }
         }
     }
-    time
+    (time, if hazard { stops } else { next })
 }
 
 /// Finishing positions (draws x entrants, 1 = first) of `laps` laps. `seconds`:
@@ -426,7 +578,11 @@ fn simulate<'py>(
     team: PyReadonlyArray1<i64>,
     team_mean: PyReadonlyArray1<f64>,
     team_sd: PyReadonlyArray1<f64>,
-) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    pit_coef: PyReadonlyArray1<f64>,
+    passing: f64,
+    lap_seconds: f64,
+    with_stops: bool,
+) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
         return Err(PyValueError::new_err("seconds and grid must have one shape"));
@@ -454,6 +610,10 @@ fn simulate<'py>(
     }
     let team: Vec<usize> = team.as_slice()?.iter().map(|&t| t.max(0) as usize).collect();
     let (team_mean, team_sd) = (team_mean.as_slice()?.to_vec(), team_sd.as_slice()?.to_vec());
+    let pit_coef = pit_coef.as_slice()?.to_vec();
+    if !pit_coef.is_empty() && pit_coef.len() != PIT_FEATURES + 1 {
+        return Err(PyValueError::new_err("the pit hazard needs an intercept and one coefficient per feature"));
+    }
     if !team.is_empty()
         && (team.len() != n || team_mean.len() != team_sd.len() || team.iter().any(|&t| t >= team_mean.len()))
     {
@@ -482,21 +642,29 @@ fn simulate<'py>(
             team,
             team_mean,
             team_sd,
+            pit_coef,
+            passing,
+            lap_seconds,
         },
     };
     let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
     let mut positions = vec![0i64; draws * n];
+    let mut stops = vec![0i64; draws * n];
     py.allow_threads(|| {
-        positions.par_chunks_mut(n).enumerate().for_each(|(d, out)| {
+        positions.par_chunks_mut(n).zip(stops.par_chunks_mut(n)).enumerate().for_each(|(d, (out, made))| {
             // one generator per draw, its state spread from (seed, draw) (no correlated streams)
             let mut rng = Pcg64::seed_from_u64(seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let cars = d * n..(d + 1) * n;
-            race_of_draw(&race, &seconds[cars.clone()], &grid[cars], &mut rng, out);
+            race_of_draw(&race, &seconds[cars.clone()], &grid[cars], &mut rng, out, made);
         });
     });
-    numpy::ndarray::Array2::from_shape_vec((draws, n), positions)
-        .map(|a| a.into_pyarray_bound(py))
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+    let array = |v: Vec<i64>| {
+        numpy::ndarray::Array2::from_shape_vec((draws, n), v)
+            .map(|a| a.into_pyarray_bound(py))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    };
+    let positions = array(positions)?;
+    Ok(if with_stops { (positions, array(stops)?).into_py(py) } else { positions.into_py(py) })
 }
 
 /// The battle model's pass probability for each (gap, delta) pair.
@@ -546,6 +714,9 @@ fn stop_counts<'py>(
         team: vec![],
         team_mean: vec![],
         team_sd: vec![],
+        pit_coef: vec![],
+        passing: 0.0,
+        lap_seconds: 90.0,
     };
     let mut counts = vec![0i64; draws * entrants];
     for (d, row) in counts.chunks_mut(entrants.max(1)).enumerate() {
@@ -560,10 +731,40 @@ fn stop_counts<'py>(
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// The pit hazard's features of one car-lap as the simulator computes them (for
+/// checking them against `race_sim.pit_features`).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn pit_features(age: f64, stops: usize, lap: usize, laps: usize, neutral: bool, position: usize, lost: f64,
+                clean_air: f64, gap_ahead: f64, gap_behind: f64, cover_behind: bool, cover_ahead: bool, pace_adv: f64,
+                passing: f64, wear: f64) -> Vec<f64> {
+    let strategy = Strategy {
+        wear: 0.0,
+        pit_loss: 1.0,
+        sc_ratio: 1.0,
+        stops_mean: 1.0,
+        stint_noise: 0.0,
+        window: 0,
+        residuals: vec![],
+        deviate: vec![],
+        team: vec![],
+        team_mean: vec![],
+        team_sd: vec![],
+        pit_coef: vec![],
+        passing,
+        lap_seconds: 90.0,
+    };
+    strategy
+        .features(age, stops, lap, laps, neutral, position, lost, clean_air, gap_ahead, gap_behind, cover_behind,
+                  cover_ahead, pace_adv, wear)
+        .to_vec()
+}
+
 #[pymodule]
 fn predictor_race_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate, m)?)?;
     m.add_function(wrap_pyfunction!(stop_counts, m)?)?;
+    m.add_function(wrap_pyfunction!(pit_features, m)?)?;
     m.add_function(wrap_pyfunction!(pass_probability, m)?)?;
     Ok(())
 }
@@ -605,9 +806,33 @@ mod tests {
                 team: vec![],
                 team_mean: vec![],
                 team_sd: vec![],
+                pit_coef: vec![],
+                passing: 0.0,
+                lap_seconds: 90.0,
             },
         };
-        race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(7))[0]
+        race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(7)).0[0]
+    }
+
+    #[test]
+    fn a_car_the_hazard_never_calls_in_still_stops_once() {
+        let mut hazard = vec![0.0; PIT_FEATURES + 1];
+        hazard[0] = -50.0;
+        let race = Race {
+            coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
+            term: 0.0, shift: 0.0, laps: 20, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
+            min_follow: 0.35,
+            neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
+                               sc_gap: 0.52, red_end: 0.0 },
+            strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
+                                 residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                 pit_coef: hazard.clone(), passing: 0.0, lap_seconds: 90.0 },
+        };
+        assert!((race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(3)).0[0] - 22.0).abs() < 1e-9);
+        let mut eager = race;
+        eager.strategy.pit_coef[0] = 50.0; // pits at every lap's end from lap 2 to 3 laps from the end
+        let stops = (PIT_FIRST_LAP..=20 - PIT_LAST_LAPS).count() as f64;
+        assert!((race_times(&eager, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(3)).0[0] - 22.0 * stops).abs() < 1e-9);
     }
 
     #[test]
@@ -624,6 +849,9 @@ mod tests {
             team: vec![],
             team_mean: vec![],
             team_sd: vec![],
+            pit_coef: vec![],
+            passing: 0.0,
+            lap_seconds: 90.0,
         };
         let mut rng = Pcg64::seed_from_u64(1);
         assert_eq!(strategy.car_wear(3, &mut rng), vec![0.05; 3]);

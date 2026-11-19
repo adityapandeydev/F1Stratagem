@@ -29,7 +29,7 @@ import pandas as pd
 import predictor_race_native
 from scipy.optimize import minimize
 
-from .laps import FUEL, clean_race_laps, practice_laps, race_pace, wet_session
+from .laps import DRY as DRY_COMPOUNDS, FUEL, clean_race_laps, practice_laps, race_pace, wet_session
 
 BATTLE_GAP = 2.5        # s: pairs further apart are not battles
 MIN_FOLLOW = 0.35       # s: closest a car is held behind the car ahead
@@ -185,7 +185,7 @@ def circuit_propensity(frame, base):
 
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
-             strategy=None):
+             strategy=None, with_stops=False):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -193,7 +193,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     one per draw; `passes`: a PassModel; `lap_seconds`: a typical lap; `pass_shift`:
     added to every pass's log-odds; `neutral`: `NeutralModel.race(...)` (None: no
     neutralisations); `strategy`: `StrategyModel.race(...)` (None: no stops or wear;
-    with `deviate`, each car's own stop count by its pace rank)."""
+    with `deviate`, each car's own stop count by its pace rank). `with_stops`: also
+    each car's pit stops per draw (a second array)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -215,9 +216,12 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                              car_deviations(strategy.get("deviate"), pace),
                                              np.asarray(strategy.get("team", np.zeros(0)), dtype=np.int64),
                                              np.asarray(strategy.get("team_mean", np.zeros(0)), dtype=float),
-                                             np.asarray(strategy.get("team_sd", np.zeros(0)), dtype=float))
+                                             np.asarray(strategy.get("team_sd", np.zeros(0)), dtype=float),
+                                             np.asarray(strategy.get("pit_coef", np.zeros(0)), dtype=float),
+                                             float(strategy.get("passing", 0.0)), float(lap_seconds))
                                             if strategy else (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0), np.zeros(0),
-                                                              np.zeros(0, dtype=np.int64), np.zeros(0), np.zeros(0))))
+                                                              np.zeros(0, dtype=np.int64), np.zeros(0), np.zeros(0),
+                                                              np.zeros(0), 0.0, float(lap_seconds))), bool(with_stops))
 
 
 def car_deviations(table, pace):
@@ -534,6 +538,134 @@ class TeamWear:
             sds.append(float(np.sqrt(self.persistent + self.specific)))
         index = [teams.index(l) if l is not None else len(teams) for l in lineages]
         return index, np.array(means), np.array(sds)
+
+
+AGE_EDGES = (5, 10, 15, 20, 25, 30, 40)    # tyre-age bands of the pit hazard (laps)
+PIT_FEATURES = tuple(f"age>{e}" for e in AGE_EDGES) + (
+    "first_stint", "frac", "frac2", "end", "neutral", "neutral_old", "position", "lost", "clean_air",
+    "gap_ahead", "gap_behind", "cover_behind", "cover_ahead", "pace_adv", "passing", "pace_x_passing",
+    "lost_x_passing", "tyre_loss", "tyre_loss2", "wear")
+PIT_FIRST_LAP, PIT_LAST_LAPS = 2, 3        # the hazard acts from lap 2 to 3 laps from the end
+END_LAPS, OLD_TYRES, COVER_GAP, GAP_CAP = 8, 10, 3.0, 20.0
+MIN_PIT_RACES = 15                          # dry races of the tyre era needed for an era-only fit
+
+
+def pit_features(age, stops, lap, laps, neutral, position, lost, clean_air, gap_ahead, gap_behind,
+                 cover_behind, cover_ahead, pace_adv, passing, wear):
+    """The pit hazard's features (PIT_FEATURES order) for arrays of car-laps; the
+    native simulator computes the same ones (`predictor_race_native`, keep in step).
+    Gaps in s, `lost`: cars that would pass during the stop, `pace_adv`: the pace of
+    the car it would rejoin behind minus its own (% of a lap; + = faster than it),
+    `passing`: the circuit's centred log pass rate, `wear`: the car's tyre wear (% of
+    a lap per lap of age; `tyre_loss` = wear x age, what the tyres cost now)."""
+    age, lap = np.asarray(age, dtype=float), np.asarray(lap, dtype=float)
+    frac = lap / laps
+    lost = np.asarray(lost, dtype=float)
+    adv = np.clip(np.asarray(pace_adv, dtype=float), -3.0, 3.0)
+    neutral = np.asarray(neutral, dtype=float)
+    columns = [(age > e).astype(float) - (age > nxt).astype(float) if nxt is not None else (age > e).astype(float)
+               for e, nxt in zip(AGE_EDGES, AGE_EDGES[1:] + (None,))]
+    columns += [(np.asarray(stops) == 0).astype(float), frac, frac ** 2, (laps - lap <= END_LAPS).astype(float),
+                neutral, neutral * (age >= OLD_TYRES), np.asarray(position, dtype=float) / 20, lost / 10,
+                np.log1p(np.minimum(clean_air, GAP_CAP)), np.log1p(np.minimum(gap_ahead, GAP_CAP)),
+                np.log1p(np.minimum(gap_behind, GAP_CAP)), np.asarray(cover_behind, dtype=float),
+                np.asarray(cover_ahead, dtype=float), adv, np.full(len(age), passing), adv * passing,
+                lost / 10 * passing]
+    wear = np.broadcast_to(np.clip(np.asarray(wear, dtype=float), 0.0, 0.3), age.shape)
+    columns += [wear * age, (wear * age) ** 2, wear]
+    return np.column_stack(columns)
+
+
+def pit_decisions(laps, loss, pace, wear=None):
+    """Every car's racing laps of a dry race with whether it pitted at the lap's end
+    and what was visible then: DataFrame of `pit_features` inputs plus `pit`; empty
+    for a wet race. `loss`: the race's pit loss (s); `pace`: driver -> race pace (%);
+    `wear`: the race's tyre wear (%/lap of age; WEAR without)."""
+    if laps.empty or wet_session(laps) or "PitInTime" not in laps:
+        return pd.DataFrame()
+    total = int(laps.LapNumber.max())
+    f = laps.dropna(subset=["Time"]).assign(end=lambda x: x.Time.dt.total_seconds(), d=lambda x: x.DriverNumber.astype(str))
+    pitted = set(zip(f.d[f.PitInTime.notna()], f.LapNumber[f.PitInTime.notna()]))
+    status = laps.groupby("LapNumber").TrackStatus.agg(lambda v: "".join(str(x) for x in v.dropna()))
+    neutral = {n for n, v in status.items() if any(c in v for c in "4567")}
+    rows = []
+    for lap, g in f.groupby("LapNumber"):
+        if lap < PIT_FIRST_LAP or lap > total - PIT_LAST_LAPS:
+            continue
+        g = g.sort_values("end")
+        ends, drivers = g.end.to_numpy(), g.d.to_numpy()
+        for i, row in enumerate(g.itertuples()):
+            if pd.isna(row.TyreLife) or str(row.Compound).upper() not in DRY_COMPOUNDS:
+                continue
+            t, rejoin = ends[i], ends[i] + loss
+            passing_cars = (ends > t) & (ends <= rejoin)
+            before = ends[(ends <= rejoin) & (np.arange(len(ends)) != i)]
+            after = ends[ends > rejoin]
+            target = drivers[passing_cars][-1] if passing_cars.any() else None
+            rows.append({"driver": row.d, "lap": int(lap), "age": float(row.TyreLife),
+                         "stops": max(int(row.Stint) - 1, 0) if pd.notna(row.Stint) else 0,
+                         "neutral": lap in neutral, "position": i + 1, "lost": int(passing_cars.sum()),
+                         "clean_air": min(rejoin - before.max() if len(before) else GAP_CAP,
+                                          after.min() - rejoin if len(after) else GAP_CAP),
+                         "gap_ahead": t - ends[i - 1] if i else GAP_CAP,
+                         "gap_behind": ends[i + 1] - t if i + 1 < len(ends) else GAP_CAP,
+                         "cover_behind": i + 1 < len(ends) and (drivers[i + 1], lap - 1) in pitted and ends[i + 1] - t < COVER_GAP,
+                         "cover_ahead": i > 0 and (drivers[i - 1], lap - 1) in pitted and t - ends[i - 1] < COVER_GAP,
+                         "pace_adv": (pace.get(target, np.nan) - pace.get(row.d, np.nan)) if target else 0.0,
+                         "pit": (row.d, lap) in pitted})
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["pace_adv"] = out.pace_adv.fillna(0.0)
+        out["laps"] = total
+        out["wear"] = WEAR if wear is None or not np.isfinite(wear) else float(wear)
+    return out
+
+
+class PitModel:
+    """Per-lap pit hazard: logistic regression of a car pitting at the end of a lap
+    on `pit_features`, over the earlier dry races of the tyre era (every era while
+    it has fewer than MIN_PIT_RACES). Measured 2018-2024 (137,157 car-laps, 4,327
+    stops): fitted within the era it is calibrated on later seasons (riskiest tenth
+    of laps 0.138 predicted, 0.131 observed; pooled across eras 0.097); clean air,
+    covering a rival who pitted and pace with circuit passing each predict held-out
+    decisions beyond noise. Coefficients are on the raw features (intercept first)."""
+
+    def __init__(self):
+        self.coef = None
+        self.centre = 0.0          # mean log pass rate of the training races
+
+    def fit(self, races):
+        """`races`: [(decisions from `pit_decisions`, circuit log pass rate)]."""
+        from sklearn.linear_model import LogisticRegression
+        frames = [d.assign(passing=rate) for d, rate in races if not d.empty and np.isfinite(rate)]
+        self.coef = None
+        if len(frames) < MIN_PIT_RACES // 3:
+            return self
+        f = pd.concat(frames, ignore_index=True)
+        self.centre = float(f.passing.mean())
+        x = pit_features(f.age, f.stops, f.lap, f.laps.to_numpy(float), f.neutral, f.position, f.lost, f.clean_air,
+                         f.gap_ahead, f.gap_behind, f.cover_behind, f.cover_ahead, f.pace_adv, 0.0, f.wear)
+        x[:, PIT_FEATURES.index("passing")] = f.passing - self.centre
+        x[:, PIT_FEATURES.index("pace_x_passing")] = x[:, PIT_FEATURES.index("pace_adv")] * (f.passing - self.centre)
+        x[:, PIT_FEATURES.index("lost_x_passing")] = x[:, PIT_FEATURES.index("lost")] * (f.passing - self.centre)
+        mu, sd = x.mean(axis=0), x.std(axis=0)
+        sd[sd == 0] = 1.0
+        model = LogisticRegression(C=1.0, max_iter=3000).fit((x - mu) / sd, f.pit.to_numpy())
+        raw = model.coef_[0] / sd
+        self.coef = np.r_[model.intercept_[0] - raw @ mu, raw]
+        return self
+
+    def probability(self, features):
+        return 1 / (1 + np.exp(-(self.coef[0] + features @ self.coef[1:])))
+
+
+def log_pass_rate(laps):
+    """log(passes per racing lap + 0.001) of a dry race; None without a count."""
+    from .laps import race_passes
+    counted = race_passes(laps)
+    if not counted or not counted[1]:
+        return None
+    return float(np.log(counted[0] / counted[1] + 1e-3))
 
 
 def race_wear(laps):
