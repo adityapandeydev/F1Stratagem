@@ -7,4 +7,5 @@ pub mod archive;
 pub mod calibrate;
 pub mod laps;
 pub mod pace;
+pub mod season;
 pub mod table;

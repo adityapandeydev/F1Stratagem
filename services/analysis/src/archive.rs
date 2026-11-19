@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 
 use crate::laps::{self, Lap};
 use crate::table::Table;
@@ -37,7 +37,8 @@ impl Archive {
         &self.root
     }
 
-    /// Every session of an event (`2024-20`), in slot order.
+    /// Every archived session of an event (`2024-20`), in slot order; empty when the
+    /// event has not been collected yet.
     pub fn event_sessions(&self, event_key: &str) -> Result<Vec<Session>> {
         let table = Table::read(&self.root.join("reference/sessions.parquet"))?;
         let ids = table.strings("session_id")?;
@@ -59,11 +60,23 @@ impl Archive {
                 )
             })
             .collect();
-        if sessions.is_empty() {
-            bail!("event {event_key} is not in the archive's session reference");
-        }
         sessions.sort_by_key(|(slot, _)| *slot);
         Ok(sessions.into_iter().map(|(_, s)| s).collect())
+    }
+
+    /// Championship events of a season (no testing), in round order.
+    pub fn season_events(&self, season: i64) -> Result<Vec<String>> {
+        let table = Table::read(&self.root.join("reference/events.parquet"))?;
+        let keys = table.strings("event_key")?;
+        let seasons = table.i64s("season")?;
+        let rounds = table.f64s("round")?;
+        let testing = table.bools("is_testing")?;
+        let mut events: Vec<(f64, String)> = (0..table.len())
+            .filter(|&i| seasons[i] == Some(season) && testing[i] != Some(true))
+            .filter_map(|i| Some((rounds[i]?, keys[i].clone()?)))
+            .collect();
+        events.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Ok(events.into_iter().map(|(_, k)| k).collect())
     }
 
     /// The event's session of one type (`Q`, `R`, ...), if it ran.
