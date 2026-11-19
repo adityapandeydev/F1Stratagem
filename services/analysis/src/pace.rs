@@ -78,6 +78,31 @@ pub struct RaceModel {
     pub traffic_term: bool,
 }
 
+/// Laps a driver (or team) needs to be measured.
+pub const MIN_LAPS: usize = 5;
+
+impl RaceFilter {
+    /// The standard team race pace laps: dry tyres, green, after lap 1, no pit laps,
+    /// more than 2 s behind the car ahead.
+    pub fn standard() -> Self {
+        Self { compounds: Compounds::Slicks, min_gap_s: Some(2.0), ..Self::default() }
+    }
+}
+
+impl RaceModel {
+    /// The standard team race pace fit: a time per lap number shared by all cars,
+    /// one tyre-wear rate per compound, one 3-sigma trim and refit.
+    pub fn standard() -> Self {
+        Self { team_wear: false, lap_trend: LapTrend::PerLap, trim_sigma: Some(3.0), traffic_term: false }
+    }
+}
+
+/// Standard team race pace of one race: [`RaceFilter::standard`] laps,
+/// [`RaceModel::standard`] fit, the quicker driver of each team.
+pub fn team_race_pace(race: &[Lap]) -> TeamTimes {
+    race_model_team_times(race, &RaceFilter::standard(), &RaceModel::standard(), Agg::Best, MIN_LAPS)
+}
+
 pub fn gaps_pct(times: &TeamTimes) -> BTreeMap<String, f64> {
     let best = times.values().copied().fold(f64::INFINITY, f64::min);
     times.iter().map(|(team, t)| (team.clone(), (t - best) / best * 100.0)).collect()
@@ -352,5 +377,73 @@ impl<'a> Design<'a> {
 
     fn predict(&self, beta: &DVector<f64>, at: &Obs) -> f64 {
         self.row(at).iter().zip(beta.iter()).map(|(a, b)| a * b).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lap(driver: &str, team: &str, n: u32, time: f64, compound: &str, age: f64) -> Lap {
+        Lap {
+            driver: driver.into(),
+            team: team.into(),
+            lap_number: n,
+            lap_time: Some(time),
+            time: None,
+            stint: None,
+            pit_in: false,
+            pit_out: false,
+            compound: Some(compound.into()),
+            tyre_life: Some(age),
+            fresh_tyre: None,
+            track_status: Some("1".into()),
+            position: None,
+            deleted: false,
+            accurate: true,
+        }
+    }
+
+    /// Cars with known pace, two compounds, different stop laps, tyre wear and a
+    /// track whose speed changes irregularly from lap to lap.
+    fn synthetic_race() -> Vec<Lap> {
+        let cars = [("A1", "Alpha", 0.0), ("A2", "Alpha", 0.3), ("B1", "Beta", 0.5), ("B2", "Beta", 0.8), ("C1", "Gamma", 1.2)];
+        let mut laps = Vec::new();
+        for (i, (driver, team, pace)) in cars.iter().enumerate() {
+            let stop = 20 + 3 * i as u32;
+            for n in 1..=50u32 {
+                let (compound, age, offset, wear) =
+                    if n <= stop { ("MEDIUM", n as f64, 0.0, 0.05) } else { ("HARD", (n - stop) as f64, 0.4, 0.03) };
+                let track = 90.0 - 0.06 * n as f64 + if n % 7 == 0 { 1.5 } else { 0.0 };
+                laps.push(lap(driver, team, n, track + pace + offset + wear * age, compound, age));
+            }
+        }
+        laps
+    }
+
+    #[test]
+    fn recovers_known_car_gaps() {
+        let gaps = gaps_s(&team_race_pace(&synthetic_race()));
+        assert!(gaps["Alpha"].abs() < 1e-6);
+        assert!((gaps["Beta"] - 0.5).abs() < 1e-6, "Beta {}", gaps["Beta"]);
+        assert!((gaps["Gamma"] - 1.2).abs() < 1e-6, "Gamma {}", gaps["Gamma"]);
+    }
+
+    #[test]
+    fn teammate_mean_averages_drivers() {
+        let times = race_model_team_times(&synthetic_race(), &RaceFilter::standard(), &RaceModel::standard(), Agg::Mean, MIN_LAPS);
+        let gaps = gaps_s(&times);
+        assert!((gaps["Beta"] - 0.5).abs() < 1e-6, "Beta {}", gaps["Beta"]);
+        assert!((gaps["Gamma"] - 1.05).abs() < 1e-6, "Gamma {}", gaps["Gamma"]);
+    }
+
+    #[test]
+    fn neutralised_and_close_laps_are_left_out() {
+        let mut race = synthetic_race();
+        race[10].track_status = Some("14".into());
+        let filter = RaceFilter { skip_after_neutral: 2, ..RaceFilter::standard() };
+        let kept: Vec<u32> = race_laps(&race, &filter).iter().filter(|(l, _, _)| l.driver == "A1").map(|(l, _, _)| l.lap_number).collect();
+        assert!(!kept.contains(&1) && !kept.contains(&11) && !kept.contains(&12) && !kept.contains(&13));
+        assert!(kept.contains(&14));
     }
 }

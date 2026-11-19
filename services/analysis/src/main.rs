@@ -54,15 +54,15 @@ enum Command {
     },
 }
 
-/// A team race pace recipe.
+/// A team race pace recipe; the defaults are the standard recipe.
 #[derive(clap::Args)]
 struct Recipe {
     /// all, slick or inter
     #[arg(long, default_value = "slick")]
     compounds: String,
-    /// Leave out laps this close or closer to the car ahead (seconds).
-    #[arg(long)]
-    min_gap: Option<f64>,
+    /// Leave out laps this close or closer to the car ahead (seconds; 0 keeps all).
+    #[arg(long, default_value_t = 2.0)]
+    min_gap: f64,
     /// Leave out laps this many or fewer after a neutralisation.
     #[arg(long, default_value_t = 0)]
     skip_after_neutral: u32,
@@ -72,9 +72,9 @@ struct Recipe {
     /// linear, lapxcomp or perlap
     #[arg(long, default_value = "perlap")]
     trend: String,
-    /// Residual trim in robust standard deviations.
-    #[arg(long)]
-    trim: Option<f64>,
+    /// Residual trim in robust standard deviations (0 = no trim).
+    #[arg(long, default_value_t = 3.0)]
+    trim: f64,
     /// Gap to the car ahead as a term.
     #[arg(long)]
     traffic: bool,
@@ -105,11 +105,11 @@ impl Recipe {
         };
         let filter = RaceFilter {
             compounds,
-            min_gap_s: self.min_gap,
+            min_gap_s: (self.min_gap > 0.0).then_some(self.min_gap),
             skip_after_neutral: self.skip_after_neutral,
             ..RaceFilter::default()
         };
-        let model = RaceModel { team_wear: self.team_wear, lap_trend, trim_sigma: self.trim, traffic_term: self.traffic };
+        let model = RaceModel { team_wear: self.team_wear, lap_trend, trim_sigma: (self.trim > 0.0).then_some(self.trim), traffic_term: self.traffic };
         Ok((filter, model, agg))
     }
 }
