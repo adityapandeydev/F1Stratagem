@@ -90,6 +90,8 @@ fn lap_of_draw(
     follow_u: &[f64],
     held_gap: &mut [f64],
     held_ahead: &mut [usize],
+    attack_u: &[f64],
+    release: f64,
 ) {
     let n = time.len();
     order.clear();
@@ -127,7 +129,12 @@ fn lap_of_draw(
             // released when it falls back on its own, passes, or another car is ahead
             let ahead_car = order[k - 1];
             let holding = !held_gap[behind_car].is_nan() && held_ahead[behind_car] == ahead_car;
-            if holding && t_behind < t_ahead + held_gap[behind_car] {
+            if holding && attack_u[behind_car] < release {
+                // commits to an attack: leaves its gap and closes in (the battle model
+                // decides the pass from the next lap's gap)
+                held_gap[behind_car] = f64::NAN;
+                (t_ahead, t_behind.max(t_ahead + min_follow))
+            } else if holding && t_behind < t_ahead + held_gap[behind_car] {
                 (t_ahead, t_ahead + held_gap[behind_car])
             } else if !holding && t_behind < t_ahead + min_follow {
                 held_gap[behind_car] = quantile(follow, follow_u[behind_car]).max(min_follow);
@@ -215,6 +222,7 @@ const P_DECIDE: u64 = 11;
 const P_NOISE: u64 = 12;
 const P_LUCK: u64 = 13;
 const P_FOLLOW: u64 = 14;
+const P_ATTACK: u64 = 15;
 
 fn splitmix(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -445,6 +453,8 @@ struct Race {
     min_follow: f64,
     /// following gaps of a held-up car (equally spaced quantiles, s); empty: held at min_follow
     follow: Vec<f64>,
+    /// per-lap chance that a held car leaves its gap to attack
+    follow_release: f64,
     neutral: Neutral,
     strategy: Strategy,
 }
@@ -568,6 +578,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
     let mut held_gap = vec![f64::NAN; n];
     let mut held_ahead = vec![usize::MAX; n];
     let mut follow_u = vec![0.0f64; if race.follow.is_empty() { 0 } else { n }];
+    let mut attack_u = vec![0.0f64; if race.follow.is_empty() { 0 } else { n }];
     for lap in 0..race.laps {
         let lap1 = lap + 1;
         let mut started = false;
@@ -723,6 +734,9 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
         for (car, value) in follow_u.iter_mut().enumerate() {
             *value = rng.uniform(P_FOLLOW, lap, car);
         }
+        for (car, value) in attack_u.iter_mut().enumerate() {
+            *value = rng.uniform(P_ATTACK, lap, car);
+        }
         if pits {
             for car in 0..n {
                 effective[car] = seconds[car] + wear[car] * age[car];
@@ -753,6 +767,8 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 &follow_u,
                 &mut held_gap,
                 &mut held_ahead,
+                &attack_u,
+                race.follow_release,
             );
         }
         for car in 0..n {
@@ -842,6 +858,7 @@ fn simulate<'py>(
     fixed_counts: PyReadonlyArray2<i64>,
     stop_laps: PyReadonlyArray2<i64>,
     follow: PyReadonlyArray1<f64>,
+    follow_release: f64,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -896,6 +913,7 @@ fn simulate<'py>(
             }
             table
         },
+        follow_release,
         neutral,
         strategy: Strategy {
             wear,
@@ -1124,6 +1142,7 @@ mod tests {
             battle_gap: 2.5,
             min_follow: 0.35,
             follow: vec![],
+            follow_release: 0.0,
             neutral: Neutral {
                 hazard,
                 kinds: [1.0, 0.0, 0.0],
@@ -1160,6 +1179,7 @@ mod tests {
             term: 0.0, shift: 0.0, laps: 20, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
             min_follow: 0.35,
             follow: vec![],
+            follow_release: 0.0,
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1187,6 +1207,7 @@ mod tests {
             term: 0.0, shift: 0.0, laps: 22, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
             min_follow: 0.35,
             follow: vec![],
+            follow_release: 0.0,
             neutral: Neutral { hazard: vec![0.0; 22], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1220,6 +1241,7 @@ mod tests {
             term: 0.0, shift: 0.0, laps: 20, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
             min_follow: 0.35,
             follow: vec![],
+            follow_release: 0.0,
             neutral: Neutral { hazard: neutral_hazard, kinds: [1.0, 0.0, 0.0], lengths: [vec![3], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.8, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1252,6 +1274,7 @@ mod tests {
             term: 0.0, shift: 0.0, laps: 20, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
             min_follow: 0.35,
             follow: vec![2.0, 2.0],
+            follow_release: 0.0,
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1264,6 +1287,33 @@ mod tests {
         let gaps: Vec<f64> = (0..20).map(|lap| trace.time[lap * 2 + 1] - trace.time[lap * 2]).collect();
         // it starts 0.25 s behind, is held from lap 1 at 2 s and stays there
         assert!(gaps.iter().all(|g| (g - 2.0).abs() < 1e-9), "{gaps:?}");
+    }
+
+    /// A follower 3 s a lap faster, passing certain inside the battle range, a 3 s
+    /// following gap (beyond the battle range), starting 3 s behind: the finishing order.
+    fn attacker(release: f64) -> Vec<i64> {
+        let race = Race {
+            coef: coefficients(&[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
+            term: 0.0, shift: 0.0, laps: 10, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
+            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release,
+            neutral: Neutral { hazard: vec![0.0; 10], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
+                               sc_gap: 0.52, red_end: 0.0 },
+            strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
+                                 residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                 pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 },
+        };
+        let (time, _) = race_times(&race, &[0.0, -3.0], &[1.0, 13.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(1)),
+                                   &Diag::default(), None);
+        let mut positions = vec![0i64; 2];
+        rank(&time, &mut positions);
+        positions
+    }
+
+    #[test]
+    fn a_held_car_can_leave_its_gap_and_attack() {
+        // a target beyond the battle range locks the follower out unless it can attack
+        assert_eq!(attacker(0.0), vec![1, 2]);
+        assert_eq!(attacker(0.5), vec![2, 1]);
     }
 
     #[test]

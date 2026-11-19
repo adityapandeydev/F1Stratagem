@@ -297,6 +297,7 @@ class SimulatedRace(RaceModel):
         self.pit_model = pit_model
         self.following = following
         self._gaps, self._follow_tables, self._follow = {}, {}, None
+        self._runs, self._release = {}, 0.0
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
@@ -359,7 +360,8 @@ class SimulatedRace(RaceModel):
         self._wear = self._wear_models.get(season) if self.weekend_wear else None
         self._team = self._team_models.get(season) if self.team_wear else None
         self._pit = self._pit_models.get(season) if self.pit_model else None
-        self._follow = self._follow_tables.get(season) if self.following else None
+        follow = self._follow_tables.get(season) if self.following else None
+        self._follow, self._release = (follow if follow is not None else (None, 0.0))
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -406,8 +408,13 @@ class SimulatedRace(RaceModel):
                 pace = race_sim.race_pace(laps)
                 pace = dict(zip(pace.driver_number.astype(str), pace.pace)) if not pace.empty else {}
                 self._gaps[race.session_id] = race_sim.following_gaps(laps, pace)
+                self._runs[race.session_id] = race_sim.held_run_lengths(laps, pace)
             gaps.append(self._gaps[race.session_id])
-        return race_sim.follow_quantiles(np.concatenate(gaps) if gaps else np.zeros(0))
+        table = race_sim.follow_quantiles(np.concatenate(gaps) if gaps else np.zeros(0))
+        if table is None:
+            return None
+        runs = np.concatenate([self._runs[r.session_id] for r in view.sessions[view.sessions.session_type == "R"].itertuples()])
+        return table, (1.0 / float(runs.mean()) if len(runs) else 0.0)   # a hold ends on average after its mean length
 
     def _pass_rate(self, view, race):
         if race.session_id not in self._pass_rates:
@@ -656,7 +663,7 @@ class SimulatedRace(RaceModel):
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
                                  self._race_strategy(context.get("strategy"), setting),
-                                 follow=self._follow)
+                                 follow=self._follow, follow_release=self._release)
 
     @staticmethod
     def _race_strategy(strategy, setting):

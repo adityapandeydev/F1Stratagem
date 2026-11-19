@@ -193,7 +193,7 @@ def circuit_propensity(frame, base):
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
              strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
-             stop_laps=None, follow=None):
+             stop_laps=None, follow=None, follow_release=0.0):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -212,7 +212,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     `free_traffic`: nobody is held up or passes; `fixed_counts`: each car's planned
     stop count per draw (draws x entrants); `stop_laps`: each entrant's planned stop
     laps (entrants x k, 1-based, padded with 0). `follow`: the quantiles of the gap a
-    held-up car keeps behind the car ahead (FOLLOW_GAPS; None: held at MIN_FOLLOW)."""
+    held-up car keeps behind the car ahead (None: held at MIN_FOLLOW);
+    `follow_release`: the per-lap chance that a held car leaves its gap to attack."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -245,7 +246,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                                                dtype=np.int64),
                                           np.ascontiguousarray(np.zeros((0, 0)) if stop_laps is None else stop_laps,
                                                                dtype=np.int64),
-                                          np.asarray(() if follow is None else follow, dtype=float))
+                                          np.asarray(() if follow is None else follow, dtype=float),
+                                          float(follow_release))
 
 
 def car_deviations(table, pace):
@@ -713,16 +715,32 @@ class PitModel:
 
 
 def following_gaps(laps, pace=None):
-    """Gaps (s) to the car ahead on the clean green laps of a dry race's runs of
+    """Gaps of held-up cars (`held_runs`)."""
+    g, keep = held_runs(laps, pace)
+    if g is None:
+        return np.zeros(0)
+    gaps = g[g.run.isin(keep.index)].gap.to_numpy(dtype=float)
+    return gaps[(gaps > 0) & np.isfinite(gaps)]
+
+
+def held_run_lengths(laps, pace=None):
+    """Laps of each held-up run (`held_runs`)."""
+    g, keep = held_runs(laps, pace)
+    return np.zeros(0) if g is None else keep.n.to_numpy(dtype=float)
+
+
+def held_runs(laps, pace=None):
+    """(per-lap frame, kept runs) of a dry race's held-up runs; (None, None)
+    without positions. Gaps (s) to the car ahead on the clean green laps of runs of
     FOLLOW_RUN+ consecutive laps behind the same car that began within FOLLOW_START
     s; an empty array for a wet race or one without positions. `pace`: driver ->
     race pace (%, lower is faster); with it only runs of a follower faster than the
     car ahead count (held up, not a slower car falling back on its own)."""
     if laps.empty or wet_session(laps) or "Position" not in laps:
-        return np.zeros(0)
+        return None, None
     f = clean_race_laps(laps).dropna(subset=["Time", "Position"])
     if f.empty:
-        return np.zeros(0)
+        return None, None
     f = f.assign(end=f.Time.dt.total_seconds(), position=f.Position.astype(int))
     crossing = {(lap, pos): (d, t) for lap, pos, d, t in zip(f.LapNumber, f.position, f.driver_number, f.end)}
     rows = []
@@ -731,7 +749,7 @@ def following_gaps(laps, pace=None):
         if ahead is not None:
             rows.append((d, int(lap), ahead[0], t - ahead[1]))
     if not rows:
-        return np.zeros(0)
+        return None, None
     g = pd.DataFrame(rows, columns=["driver", "lap", "ahead", "gap"]).sort_values(["driver", "lap"])
     new = (g.ahead != g.groupby("driver").ahead.shift()) | (g.groupby("driver").lap.diff() != 1)
     g["run"] = new.cumsum()
@@ -740,9 +758,7 @@ def following_gaps(laps, pace=None):
         who = g.groupby("run")[["driver", "ahead"]].first()
         faster = who.driver.map(lambda d: pace.get(d, np.inf)) < who.ahead.map(lambda d: pace.get(d, -np.inf))
         runs = runs[faster.reindex(runs.index).fillna(False).astype(bool)]
-    keep = runs[(runs.n >= FOLLOW_RUN) & (runs["first"] < FOLLOW_START)].index
-    gaps = g[g.run.isin(keep)].gap.to_numpy(dtype=float)
-    return gaps[(gaps > 0) & np.isfinite(gaps)]
+    return g, runs[(runs.n >= FOLLOW_RUN) & (runs["first"] < FOLLOW_START)]
 
 
 def follow_quantiles(gaps):
