@@ -676,3 +676,47 @@ def test_training_and_the_simulator_build_the_same_features_from_one_race_state(
             [bool(((laps.LapNumber == lap - 1) & (laps.DriverNumber == d) & laps.PitInTime.notna()).any())
              for d in before.DriverNumber], 0.25, lap_seconds)
         assert np.allclose(np.array(native), python)
+
+
+def _strategy_race():
+    from predictor import race_sim
+    rng = np.random.default_rng(6)
+    pace = np.linspace(-0.5, 0.5, 10)[None] + rng.normal(0, 0.1, (60, 10))
+    model = race_sim.PassModel()
+    model.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    neutral = {"hazard": np.full(30, 0.03), "kinds": np.array([0.6, 0.3, 0.1]),
+               "lengths": {"sc": np.array([3, 4]), "vsc": np.array([2]), "red": np.array([2])}, "red_end": 0.2}
+    strategy = {"pit_loss": 22.0, "stops": 1.5, "wear": 0.05, "sc_ratio": 0.8, "residuals": np.array([0.0, 3.0])}
+    return pace, np.arange(1, 11, dtype=float)[None], model, neutral, strategy
+
+
+def test_the_trace_only_observes():
+    """Tracing a race must not change any finishing position or stop."""
+    from predictor import race_sim
+    pace, grid, model, neutral, strategy = _strategy_race()
+    run = lambda **k: race_sim.simulate(pace, grid, model, 0.0, 30, 90.0, 0.3, np.random.default_rng(2), neutral=neutral,
+                                        strategy=strategy, **k)
+    plain, stops = run(with_stops=True)
+    traced = run(trace=True)
+    assert np.array_equal(plain, traced["positions"]) and np.array_equal(stops, traced["stops"])
+    assert traced["time"].shape == (60, 30, 10)
+    visits = ((traced["event"] == 1) | (traced["event"] == 2)).sum(axis=1)
+    red = (traced["event"] == 4).any(axis=1)
+    # every pit visit is in the trace; a planned stop due at a red flag is a free tyre
+    # change there (event 4), counted as a stop but not as a pit visit
+    assert (visits <= stops).all() and (visits[~red] == stops[~red]).all()
+
+
+def test_keyed_variants_share_their_scenarios():
+    """With keyed random numbers, a race without traffic and one with it differ
+    only through traffic: no traffic and no stops gives each car its own laps."""
+    from predictor import race_sim
+    pace, grid, model, neutral, strategy = _strategy_race()
+    run = lambda **k: race_sim.simulate(pace, grid, model, 0.0, 30, 90.0, 0.3, np.random.default_rng(2), neutral=neutral,
+                                        strategy=strategy, trace=True, keyed=True, **k)
+    one, two = run(), run()
+    assert np.array_equal(one["time"], two["time"])                     # reproducible
+    free = run(free_traffic=True)
+    assert np.abs(free["held"]).max() == 0.0 and np.abs(one["held"]).max() > 0.0
+    fixed = run(fixed_counts=np.full((60, 10), 2))
+    assert (fixed["stops"] == 2).all()                           # each car's count as given

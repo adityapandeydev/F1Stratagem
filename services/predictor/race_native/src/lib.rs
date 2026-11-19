@@ -161,6 +161,67 @@ struct Strategy {
     lap_seconds: f64,
 }
 
+/// The random numbers of one draw. `Seq`: drawn in sequence from the draw's
+/// generator (forecasts). `Keyed`: each number a hash of (seed, purpose, lap, car),
+/// so variants of one race (other pit timing, no traffic) share the same lap noise,
+/// battles, neutralisations and starts (paired diagnostics).
+enum Rand<'a> {
+    Seq(&'a mut Pcg64),
+    Keyed(u64),
+}
+
+const P_START: u64 = 1;
+const P_NEUTRAL: u64 = 2;
+const P_KIND: u64 = 3;
+const P_LENGTH: u64 = 4;
+const P_RED: u64 = 5;
+const P_COUNT: u64 = 6;
+const P_OWN: u64 = 7;
+const P_PLAN: u64 = 8;
+const P_TEAM: u64 = 9;
+const P_COST: u64 = 10;
+const P_DECIDE: u64 = 11;
+const P_NOISE: u64 = 12;
+const P_LUCK: u64 = 13;
+
+fn splitmix(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+impl Rand<'_> {
+    fn key(seed: u64, purpose: u64, lap: usize, car: usize, part: u64) -> f64 {
+        let h = splitmix(splitmix(splitmix(splitmix(seed ^ purpose) ^ lap as u64) ^ car as u64) ^ part);
+        ((h >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    }
+
+    fn uniform(&mut self, purpose: u64, lap: usize, car: usize) -> f64 {
+        match self {
+            Rand::Seq(rng) => rng.gen::<f64>(),
+            Rand::Keyed(seed) => Self::key(*seed, purpose, lap, car, 0),
+        }
+    }
+
+    fn normal(&mut self, purpose: u64, lap: usize, car: usize) -> f64 {
+        match self {
+            Rand::Seq(rng) => rng.sample(StandardNormal),
+            Rand::Keyed(seed) => {
+                let (u, v) = (Self::key(*seed, purpose, lap, car, 0), Self::key(*seed, purpose, lap, car, 1));
+                (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+            }
+        }
+    }
+
+    fn index(&mut self, purpose: u64, lap: usize, car: usize, len: usize) -> usize {
+        match self {
+            Rand::Seq(rng) => rng.gen_range(0..len),
+            Rand::Keyed(seed) => ((Self::key(*seed, purpose, lap, car, 0) * len as f64) as usize).min(len - 1),
+        }
+    }
+}
+
 const AGE_EDGES: [f64; 7] = [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0];
 const PIT_FEATURES: usize = 27;
 const PIT_FIRST_LAP: usize = 2;
@@ -178,18 +239,18 @@ impl Strategy {
     /// Planned stops of one simulated race: the circuit's typical count rounded at
     /// random, shared by the field (rounding per car would split it far more often
     /// than real strategies do; cars leave the plan through `deviate`).
-    fn count(&self, rng: &mut Pcg64) -> usize {
+    fn count(&self, rng: &mut Rand) -> usize {
         let whole = self.stops_mean.floor();
-        (whole as usize + usize::from(rng.gen::<f64>() < self.stops_mean - whole)).max(1)
+        (whole as usize + usize::from(rng.uniform(P_COUNT, 0, 0) < self.stops_mean - whole)).max(1)
     }
 
     /// Stops of `car` in a race planned for `count` (no random number without `deviate`).
-    fn own(&self, car: usize, count: usize, rng: &mut Pcg64) -> usize {
+    fn own(&self, car: usize, count: usize, rng: &mut Rand) -> usize {
         if self.deviate.is_empty() {
             return count;
         }
         let chance = &self.deviate[3 * car..3 * car + 3];
-        let u = rng.gen::<f64>();
+        let u = rng.uniform(P_OWN, 0, car);
         if count == 1 {
             1 + usize::from(u < chance[0])
         } else if u < chance[1] {
@@ -202,12 +263,11 @@ impl Strategy {
     }
 
     /// Planned stop laps (1-based, ascending) of one car making `count` stops.
-    fn plan(&self, laps: usize, count: usize, rng: &mut Pcg64) -> Vec<usize> {
+    fn plan(&self, car: usize, laps: usize, count: usize, rng: &mut Rand) -> Vec<usize> {
         let last = laps.saturating_sub(1).max(2);
         let mut plan: Vec<usize> = (1..=count)
             .map(|j| {
-                let at = laps as f64 * j as f64 / (count + 1) as f64
-                    + self.stint_noise * rng.sample::<f64, _>(StandardNormal);
+                let at = laps as f64 * j as f64 / (count + 1) as f64 + self.stint_noise * rng.normal(P_PLAN, j, car);
                 (at.round().max(2.0) as usize).min(last)
             })
             .collect();
@@ -216,7 +276,7 @@ impl Strategy {
     }
 
     /// Each car's wear in one simulated race (no random number without team wear).
-    fn car_wear(&self, n: usize, rng: &mut Pcg64) -> Vec<f64> {
+    fn car_wear(&self, n: usize, rng: &mut Rand) -> Vec<f64> {
         if self.team.is_empty() {
             return vec![self.wear; n];
         }
@@ -224,7 +284,8 @@ impl Strategy {
             .team_mean
             .iter()
             .zip(&self.team_sd)
-            .map(|(&mean, &sd)| mean + sd * rng.sample::<f64, _>(StandardNormal))
+            .enumerate()
+            .map(|(t, (&mean, &sd))| mean + sd * rng.normal(P_TEAM, 0, t))
             .collect();
         self.team.iter().map(|&t| (self.wear + draws[t]).max(0.0)).collect()
     }
@@ -308,7 +369,7 @@ impl Strategy {
     /// each by its hazard, a car without a stop called in PIT_LAST_LAPS from the end.
     #[allow(clippy::too_many_arguments)]
     fn decide(&self, lap: usize, laps: usize, neutral: bool, loss: f64, time: &[f64], pace: &[f64], age: &[f64],
-              wear: &[f64], stops: &[usize], pitted: &[bool], rng: &mut Pcg64) -> Vec<bool> {
+              wear: &[f64], stops: &[usize], pitted: &[bool], rng: &mut Rand) -> Vec<bool> {
         let n = time.len();
         let mut out = vec![false; n];
         if lap < PIT_FIRST_LAP || lap + PIT_LAST_LAPS > laps {
@@ -321,16 +382,16 @@ impl Strategy {
                 continue;
             }
             let z = self.pit_coef[0] + x[car].iter().zip(&self.pit_coef[1..]).map(|(a, b)| a * b).sum::<f64>();
-            out[car] = rng.gen::<f64>() < 1.0 / (1.0 + (-z).exp());
+            out[car] = rng.uniform(P_DECIDE, lap, car) < 1.0 / (1.0 + (-z).exp());
         }
         out
     }
 
-    fn cost(&self, rng: &mut Pcg64) -> f64 {
+    fn cost(&self, lap: usize, car: usize, rng: &mut Rand) -> f64 {
         let extra = if self.residuals.is_empty() {
             0.0
         } else {
-            self.residuals[rng.gen_range(0..self.residuals.len())]
+            self.residuals[rng.index(P_COST, lap, car, self.residuals.len())]
         };
         (self.pit_loss + extra).max(0.0)
     }
@@ -368,10 +429,14 @@ fn close_up(time: &mut [f64], order: &mut Vec<usize>, gap: f64) {
 /// One draw: the race from the grid to the flag; writes finishing positions (1 =
 /// first) into `positions`.
 fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, positions: &mut [i64], stops: &mut [i64]) {
-    let (time, made) = race_times(race, seconds, grid, rng);
+    let (time, made) = race_times(race, seconds, grid, &mut Rand::Seq(rng), &Diag::default(), None);
     for (out, &k) in stops.iter_mut().zip(&made) {
         *out = k as i64;
     }
+    rank(&time, positions);
+}
+
+fn rank(time: &[f64], positions: &mut [i64]) {
     let mut order: Vec<usize> = (0..time.len()).collect();
     order.sort_by(|&a, &b| time[a].partial_cmp(&time[b]).unwrap());
     for (position, &car) in order.iter().enumerate() {
@@ -379,12 +444,53 @@ fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, pos
     }
 }
 
+/// Diagnostic variants of a simulated race (none for forecasts): `fixed`: each
+/// car's stop count for planned stops (instead of drawing it); `free`: no traffic
+/// (each car runs its own lap, nobody is held up or passes).
+#[derive(Default)]
+struct Diag<'a> {
+    fixed: Option<&'a [i64]>,
+    free: bool,
+}
+
+/// What happened in one draw, lap by lap (`lap * n + car`): race time at the lap's
+/// end, tyre age (laps on the set), the stop made at its end (0 none, 1 green, 2
+/// under a neutralisation, 3 called in to make the race's stop, 4 a new set under a
+/// red flag) and the time lost being held up (s, against the lap the car would
+/// have run alone). `run`: laps run (a red flag can end the race early).
+struct Trace {
+    n: usize,
+    time: Vec<f64>,
+    tyre: Vec<f64>,
+    event: Vec<i64>,
+    held: Vec<f64>,
+    run: usize,
+}
+
+impl Trace {
+    fn new(laps: usize, n: usize) -> Self {
+        Trace { n, time: vec![0.0; laps * n], tyre: vec![0.0; laps * n], event: vec![0; laps * n],
+                held: vec![0.0; laps * n], run: 0 }
+    }
+
+    fn record(&mut self, lap: usize, time: &[f64], tyre: &[f64], event: &[i64], held: &[f64]) {
+        let at = lap * self.n;
+        self.time[at..at + self.n].copy_from_slice(time);
+        self.tyre[at..at + self.n].copy_from_slice(tyre);
+        self.event[at..at + self.n].copy_from_slice(event);
+        self.held[at..at + self.n].copy_from_slice(held);
+        self.run = lap + 1;
+    }
+}
+
 /// Each car's race time of one draw (s against the start) and its pit stops.
-fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (Vec<f64>, Vec<usize>) {
+fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: &Diag,
+              mut trace: Option<&mut Trace>) -> (Vec<f64>, Vec<usize>) {
     let n = seconds.len();
     let mut time: Vec<f64> = grid
         .iter()
-        .map(|&slot| race.start_spacing * (slot - 1.0) + race.start_noise * rng.sample::<f64, _>(StandardNormal))
+        .enumerate()
+        .map(|(car, &slot)| race.start_spacing * (slot - 1.0) + race.start_noise * rng.normal(P_START, 0, car))
         .collect();
     let (mut noise, mut luck) = (vec![0.0; n], vec![0.0; n]);
     let (mut order, mut before, mut after, mut own) =
@@ -396,16 +502,22 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
     let mut pitted = vec![false; n];
     let mut boxed = vec![false; n];
     let mut tyre_laps = vec![0.0f64; n]; // laps run on the set, neutralised ones too (the hazard's clock)
+    let (mut event, mut held, mut intended) = (vec![0i64; n], vec![0.0f64; n], vec![0.0f64; n]);
     let plans: Vec<Vec<usize>> = if hazard {
         vec![vec![]; n]
     } else if pits {
-        let count = strategy.count(rng);
-        (0..n)
-            .map(|car| {
-                let own = strategy.own(car, count, rng);
-                strategy.plan(race.laps, own, rng)
-            })
-            .collect()
+        match diag.fixed {
+            Some(fixed) => (0..n).map(|car| strategy.plan(car, race.laps, fixed[car].max(0) as usize, rng)).collect(),
+            None => {
+                let count = strategy.count(rng);
+                (0..n)
+                    .map(|car| {
+                        let own = strategy.own(car, count, rng);
+                        strategy.plan(car, race.laps, own, rng)
+                    })
+                    .collect()
+            }
+        }
     } else {
         vec![]
     };
@@ -418,8 +530,10 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
     for lap in 0..race.laps {
         let lap1 = lap + 1;
         let mut started = false;
-        if neutral_left == 0 && race.neutral.hazard[lap] > 0.0 && rng.gen::<f64>() < race.neutral.hazard[lap] {
-            let pick = rng.gen::<f64>();
+        event.iter_mut().for_each(|e| *e = 0);
+        held.iter_mut().for_each(|h| *h = 0.0);
+        if neutral_left == 0 && race.neutral.hazard[lap] > 0.0 && rng.uniform(P_NEUTRAL, lap, 0) < race.neutral.hazard[lap] {
+            let pick = rng.uniform(P_KIND, lap, 0);
             let kind = if pick < race.neutral.kinds[0] {
                 SC
             } else if pick < race.neutral.kinds[0] + race.neutral.kinds[1] {
@@ -430,20 +544,28 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
             neutral_kind = kind;
             started = true;
             let lengths = &race.neutral.lengths[kind];
-            neutral_left = if lengths.is_empty() { 1 } else { lengths[rng.gen_range(0..lengths.len())].max(1) };
-            if kind == RED && rng.gen::<f64>() < race.neutral.red_end {
+            neutral_left = if lengths.is_empty() { 1 } else { lengths[rng.index(P_LENGTH, lap, 0, lengths.len())].max(1) };
+            if kind == RED && rng.uniform(P_RED, lap, 0) < race.neutral.red_end {
                 break; // the race is not restarted: classified as it stands
+            }
+            if kind == RED && pits {
+                // tyres may be changed under the red flag: a new set, no pit visit
+                tyre_laps.iter_mut().for_each(|a| *a = 0.0);
+                event.iter_mut().for_each(|e| *e = 4);
             }
             if hazard {
                 if kind == RED {
-                    // tyres may be changed under the red flag: a new set, no pit visit
                     age.iter_mut().for_each(|a| *a = 0.0);
-                    tyre_laps.iter_mut().for_each(|a| *a = 0.0);
                     stops.iter_mut().for_each(|k| *k += 1);
                 } else {
                     let on_lap: Vec<f64> = tyre_laps.iter().map(|a| a + 1.0).collect();
                     boxed = strategy.decide(lap1, race.laps, true, strategy.sc_ratio * strategy.pit_loss, &time, seconds,
                                             &on_lap, &wear, &stops, &pitted, rng);
+                    for car in 0..n {
+                        if boxed[car] && stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
+                            event[car] = 3;
+                        }
+                    }
                 }
             } else if pits {
                 for car in 0..n {
@@ -454,9 +576,11 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
                             next[car] += 1;
                         }
                     } else if due {
-                        time[car] += strategy.sc_ratio * strategy.cost(rng);
+                        time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
                         age[car] = 0.0;
+                        tyre_laps[car] = 0.0;
                         next[car] += 1;
+                        event[car] = 2;
                     }
                 }
             }
@@ -473,6 +597,11 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
                     let on_lap: Vec<f64> = tyre_laps.iter().map(|a| a + 1.0).collect();
                     boxed = strategy.decide(lap1, race.laps, true, strategy.sc_ratio * strategy.pit_loss, &time, seconds,
                                             &on_lap, &wear, &stops, &pitted, rng);
+                    for car in 0..n {
+                        if boxed[car] && stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
+                            event[car] = 3;
+                        }
+                    }
                 }
                 if neutral_kind == RED {
                     boxed = vec![false; n];
@@ -480,10 +609,13 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
                 // the stops called for this neutralised lap, at its end, at the neutralised loss
                 for car in 0..n {
                     if boxed[car] {
-                        time[car] += strategy.sc_ratio * strategy.cost(rng);
+                        time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
                         age[car] = 0.0;
                         tyre_laps[car] = 0.0;
                         stops[car] += 1;
+                        if event[car] == 0 {
+                            event[car] = 2;
+                        }
                     } else {
                         tyre_laps[car] += 1.0;
                     }
@@ -492,62 +624,92 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
                     close_up(&mut time, &mut order, race.neutral.sc_gap);
                 }
                 pitted = std::mem::replace(&mut boxed, vec![false; n]);
-            } else if pits && !started && neutral_kind != RED {
-                let mut stopped = false;
-                for car in 0..n {
-                    if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window {
-                        time[car] += strategy.sc_ratio * strategy.cost(rng);
-                        age[car] = 0.0;
-                        next[car] += 1;
-                        stopped = true;
+            } else {
+                if pits && !started && neutral_kind != RED {
+                    let mut stopped = false;
+                    for car in 0..n {
+                        if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 + strategy.window {
+                            time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
+                            age[car] = 0.0;
+                            tyre_laps[car] = 0.0;
+                            next[car] += 1;
+                            stopped = true;
+                            event[car] = 2;
+                        }
+                    }
+                    if stopped && neutral_kind == SC {
+                        close_up(&mut time, &mut order, race.neutral.sc_gap);
                     }
                 }
-                if stopped && neutral_kind == SC {
-                    close_up(&mut time, &mut order, race.neutral.sc_gap);
+                for car in 0..n {
+                    if event[car] != 2 {
+                        tyre_laps[car] += 1.0;
+                    }
                 }
             }
             neutral_left -= 1; // neutralised: nobody passes, pace does not act
+            if let Some(t) = trace.as_deref_mut() {
+                t.record(lap, &time, &tyre_laps, &event, &held);
+            }
             continue;
         }
         if hazard {
             let on_lap: Vec<f64> = tyre_laps.iter().map(|a| a + 1.0).collect();
             boxed = strategy.decide(lap1, race.laps, false, strategy.pit_loss, &time, seconds, &on_lap, &wear, &stops,
                                     &pitted, rng);
+            for car in 0..n {
+                if boxed[car] && stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
+                    event[car] = 3;
+                }
+            }
         }
-        for value in noise.iter_mut() {
-            *value = rng.sample(StandardNormal);
+        for (car, value) in noise.iter_mut().enumerate() {
+            *value = rng.normal(P_NOISE, lap, car);
         }
-        for value in luck.iter_mut() {
-            *value = rng.gen::<f64>();
+        for (k, value) in luck.iter_mut().enumerate() {
+            *value = rng.uniform(P_LUCK, lap, k);
         }
         if pits {
             for car in 0..n {
                 effective[car] = seconds[car] + wear[car] * age[car];
             }
         }
-        lap_of_draw(
-            &mut time,
-            &effective,
-            &noise,
-            &luck,
-            &race.coef,
-            race.term,
-            race.shift,
-            race.scale,
-            race.battle_gap,
-            race.min_follow,
-            &mut order,
-            &mut before,
-            &mut after,
-            &mut own,
-        );
+        for car in 0..n {
+            intended[car] = time[car] + effective[car] + race.scale * noise[car];
+        }
+        if diag.free {
+            time.copy_from_slice(&intended);
+        } else {
+            lap_of_draw(
+                &mut time,
+                &effective,
+                &noise,
+                &luck,
+                &race.coef,
+                race.term,
+                race.shift,
+                race.scale,
+                race.battle_gap,
+                race.min_follow,
+                &mut order,
+                &mut before,
+                &mut after,
+                &mut own,
+            );
+        }
+        for car in 0..n {
+            held[car] = time[car] - intended[car];
+        }
         if hazard {
             for car in 0..n {
                 if boxed[car] {
-                    time[car] += strategy.cost(rng);
+                    time[car] += strategy.cost(lap1, car, rng);
                     age[car] = 0.0;
                     tyre_laps[car] = 0.0;
                     stops[car] += 1;
+                    if event[car] == 0 {
+                        event[car] = 1;
+                    }
                 } else {
                     age[car] += 1.0;
                     tyre_laps[car] += 1.0;
@@ -557,13 +719,19 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64) -> (V
         } else if pits {
             for car in 0..n {
                 if next[car] < plans[car].len() && plans[car][next[car]] <= lap1 {
-                    time[car] += strategy.cost(rng); // in and out of the pits: the field goes by
+                    time[car] += strategy.cost(lap1, car, rng); // in and out of the pits: the field goes by
                     age[car] = 0.0;
+                    tyre_laps[car] = 0.0;
                     next[car] += 1;
+                    event[car] = 1;
                 } else {
                     age[car] += 1.0;
+                    tyre_laps[car] += 1.0;
                 }
             }
+        }
+        if let Some(t) = trace.as_deref_mut() {
+            t.record(lap, &time, &tyre_laps, &event, &held);
         }
     }
     (time, if hazard { stops } else { next })
@@ -610,6 +778,10 @@ fn simulate<'py>(
     passing: f64,
     lap_seconds: f64,
     with_stops: bool,
+    trace: bool,
+    keyed: bool,
+    free_traffic: bool,
+    fixed_counts: PyReadonlyArray2<i64>,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -676,6 +848,47 @@ fn simulate<'py>(
         },
     };
     let (seconds, grid) = (seconds.as_slice()?, grid.as_slice()?);
+    let fixed = fixed_counts.as_slice()?;
+    if !fixed.is_empty() && fixed.len() != draws * n {
+        return Err(PyValueError::new_err("fixed stop counts: one per draw and entrant"));
+    }
+    if trace || keyed || free_traffic || !fixed.is_empty() {
+        // diagnostics: optionally keyed random numbers (paired variants share scenarios),
+        // fixed per-car stop counts, no traffic; the lap-by-lap trace
+        let runs: Vec<(Vec<i64>, Vec<i64>, Trace)> = py.allow_threads(|| {
+            (0..draws)
+                .into_par_iter()
+                .map(|d| {
+                    let draw_seed = seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                    let mut generator = Pcg64::seed_from_u64(draw_seed);
+                    let mut rng = if keyed { Rand::Keyed(draw_seed) } else { Rand::Seq(&mut generator) };
+                    let cars = d * n..(d + 1) * n;
+                    let diag = Diag { fixed: if fixed.is_empty() { None } else { Some(&fixed[cars.clone()]) }, free: free_traffic };
+                    let mut record = Trace::new(laps, n);
+                    let (time, made) = race_times(&race, &seconds[cars.clone()], &grid[cars], &mut rng, &diag, Some(&mut record));
+                    let mut positions = vec![0i64; n];
+                    rank(&time, &mut positions);
+                    (positions, made.iter().map(|&k| k as i64).collect(), record)
+                })
+                .collect()
+        });
+        let flat = |f: &dyn Fn(&(Vec<i64>, Vec<i64>, Trace)) -> Vec<i64>| runs.iter().flat_map(f).collect::<Vec<i64>>();
+        let array2 = |v: Vec<i64>| numpy::ndarray::Array2::from_shape_vec((draws, n), v)
+            .map(|a| a.into_pyarray_bound(py).into_py(py)).map_err(|e| PyValueError::new_err(e.to_string()));
+        let array3f = |v: Vec<f64>| numpy::ndarray::Array3::from_shape_vec((draws, laps, n), v)
+            .map(|a| a.into_pyarray_bound(py).into_py(py)).map_err(|e| PyValueError::new_err(e.to_string()));
+        let array3i = |v: Vec<i64>| numpy::ndarray::Array3::from_shape_vec((draws, laps, n), v)
+            .map(|a| a.into_pyarray_bound(py).into_py(py)).map_err(|e| PyValueError::new_err(e.to_string()));
+        let out = pyo3::types::PyDict::new_bound(py);
+        out.set_item("positions", array2(flat(&|r| r.0.clone()))?)?;
+        out.set_item("stops", array2(flat(&|r| r.1.clone()))?)?;
+        out.set_item("time", array3f(runs.iter().flat_map(|r| r.2.time.clone()).collect())?)?;
+        out.set_item("tyre", array3f(runs.iter().flat_map(|r| r.2.tyre.clone()).collect())?)?;
+        out.set_item("event", array3i(runs.iter().flat_map(|r| r.2.event.clone()).collect())?)?;
+        out.set_item("held", array3f(runs.iter().flat_map(|r| r.2.held.clone()).collect())?)?;
+        out.set_item("run", runs.iter().map(|r| r.2.run as i64).collect::<Vec<i64>>())?;
+        return Ok(out.into_py(py));
+    }
     let mut positions = vec![0i64; draws * n];
     let mut stops = vec![0i64; draws * n];
     py.allow_threads(|| {
@@ -748,7 +961,8 @@ fn stop_counts<'py>(
     };
     let mut counts = vec![0i64; draws * entrants];
     for (d, row) in counts.chunks_mut(entrants.max(1)).enumerate() {
-        let mut rng = Pcg64::seed_from_u64(seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut generator = Pcg64::seed_from_u64(seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut rng = Rand::Seq(&mut generator);
         let count = strategy.count(&mut rng);
         for (car, out) in row.iter_mut().enumerate() {
             *out = strategy.own(car, count, &mut rng) as i64;
@@ -860,7 +1074,7 @@ mod tests {
                 lap_seconds: 90.0,
             },
         };
-        race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(7)).0[0]
+        race_times(&race, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(7)), &Diag::default(), None).0[0]
     }
 
     #[test]
@@ -877,11 +1091,11 @@ mod tests {
                                  residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
                                  pit_coef: hazard.clone(), passing: 0.0, lap_seconds: 90.0 },
         };
-        assert!((race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(3)).0[0] - 22.0).abs() < 1e-9);
+        assert!((race_times(&race, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(3)), &Diag::default(), None).0[0] - 22.0).abs() < 1e-9);
         let mut eager = race;
         eager.strategy.pit_coef[0] = 50.0; // pits at every lap's end from lap 2 to 3 laps from the end
         let stops = (PIT_FIRST_LAP..=20 - PIT_LAST_LAPS).count() as f64;
-        assert!((race_times(&eager, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(3)).0[0] - 22.0 * stops).abs() < 1e-9);
+        assert!((race_times(&eager, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(3)), &Diag::default(), None).0[0] - 22.0 * stops).abs() < 1e-9);
     }
 
     #[test]
@@ -903,14 +1117,14 @@ mod tests {
                                  residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
                                  pit_coef: hazard, passing: 0.0, lap_seconds: 90.0 },
         };
-        let (time, stops) = race_times(&race, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(3));
+        let (time, stops) = race_times(&race, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(3)), &Diag::default(), None);
         assert_eq!(stops[0], 3);
         assert!((time[0] - 66.0).abs() < 1e-9);
         // a safety car on laps 3-5 still ages the tyres: the first stop stays on lap 6
         let mut neutral = race;
         neutral.neutral.hazard[2] = 1.0;
         neutral.neutral.lengths = [vec![3], vec![1], vec![1]];
-        let (_, stops) = race_times(&neutral, &[0.0], &[1.0], &mut Pcg64::seed_from_u64(3));
+        let (_, stops) = race_times(&neutral, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(3)), &Diag::default(), None);
         assert_eq!(stops[0], 3);
     }
 
@@ -933,14 +1147,14 @@ mod tests {
             lap_seconds: 90.0,
         };
         let mut rng = Pcg64::seed_from_u64(1);
-        assert_eq!(strategy.car_wear(3, &mut rng), vec![0.05; 3]);
+        assert_eq!(strategy.car_wear(3, &mut Rand::Seq(&mut rng)), vec![0.05; 3]);
         strategy.team = vec![0, 1, 0];
         strategy.team_mean = vec![0.01, -0.02];
         strategy.team_sd = vec![0.0, 0.0];
-        let wear = strategy.car_wear(3, &mut rng);
+        let wear = strategy.car_wear(3, &mut Rand::Seq(&mut rng));
         assert!((wear[0] - 0.06).abs() < 1e-12 && (wear[1] - 0.03).abs() < 1e-12 && wear[0] == wear[2]);
         strategy.team_sd = vec![0.01, 0.01];
-        let drawn = strategy.car_wear(3, &mut rng);
+        let drawn = strategy.car_wear(3, &mut Rand::Seq(&mut rng));
         assert_eq!(drawn[0], drawn[2]);
     }
 

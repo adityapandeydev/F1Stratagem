@@ -185,7 +185,7 @@ def circuit_propensity(frame, base):
 
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
-             strategy=None, with_stops=False):
+             strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -194,7 +194,15 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     added to every pass's log-odds; `neutral`: `NeutralModel.race(...)` (None: no
     neutralisations); `strategy`: `StrategyModel.race(...)` (None: no stops or wear;
     with `deviate`, each car's own stop count by its pace rank). `with_stops`: also
-    each car's pit stops per draw (a second array)."""
+    each car's pit stops per draw (a second array).
+
+    Diagnostics (never used for forecasts): `trace` returns a dict of positions,
+    stops and lap-by-lap arrays (draws x laps x entrants: time, tyre age, stop event
+    0 none / 1 green / 2 neutralised / 3 called in for the race's stop / 4 new set
+    under a red flag, time lost held up) and laps run per draw; `keyed`: random
+    numbers keyed by draw, lap, car and purpose, so variants share their scenarios;
+    `free_traffic`: nobody is held up or passes; `fixed_counts`: each car's planned
+    stop count per draw (draws x entrants)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -221,7 +229,10 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                              float(strategy.get("passing", 0.0)), float(lap_seconds))
                                             if strategy else (0.0, 0.0, 1.0, 1.0, 0.0, 0, np.zeros(0), np.zeros(0),
                                                               np.zeros(0, dtype=np.int64), np.zeros(0), np.zeros(0),
-                                                              np.zeros(0), 0.0, float(lap_seconds))), bool(with_stops))
+                                                              np.zeros(0), 0.0, float(lap_seconds))), bool(with_stops),
+                                          bool(trace), bool(keyed), bool(free_traffic),
+                                          np.ascontiguousarray(np.zeros((0, 0)) if fixed_counts is None else fixed_counts,
+                                                               dtype=np.int64))
 
 
 def car_deviations(table, pace):
