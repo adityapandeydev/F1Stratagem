@@ -25,7 +25,7 @@ predictor = "predictor.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-predictor = ["circuit_layouts.csv"]
+predictor = ["circuit_layouts.csv", "tyre_compounds.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
