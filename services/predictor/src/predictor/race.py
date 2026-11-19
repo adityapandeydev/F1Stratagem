@@ -296,6 +296,7 @@ class SimulatedRace(RaceModel):
         self._team_devs, self._team_models, self._team = {}, {}, None
         self.pit_model = pit_model
         self.following = following
+        self._gaps, self._follow_tables, self._follow = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
@@ -358,6 +359,7 @@ class SimulatedRace(RaceModel):
         self._wear = self._wear_models.get(season) if self.weekend_wear else None
         self._team = self._team_models.get(season) if self.team_wear else None
         self._pit = self._pit_models.get(season) if self.pit_model else None
+        self._follow = self._follow_tables.get(season) if self.following else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -392,6 +394,16 @@ class SimulatedRace(RaceModel):
                 stops = {"residuals": stops["residuals"] if self.pit_lane else None,
                          "deviate": stops["deviate"] if self.car_strategies else None}
         return race_sim.StrategyModel().fit(races, stops)
+
+    def _fit_following(self, season):
+        """Quantiles of the gaps held-up cars kept in the dry races before `season`."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        gaps = []
+        for race in view.sessions[view.sessions.session_type == "R"].itertuples():
+            if race.session_id not in self._gaps:
+                self._gaps[race.session_id] = race_sim.following_gaps(view.laps(race.session_id))
+            gaps.append(self._gaps[race.session_id])
+        return race_sim.follow_quantiles(np.concatenate(gaps) if gaps else np.zeros(0))
 
     def _pass_rate(self, view, race):
         if race.session_id not in self._pass_rates:
@@ -554,6 +566,8 @@ class SimulatedRace(RaceModel):
             self._neutral_models[season] = self._fit_neutral(season)
         if self.weekend_lap and season not in self._ratios:
             self._ratios[season] = self._fit_ratio(season)
+        if self.following and season not in self._follow_tables:
+            self._follow_tables[season] = self._fit_following(season)
         if self.strategy and season not in self._strategies:
             self._strategies[season] = self._fit_strategy(season)
         self._activate(season)
@@ -638,7 +652,7 @@ class SimulatedRace(RaceModel):
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
                                  self._race_strategy(context.get("strategy"), setting),
-                                 follow=race_sim.FOLLOW_GAPS if self.following else None)
+                                 follow=self._follow)
 
     @staticmethod
     def _race_strategy(strategy, setting):

@@ -745,9 +745,9 @@ def test_race_labels_map_to_the_nominated_compound():
     # hard is the hardest of the three nominated, soft the softest, at every race
     assert (t.apply(lambda r: tyres.softness(r.hard) < tyres.softness(r.medium) < tyres.softness(r.soft), axis=1)).all()
     key = t[(t.season == 2023) & (t.event_name.str.startswith("Bahrain"))].event_key.iloc[0]
-    assert tyres.identity(key, "SOFT") == ("18in", "C3", 3) and tyres.identity(key, "hard") == ("18in", "C1", 1)
+    assert tyres.identity(key, "SOFT")[:3] == ("18in", "C3", 3) and tyres.identity(key, "hard")[:3] == ("18in", "C1", 1)
     monaco = t[(t.season == 2018) & (t.event_name.str.startswith("Monaco"))].event_key.iloc[0]
-    assert tyres.identity(monaco, "SOFT") == ("2018", "hypersoft", 6)
+    assert tyres.identity(monaco, "SOFT")[:3] == ("2018", "hypersoft", 6)
     assert tyres.identity(key, "INTERMEDIATE") is None
 
 
@@ -759,8 +759,39 @@ def test_a_held_up_car_keeps_a_gap_of_its_own():
     model.coef = np.array([-8.0, -1.9, -0.3, -1.6, 0.2, 0.7])      # passing all but impossible: trains form
     run = lambda **k: race_sim.simulate(pace, grid, model, 0.0, 30, 90.0, 0.3, np.random.default_rng(2), neutral=neutral,
                                         strategy=strategy, trace=True, keyed=True, **k)
-    glued, spaced = run(), run(follow=race_sim.FOLLOW_GAPS)
+    table = np.linspace(0.35, 3.0, 21)
+    glued, spaced = run(), run(follow=table)
     gaps = lambda t: np.diff(np.sort(t[:, 10:], axis=2), axis=2).ravel()
     at_minimum = lambda g: np.mean(np.abs(g - race_sim.MIN_FOLLOW) < 1e-6)
     assert at_minimum(gaps(glued["time"])) > 0.2 and at_minimum(gaps(spaced["time"])) < at_minimum(gaps(glued["time"])) / 3
     assert np.array_equal(run()["time"], glued["time"])
+
+
+def test_the_2022_c1_and_the_2023_c0_are_one_tyre():
+    """Pirelli renamed the 2022 C1 the C0 for 2023 and introduced a new C1."""
+    from predictor import tyres
+    t = tyres.compounds()
+    first = lambda season: t[t.season == season].sort_values("round").event_key.iloc[0]
+    assert tyres.identity(first(2022), "HARD")[1] == "C1" and tyres.identity(first(2023), "HARD")[1] == "C1"
+    assert tyres.identity(first(2022), "HARD")[3] != tyres.identity(first(2023), "HARD")[3]
+    assert tyres.spec(2022, "C1") == tyres.spec(2023, "C0") != tyres.spec(2024, "C1") == tyres.spec(2023, "C1")
+    assert tyres.spec(2022, "C3") == tyres.spec(2024, "C3") != tyres.spec(2021, "C3")
+
+
+def test_following_gaps_come_from_runs_behind_the_same_car():
+    """Car 2 follows car 1 within 1 s for 8 laps, then drops back; car 3 is never
+    within a second. Only car 2's run counts."""
+    from predictor import race_sim
+    rows = []
+    for lap in range(1, 13):
+        t1 = 90.0 * lap
+        gap2 = 0.8 if lap <= 8 else 0.8 + 0.5 * (lap - 8)
+        for d, t, pos in (("1", t1, 1), ("2", t1 + gap2, 2), ("3", t1 + gap2 + 6.0, 3)):
+            rows.append({"LapNumber": lap, "DriverNumber": d, "Time": pd.Timedelta(seconds=t), "Position": float(pos),
+                         "LapTime": pd.Timedelta(seconds=90.0), "PitInTime": pd.NaT, "PitOutTime": pd.NaT, "TrackStatus": "1",
+                         "IsAccurate": True, "Deleted": False, "Compound": "MEDIUM", "TyreLife": float(lap)})
+    gaps = race_sim.following_gaps(pd.DataFrame(rows))
+    assert len(gaps) == 11 and np.allclose(gaps[:7], 0.8)            # car 2 from lap 2 (lap 1 is not clean)
+    assert race_sim.follow_quantiles(gaps) is None                    # too few laps to learn from
+    q = race_sim.follow_quantiles(np.r_[np.full(800, 0.2), np.full(800, 2.0)])
+    assert q[0] == race_sim.MIN_FOLLOW and q[-1] == 2.0 and len(q) == 21

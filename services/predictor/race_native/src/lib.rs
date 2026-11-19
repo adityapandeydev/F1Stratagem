@@ -89,6 +89,7 @@ fn lap_of_draw(
     follow: &[f64],
     follow_u: &[f64],
     held_gap: &mut [f64],
+    held_ahead: &mut [usize],
 ) {
     let n = time.len();
     order.clear();
@@ -120,16 +121,22 @@ fn lap_of_draw(
             (first, t_ahead.max(first + min_follow))
         } else if follow.is_empty() {
             (t_ahead, t_behind.max(t_ahead + min_follow))
-        } else if t_behind < t_ahead + min_follow {
-            // held up: the follower settles at a gap of its own (drawn when the hold
-            // begins, kept while it lasts), not glued to the car ahead
-            if held_gap[behind_car].is_nan() {
-                held_gap[behind_car] = quantile(follow, follow_u[behind_car]).max(min_follow);
-            }
-            (t_ahead, t_ahead + held_gap[behind_car])
         } else {
-            held_gap[behind_car] = f64::NAN;
-            (t_ahead, t_behind)
+            // held up: the follower settles at a gap of its own, drawn when the hold
+            // begins and kept while it would otherwise run closer to the same car;
+            // released when it falls back on its own, passes, or another car is ahead
+            let ahead_car = order[k - 1];
+            let holding = !held_gap[behind_car].is_nan() && held_ahead[behind_car] == ahead_car;
+            if holding && t_behind < t_ahead + held_gap[behind_car] {
+                (t_ahead, t_ahead + held_gap[behind_car])
+            } else if !holding && t_behind < t_ahead + min_follow {
+                held_gap[behind_car] = quantile(follow, follow_u[behind_car]).max(min_follow);
+                held_ahead[behind_car] = ahead_car;
+                (t_ahead, t_ahead + held_gap[behind_car])
+            } else {
+                held_gap[behind_car] = f64::NAN;
+                (t_ahead, t_behind)
+            }
         };
         after[k - 1] = first;
         after[k] = second;
@@ -559,6 +566,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
     let mut neutral_left = 0usize;
     let mut neutral_kind = SC;
     let mut held_gap = vec![f64::NAN; n];
+    let mut held_ahead = vec![usize::MAX; n];
     let mut follow_u = vec![0.0f64; if race.follow.is_empty() { 0 } else { n }];
     for lap in 0..race.laps {
         let lap1 = lap + 1;
@@ -744,6 +752,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 &race.follow,
                 &follow_u,
                 &mut held_gap,
+                &mut held_ahead,
             );
         }
         for car in 0..n {
@@ -1233,6 +1242,28 @@ mod tests {
         // charged before the field closes up: 50 - 17.6 s ahead, the leader keeps the lead
         assert_eq!(safety_car_stop(false), vec![1, 2]);
         assert_eq!(safety_car_stop(true), vec![1, 2]);
+    }
+
+    #[test]
+    fn a_held_up_car_keeps_its_gap_lap_after_lap() {
+        // a faster follower that cannot pass, no lap noise, a 2 s following gap
+        let race = Race {
+            coef: coefficients(&[-50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
+            term: 0.0, shift: 0.0, laps: 20, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
+            min_follow: 0.35,
+            follow: vec![2.0, 2.0],
+            neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
+                               sc_gap: 0.52, red_end: 0.0 },
+            strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
+                                 residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                 pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 },
+        };
+        let mut trace = Trace::new(20, 2);
+        race_times(&race, &[0.0, -0.5], &[1.0, 2.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(1)), &Diag::default(),
+                   Some(&mut trace));
+        let gaps: Vec<f64> = (0..20).map(|lap| trace.time[lap * 2 + 1] - trace.time[lap * 2]).collect();
+        // it starts 0.25 s behind, is held from lap 1 at 2 s and stays there
+        assert!(gaps.iter().all(|g| (g - 2.0).abs() < 1e-9), "{gaps:?}");
     }
 
     #[test]

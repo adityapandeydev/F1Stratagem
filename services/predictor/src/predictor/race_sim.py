@@ -55,12 +55,13 @@ TYRE_ERAS = (2022,)          # first seasons of new tyre eras (18-inch wheels fr
 MIN_ERA_RACES = 10           # fewer dry races in the era: tyre history from every era
 MIN_WEAR_PAIRS = 15          # races with practice and race wear needed to calibrate weekend wear
 CIRCUIT_PRIOR = 2.0
-# Gap a held-up car keeps behind the car ahead (s, 5% quantiles; the first is the
-# 0.35 s minimum). Measured 2018-2024 on 16,737 laps of runs of 5+ laps behind the
-# same car that began within 1 s: median 0.98 s, a quarter beyond 1.75 s, a tenth
-# beyond 3.2 s (followers drop back to save tyres and temperatures).
-FOLLOW_GAPS = (0.35, 0.44, 0.53, 0.6, 0.65, 0.71, 0.76, 0.81, 0.86, 0.91, 0.98, 1.08, 1.21, 1.36, 1.54, 1.75,
-               2.04, 2.5, 3.22, 4.88, 8.0)     # races: weight of the typical value in a circuit's pit loss, stops and wear
+# The gap a held-up car keeps behind the car ahead is learned per season from the
+# races before it (`following_gaps`, `follow_quantiles`): laps of runs of
+# FOLLOW_RUN+ laps behind the same car that began within FOLLOW_START s. Over
+# 2018-2024 (16,737 laps) the median was 0.98 s, a quarter beyond 1.75 s, a tenth
+# beyond 3.2 s: followers drop back to save tyres and temperatures.
+FOLLOW_RUN, FOLLOW_START, FOLLOW_CAP = 5, 1.0, 8.0
+MIN_FOLLOW_LAPS = 1000      # held laps needed to learn the distribution; fewer: held at MIN_FOLLOW     # races: weight of the typical value in a circuit's pit loss, stops and wear
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
 
@@ -709,6 +710,43 @@ class PitModel:
 
     def probability(self, features):
         return 1 / (1 + np.exp(-(self.coef[0] + features @ self.coef[1:])))
+
+
+def following_gaps(laps):
+    """Gaps (s) to the car ahead on the clean green laps of a dry race's runs of
+    FOLLOW_RUN+ consecutive laps behind the same car that began within FOLLOW_START
+    s; an empty array for a wet race or one without positions."""
+    if laps.empty or wet_session(laps) or "Position" not in laps:
+        return np.zeros(0)
+    f = clean_race_laps(laps).dropna(subset=["Time", "Position"])
+    if f.empty:
+        return np.zeros(0)
+    f = f.assign(end=f.Time.dt.total_seconds(), position=f.Position.astype(int))
+    crossing = {(lap, pos): (d, t) for lap, pos, d, t in zip(f.LapNumber, f.position, f.driver_number, f.end)}
+    rows = []
+    for lap, pos, d, t in zip(f.LapNumber, f.position, f.driver_number, f.end):
+        ahead = crossing.get((lap, pos - 1))
+        if ahead is not None:
+            rows.append((d, int(lap), ahead[0], t - ahead[1]))
+    if not rows:
+        return np.zeros(0)
+    g = pd.DataFrame(rows, columns=["driver", "lap", "ahead", "gap"]).sort_values(["driver", "lap"])
+    new = (g.ahead != g.groupby("driver").ahead.shift()) | (g.groupby("driver").lap.diff() != 1)
+    g["run"] = new.cumsum()
+    runs = g.groupby("run").agg(n=("lap", "size"), first=("gap", "first"))
+    keep = runs[(runs.n >= FOLLOW_RUN) & (runs["first"] < FOLLOW_START)].index
+    gaps = g[g.run.isin(keep)].gap.to_numpy(dtype=float)
+    return gaps[(gaps > 0) & np.isfinite(gaps)]
+
+
+def follow_quantiles(gaps):
+    """5% quantiles of following gaps, the lowest raised to MIN_FOLLOW and the
+    highest capped at FOLLOW_CAP; None with fewer than MIN_FOLLOW_LAPS gaps."""
+    gaps = np.asarray(gaps, dtype=float)
+    if len(gaps) < MIN_FOLLOW_LAPS:
+        return None
+    q = np.quantile(np.minimum(gaps, FOLLOW_CAP), np.linspace(0, 1, 21))
+    return np.maximum(q, MIN_FOLLOW)
 
 
 def log_pass_rate(laps):
