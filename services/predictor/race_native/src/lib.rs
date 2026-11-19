@@ -235,6 +235,12 @@ const P_NOISE: u64 = 12;
 const P_LUCK: u64 = 13;
 const P_FOLLOW: u64 = 14;
 const P_ATTACK: u64 = 15;
+const P_ROLE: u64 = 16;
+
+/// Grid bands of the starting tyre table: slots 1-3, 4-10, 11-15, 16 on (and the pit lane).
+fn role_band(slot: f64) -> usize {
+    if slot >= 1.0 && slot <= 3.0 { 0 } else if slot >= 1.0 && slot <= 10.0 { 1 } else if slot >= 1.0 && slot <= 15.0 { 2 } else { 3 }
+}
 
 fn splitmix(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -317,13 +323,17 @@ impl Strategy {
     /// Planned stop laps (1-based, ascending) of one car making `count` stops: at the
     /// learned share of the race of each stop (`windows`, see `Race::windows`), else at
     /// evenly spread stints, with the stint noise.
-    fn plan(&self, car: usize, laps: usize, count: usize, windows: &[f64], rng: &mut Rand) -> Vec<usize> {
+    fn plan(&self, car: usize, laps: usize, count: usize, windows: &[f64], shift: Option<&[f64]>, role: usize,
+            rng: &mut Rand) -> Vec<usize> {
         let last = laps.saturating_sub(1).max(2);
         let offset = count * count.saturating_sub(1) / 2; // counts 1, 2, 3: offsets 0, 1, 3
         let learned = count >= 1 && offset + count <= windows.len();
         let mut plan: Vec<usize> = (1..=count)
             .map(|j| {
-                let share = if learned { windows[offset + j - 1] } else { j as f64 / (count + 1) as f64 };
+                let mut share = if learned { windows[offset + j - 1] } else { j as f64 / (count + 1) as f64 };
+                if let (true, Some(s)) = (learned, shift) {
+                    share += s[3 * (offset + j - 1) + role];
+                }
                 let at = laps as f64 * share + self.stint_noise * rng.normal(P_PLAN, j, car);
                 (at.round().max(2.0) as usize).min(last)
             })
@@ -481,6 +491,12 @@ struct Race {
     /// 1, 2, 3 stops is planned, flat ([1-stop], [2-stop: 1st, 2nd], [3-stop: ...]);
     /// empty (or a count beyond it): evenly spread stints
     windows: Vec<f64>,
+    /// starting tyre roles (optional): per grid band (`role_band`) the chances of
+    /// starting on the soft, medium and hard role (4 x 3, flat), and per learned window
+    /// (the layout of `windows`) each role's shift of that stop (share of the race; 3
+    /// per window, flat). Empty: no roles, every car on the plain windows.
+    role_chances: Vec<f64>,
+    role_shift: Vec<f64>,
     neutral: Neutral,
     strategy: Strategy,
 }
@@ -581,14 +597,23 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
         diag.laps_of.unwrap().to_vec()
     } else if pits {
         match diag.fixed {
-            Some(fixed) => (0..n).map(|car| strategy.plan(car, race.laps, fixed[car].max(0) as usize, &race.windows, rng))
+            Some(fixed) => (0..n)
+                .map(|car| strategy.plan(car, race.laps, fixed[car].max(0) as usize, &race.windows, None, 0, rng))
                 .collect(),
             None => {
                 let count = strategy.count(rng);
                 (0..n)
                     .map(|car| {
                         let own = strategy.own(car, count, rng);
-                        strategy.plan(car, race.laps, own, &race.windows, rng)
+                        let (shift, role) = if race.role_chances.len() == 12 && race.role_shift.len() == 3 * race.windows.len() {
+                            // the car's starting tyre role, drawn from its grid band's chances
+                            let chance = &race.role_chances[3 * role_band(grid[car])..3 * role_band(grid[car]) + 3];
+                            let u = rng.uniform(P_ROLE, 0, car);
+                            (Some(race.role_shift.as_slice()), if u < chance[0] { 0 } else if u < chance[0] + chance[1] { 1 } else { 2 })
+                        } else {
+                            (None, 0)
+                        };
+                        strategy.plan(car, race.laps, own, &race.windows, shift, role, rng)
                     })
                     .collect()
             }
@@ -909,6 +934,8 @@ fn simulate<'py>(
     follow_penalty: PyReadonlyArray1<f64>,
     fresh_peak: PyReadonlyArray1<f64>,
     windows: PyReadonlyArray1<f64>,
+    role_chances: PyReadonlyArray1<f64>,
+    role_shift: PyReadonlyArray1<f64>,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -972,6 +999,8 @@ fn simulate<'py>(
         },
         fresh_peak: fresh_peak.as_slice()?.to_vec(),
         windows: windows.as_slice()?.to_vec(),
+        role_chances: role_chances.as_slice()?.to_vec(),
+        role_shift: role_shift.as_slice()?.to_vec(),
         neutral,
         strategy: Strategy {
             wear,
@@ -1192,7 +1221,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
             term: 0.0, shift: 0.0, laps, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak, windows: vec![],
+            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak, windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard: vec![0.0; laps], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1212,7 +1241,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
             term: 0.0, shift: 0.0, laps, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak, windows: vec![],
+            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak, windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard, kinds: [0.0, 1.0, 0.0], lengths: [vec![1], vec![2], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1249,11 +1278,15 @@ mod tests {
                                   pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 };
         let mut g = Pcg64::seed_from_u64(1);
         let windows = [0.42, 0.26, 0.63];
-        assert_eq!(strategy.plan(0, 50, 1, &windows, &mut Rand::Seq(&mut g)), vec![21]);
-        assert_eq!(strategy.plan(0, 50, 2, &windows, &mut Rand::Seq(&mut g)), vec![13, 32]);
+        assert_eq!(strategy.plan(0, 50, 1, &windows, None, 0, &mut Rand::Seq(&mut g)), vec![21]);
+        assert_eq!(strategy.plan(0, 50, 2, &windows, None, 0, &mut Rand::Seq(&mut g)), vec![13, 32]);
         // three stops: not learned here, evenly spread
-        assert_eq!(strategy.plan(0, 50, 3, &windows, &mut Rand::Seq(&mut g)), vec![13, 25, 38]);
-        assert_eq!(strategy.plan(0, 50, 1, &[], &mut Rand::Seq(&mut g)), vec![25]);
+        assert_eq!(strategy.plan(0, 50, 3, &windows, None, 0, &mut Rand::Seq(&mut g)), vec![13, 25, 38]);
+        assert_eq!(strategy.plan(0, 50, 1, &[], None, 0, &mut Rand::Seq(&mut g)), vec![25]);
+        // starting tyre roles: the hard role's shift moves a one-stop car's stop from 21 to 29
+        let shift = [-0.03, 0.0, 0.16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(strategy.plan(0, 50, 1, &windows, Some(&shift), 2, &mut Rand::Seq(&mut g)), vec![29]);
+        assert_eq!(strategy.plan(0, 50, 1, &windows, Some(&shift), 0, &mut Rand::Seq(&mut g)), vec![20]);
     }
 
     #[test]
@@ -1280,7 +1313,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral {
                 hazard,
                 kinds: [1.0, 0.0, 0.0],
@@ -1318,7 +1351,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1347,7 +1380,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard: vec![0.0; 22], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1382,7 +1415,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard: neutral_hazard, kinds: [1.0, 0.0, 0.0], lengths: [vec![3], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.8, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1416,7 +1449,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![2.0, 2.0],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1437,7 +1470,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
             term: 0.0, shift: 0.0, laps: 10, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
+            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![], role_chances: vec![], role_shift: vec![],
             neutral: Neutral { hazard: vec![0.0; 10], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,

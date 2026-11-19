@@ -193,7 +193,8 @@ def circuit_propensity(frame, base):
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
              strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
-             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None, fresh_peak=None, windows=None):
+             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None, fresh_peak=None, windows=None,
+             roles=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -214,7 +215,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     laps (entrants x k, 1-based, padded with 0). `follow`: the quantiles of the gap a
     held-up car keeps behind the car ahead (None: held at MIN_FOLLOW);
     `follow_release`: the per-lap chance that a held car leaves its gap to attack;
-    `windows`: learned share of the race of each planned stop (`pooled_windows`; None:
+    `roles`: (chances, shifts) of starting tyre roles (`pooled_roles`; with `windows`
+    only; None: none); `windows`: learned share of the race of each planned stop (`pooled_windows`; None:
     evenly spread stints); `fresh_peak`: % of a lap faster on the 1st, 2nd, ... green lap of a set fitted at
     a stop (None: none); `follow_penalty`: lap-time penalties (% of a lap) of a lap begun within 1, 2, 3 s
     of the car ahead (None: none)."""
@@ -256,7 +258,9 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                                      np.asarray(follow_penalty, dtype=float) * lap_seconds / 100, dtype=float),
                                           np.asarray(() if fresh_peak is None else
                                                      np.asarray(fresh_peak, dtype=float) * lap_seconds / 100, dtype=float),
-                                          np.asarray(() if windows is None else windows, dtype=float))
+                                          np.asarray(() if windows is None else windows, dtype=float),
+                                          np.asarray(() if roles is None or windows is None else roles[0], dtype=float).ravel(),
+                                          np.asarray(() if roles is None or windows is None else roles[1], dtype=float).ravel())
 
 
 def car_deviations(table, pace):
@@ -918,6 +922,77 @@ def pooled_windows(races):
             break
         out.extend(np.mean(np.array(cars, dtype=float), axis=0).tolist())
     return np.array(out) if out else None
+
+
+ROLES = ("SOFT", "MEDIUM", "HARD")      # starting tyre roles (FastF1 labels from 2019)
+ROLE_BANDS = (3, 10, 15)                # grid slots: 1-3, 4-10, 11-15, 16 on
+MIN_ROLE_RACES = 20                     # same-tyre-era races needed for roles; fewer: none
+MIN_ROLE_CARS = 15                      # cars of a role in a window needed for its shift; fewer: 0
+
+
+def start_roles(laps, grid):
+    """Each car of a dry race with its grid slot (`grid`: driver number -> slot),
+    starting tyre role, and, for finishers whose stops were all under green flags
+    and number 1 to MAX_WINDOW_STOPS, each stop's share of the race against the mean
+    of the race's cars with that count: DataFrame band, role, count, shifts (list or
+    None); None for a wet race or one without laps. Measured 2019-2024: within a race
+    and stop count, a car starting on the hard role stops 0.16 of the race later, on
+    the soft role 0.035 earlier."""
+    if laps.empty or "PitInTime" not in laps or wet_session(laps):
+        return None
+    total = int(laps.LapNumber.max())
+    periods = neutral_periods(laps) or []
+    neutral = {lap for start, _, length in periods for lap in range(start, start + length)}
+    rows = []
+    for d, g in laps.groupby(laps.DriverNumber.astype(str)):
+        g = g.sort_values("LapNumber")
+        role = str(g.Compound.iloc[0]).upper()
+        slot = grid.get(d)
+        if role not in ROLES or slot is None or not np.isfinite(slot):
+            continue
+        stops = sorted(int(n) for n in g[g.PitInTime.notna() & (g.LapNumber < total)].LapNumber)
+        planned = (g.LapNumber.max() >= total - 1 and 1 <= len(stops) <= MAX_WINDOW_STOPS
+                   and not any(s in neutral or s + 1 in neutral for s in stops))
+        band = int(np.searchsorted(ROLE_BANDS, slot, side="left")) if slot >= 1 else len(ROLE_BANDS)
+        rows.append({"band": band, "role": ROLES.index(role), "count": len(stops) if planned else 0,
+                     "shares": [s / total for s in stops] if planned else None})
+    if not rows:
+        return None
+    f = pd.DataFrame(rows)
+    shifts = []
+    for r in f.itertuples():
+        if r.shares is None:
+            shifts.append(None)
+            continue
+        same = np.array([s for s in f[f["count"] == r.count].shares], dtype=float)
+        shifts.append((np.asarray(r.shares) - same.mean(axis=0)).tolist())
+    return f.assign(shifts=shifts)[["band", "role", "count", "shifts"]]
+
+
+def pooled_roles(races, windows):
+    """(chances 4 x 3, shifts per window x 3) for `simulate` from the races'
+    `start_roles` and the learned `windows`: each grid band's role shares (Laplace
+    smoothed), and each role's mean shift of each stop of a count (0 with fewer than
+    MIN_ROLE_CARS cars); None with fewer than MIN_ROLE_RACES races or no windows."""
+    races = [r for r in races if r is not None]
+    if windows is None or len(races) < MIN_ROLE_RACES:
+        return None
+    f = pd.concat(races, ignore_index=True)
+    chances = np.ones((len(ROLE_BANDS) + 1, len(ROLES)))
+    for band, role in zip(f.band, f.role):
+        chances[band, role] += 1
+    chances /= chances.sum(axis=1, keepdims=True)
+    shifts, offset = [], 0
+    for count in range(1, MAX_WINDOW_STOPS + 1):
+        if offset + count > len(windows):
+            break
+        cars = f[f["count"] == count]
+        for j in range(count):
+            for role in range(len(ROLES)):
+                values = [s[j] for s in cars[cars.role == role].shifts]
+                shifts.append(float(np.mean(values)) if len(values) >= MIN_ROLE_CARS else 0.0)
+        offset += count
+    return chances, np.array(shifts)
 
 
 FRESH_LAPS = 3          # green laps of a new set with their own fresh-tyre peak

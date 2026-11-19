@@ -284,7 +284,8 @@ class SimulatedRace(RaceModel):
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
                  car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False,
-                 following=False, follow_penalty=False, lap_effect_wear=False, fresh_peak=False, windows=False):
+                 following=False, follow_penalty=False, lap_effect_wear=False, fresh_peak=False, windows=False,
+                 start_roles=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -304,6 +305,8 @@ class SimulatedRace(RaceModel):
         self._peaks, self._peak_tables, self._peak = {}, {}, None
         self.windows = windows
         self._windows, self._window_tables, self._window = {}, {}, None
+        self.start_roles = start_roles
+        self._roles, self._role_tables, self._role = {}, {}, None
         self._penalties, self._penalty_tables, self._penalty = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
@@ -372,6 +375,7 @@ class SimulatedRace(RaceModel):
         self._penalty = self._penalty_tables.get(season) if self.follow_penalty else None
         self._peak = self._peak_tables.get(season) if self.fresh_peak else None
         self._window = self._window_tables.get(season) if self.windows else None
+        self._role = self._role_tables.get(season) if self.start_roles else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -447,6 +451,20 @@ class SimulatedRace(RaceModel):
             if race.session_id not in self._windows:
                 self._windows[race.session_id] = race_sim.stop_windows(view.laps(race.session_id))
         return race_sim.pooled_windows([self._windows[r.session_id] for r in races.itertuples()])
+
+    def _fit_roles(self, season):
+        """Starting tyre roles from the dry races before `season` of its tyre era."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        races = view.sessions[(view.sessions.session_type == "R")
+                              & (view.sessions.season.astype(int).map(race_sim.tyre_era) == race_sim.tyre_era(season))]
+        for race in races.itertuples():
+            if race.session_id not in self._roles:
+                results = view.results(race.session_id)
+                grid = ({} if "GridPosition" not in results else
+                        dict(zip(results.DriverNumber.astype(str), pd.to_numeric(results.GridPosition, errors="coerce"))))
+                self._roles[race.session_id] = race_sim.start_roles(view.laps(race.session_id), grid)
+        return race_sim.pooled_roles([self._roles[r.session_id] for r in races.itertuples()],
+                                     self._window_tables.get(season))
 
     def _fit_peak(self, season):
         """The fresh-tyre peak from the dry races before `season` of its tyre era."""
@@ -627,6 +645,8 @@ class SimulatedRace(RaceModel):
             self._peak_tables[season] = self._fit_peak(season)
         if self.windows and season not in self._window_tables:
             self._window_tables[season] = self._fit_windows(season)
+        if self.start_roles and season not in self._role_tables:
+            self._role_tables[season] = self._fit_roles(season)
         if self.strategy and season not in self._strategies:
             self._strategies[season] = self._fit_strategy(season)
         self._activate(season)
@@ -712,7 +732,7 @@ class SimulatedRace(RaceModel):
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
                                  self._race_strategy(context.get("strategy"), setting),
                                  follow=self._follow, follow_release=self._release, follow_penalty=self._penalty,
-                                 fresh_peak=self._peak, windows=self._window)
+                                 fresh_peak=self._peak, windows=self._window, roles=self._role)
 
     @staticmethod
     def _race_strategy(strategy, setting):

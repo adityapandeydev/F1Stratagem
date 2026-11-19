@@ -965,3 +965,19 @@ def test_stop_windows_are_learned_from_green_flag_stops_of_finishers():
     pooled = race_sim.pooled_windows([windows] * 4)            # 32 one-stop cars, no two-stop ones
     assert np.allclose(pooled, [np.mean(windows[1])])
     assert race_sim.pooled_windows([windows] * 3) is None       # 24 cars: too few
+
+
+def test_start_roles_and_their_window_shifts_are_learned():
+    from predictor import race_sim
+    laps = _synthetic_race([10, 11, 12, 14, 16, 18, 19, 26], laps=40)
+    laps.loc[laps.DriverNumber == "8", "Compound"] = "HARD"         # car 8 starts on the hard role, stops late
+    laps.loc[laps.DriverNumber != "8", "Compound"] = "MEDIUM"
+    grid = {str(i): float(i) if i < 8 else 18.0 for i in range(1, 9)}
+    roles = race_sim.start_roles(laps, grid)
+    assert list(roles.role) == [1] * 7 + [2] and list(roles.band) == [0, 0, 0, 1, 1, 1, 1, 3]
+    mean = np.mean([10, 11, 12, 14, 16, 18, 19, 26]) / 40
+    assert np.isclose(roles.shifts.iloc[7][0], 26 / 40 - mean)
+    chances, shifts = race_sim.pooled_roles([roles] * race_sim.MIN_ROLE_RACES, np.array([0.4]))
+    assert np.allclose(chances.sum(axis=1), 1) and chances[3].argmax() == 2 and chances[0].argmax() == 1
+    assert np.isclose(shifts[2], 26 / 40 - mean) and shifts[0] == 0.0       # no soft starters: no shift
+    assert race_sim.pooled_roles([roles] * (race_sim.MIN_ROLE_RACES - 1), np.array([0.4])) is None
