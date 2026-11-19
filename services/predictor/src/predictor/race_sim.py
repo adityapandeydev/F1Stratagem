@@ -371,37 +371,28 @@ TEAM_DECAYS = (1.0, 0.8, 0.6)   # recency weights per race back tried for team w
 MIN_TEAM_RACES = 20          # earlier races needed to fit the team wear model
 
 
-def team_wear_deviations(laps, lineage_of):
-    """Each team's tyre wear in a dry race against the field (% of a lap per lap of
-    age) with its standard error: DataFrame lineage, dev, se, laps; empty without.
+def traffic_laps(laps):
+    """(driver number, lap) of the laps run in traffic, from every car's line
+    crossings in session-time order whatever its lap: crossing within TRAFFIC_GAP
+    behind any car (a car lapping a backmarker is held up like one following a car
+    on its own lap), or within TRAFFIC_GAP ahead of a car on a later lap (being
+    lapped, under blue flags)."""
+    ends = laps.dropna(subset=["Time"]).assign(end=lambda f: f.Time.dt.total_seconds()).sort_values("end")
+    end, lap = ends.end.to_numpy(), ends.LapNumber.to_numpy()
+    behind = np.r_[np.inf, np.diff(end)] < TRAFFIC_GAP
+    lapped = np.r_[(np.diff(end) < TRAFFIC_GAP) & (lap[1:] > lap[:-1]), False]
+    flag = behind | lapped
+    return set(zip(ends.DriverNumber.to_numpy()[flag], ends.LapNumber.to_numpy()[flag]))
 
-    100 log lap time = lap effect + stint effect + wear(compound) x age + team
-    deviation x age + noise, on clean laps out of traffic. The lap effect takes fuel
-    burn and track evolution (shared by the field); the stint effect each driver's
-    stint pace. The field's own wear is not identified this way (age is lap minus
-    the stint's start), but a team's departure from it is. Deviations are centred
-    on the precision-weighted field."""
-    empty = pd.DataFrame(columns=["lineage", "dev", "se", "laps"])
-    if laps.empty or wet_session(laps):
-        return empty
-    ends = laps.dropna(subset=["Time"]).assign(end=lambda f: f.Time.dt.total_seconds())
-    ends = ends.sort_values(["LapNumber", "end"])
-    gap = ends.groupby("LapNumber").end.diff()
-    slow = gap < TRAFFIC_GAP
-    traffic = set(zip(ends.DriverNumber[slow], ends.LapNumber[slow]))
-    f = clean_race_laps(laps)
-    if f.empty:
-        return empty
-    f = f[[(d, n) not in traffic for d, n in zip(f.DriverNumber, f.LapNumber)]]
-    f = f.assign(lineage=f.driver_number.map(lineage_of), stint=f.driver_number + "-" + f.Stint.astype(str),
-                 age=f.TyreLife.astype(float), y=100 * np.log(f.seconds.to_numpy()))
-    f = f[f.lineage.notna()]
-    f = f.groupby("stint").filter(lambda g: len(g) >= TEAM_STINT_LAPS and g.age.nunique() >= 4)
-    counts = f.lineage.value_counts()
-    f = f[f.lineage.isin(counts[counts >= TEAM_LAPS].index)]
-    teams = sorted(f.lineage.unique())
-    if len(teams) < 3:
-        return empty
+
+ESTIMABLE = 1e-6        # a contrast this close to the design's row space is estimable
+
+
+def _team_fit(f, teams):
+    """Least squares of the team model on `teams`: (deviations, their covariance,
+    estimability error per team). A team's deviation (against the mean of the
+    teams) is estimable when its contrast lies in the row space of the design: else
+    it is confounded, e.g. with the wear of a compound only that team ran."""
     columns = [pd.get_dummies(f.LapNumber, prefix="lap", drop_first=True, dtype=float),
                pd.get_dummies(f.stint, prefix="st", dtype=float)]
     for c in sorted(f.compound.unique()):
@@ -411,17 +402,62 @@ def team_wear_deviations(laps, lineage_of):
         columns.append(pd.DataFrame({f"dev:{t}": code.to_numpy() * f.age.to_numpy()}, index=f.index))
     x = pd.concat(columns, axis=1)
     X, y = x.to_numpy(), f.y.to_numpy()
-    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    pinv = np.linalg.pinv(X)
+    beta = pinv @ y
     residual = y - X @ beta
     sigma2 = residual @ residual / max(len(y) - np.linalg.matrix_rank(X), 1)
     index = [list(x.columns).index(f"dev:{t}") for t in teams[:-1]]
     k = len(teams)
     a = np.vstack([np.eye(k - 1), -np.ones(k - 1)])
-    dev = a @ beta[index]
-    se = np.sqrt(np.diag(a @ (sigma2 * np.linalg.pinv(X.T @ X))[np.ix_(index, index)] @ a.T))
-    w = 1 / se ** 2
-    dev = dev - np.sum(w * dev) / w.sum()
-    return pd.DataFrame({"lineage": teams, "dev": dev, "se": se, "laps": [int(counts[t]) for t in teams]})
+    contrasts = np.zeros((k, X.shape[1]))
+    contrasts[:, index] = a
+    error = np.linalg.norm(contrasts @ (pinv @ X) - contrasts, axis=1) / np.linalg.norm(contrasts, axis=1)
+    cov = sigma2 * (contrasts @ (pinv @ pinv.T) @ contrasts.T)        # (X'X)^+ = X^+ X^+'
+    return contrasts @ beta, cov, error
+
+
+def team_wear_deviations(laps, lineage_of, min_laps=None):
+    """Each team's tyre wear in a dry race against the field (% of a lap per lap of
+    age) with its standard error: DataFrame lineage, dev, se, laps; empty without.
+
+    100 log lap time = lap effect + stint effect + wear(compound) x age + team
+    deviation x age + noise, on clean laps out of traffic (`traffic_laps`). The lap
+    effect takes fuel burn and track evolution (shared by the field); the stint
+    effect each driver's stint pace. The field's own wear is not identified this
+    way (age is lap minus the stint's start), but a team's departure from it is,
+    when the team shares compounds with others: a team whose deviation is not
+    estimable is left out (the most confounded first) and the race is refitted;
+    fewer than three teams left, no estimate. Deviations and their covariance are
+    centred together on the precision-weighted field. `lineage_of`: driver number
+    -> team (any grouping: driver -> driver gives driver deviations); `min_laps`:
+    clean laps a group needs (TEAM_LAPS)."""
+    empty = pd.DataFrame(columns=["lineage", "dev", "se", "laps"])
+    if laps.empty or wet_session(laps):
+        return empty
+    traffic = traffic_laps(laps)
+    f = clean_race_laps(laps)
+    if f.empty:
+        return empty
+    f = f[[(d, n) not in traffic for d, n in zip(f.DriverNumber, f.LapNumber)]]
+    f = f.assign(lineage=f.driver_number.map(lineage_of), stint=f.driver_number + "-" + f.Stint.astype(str),
+                 age=f.TyreLife.astype(float), y=100 * np.log(f.seconds.to_numpy()))
+    f = f[f.lineage.notna()]
+    f = f.groupby("stint").filter(lambda g: len(g) >= TEAM_STINT_LAPS and g.age.nunique() >= 4)
+    counts = f.lineage.value_counts()
+    teams = sorted(counts[counts >= (TEAM_LAPS if min_laps is None else min_laps)].index)
+    while len(teams) >= 3:
+        here = f[f.lineage.isin(teams)]
+        dev, cov, error = _team_fit(here, teams)
+        if error.max() <= ESTIMABLE:
+            break
+        teams = [t for i, t in enumerate(teams) if i != int(np.argmax(error))]
+    else:
+        return empty
+    w = 1 / np.diag(cov)
+    centre = np.eye(len(teams)) - np.outer(np.ones(len(teams)), w / w.sum())
+    dev, cov = centre @ dev, centre @ cov @ centre.T
+    return pd.DataFrame({"lineage": teams, "dev": dev, "se": np.sqrt(np.clip(np.diag(cov), 0, None)),
+                         "laps": [int(counts[t]) for t in teams]})
 
 
 class TeamWear:

@@ -460,12 +460,14 @@ def test_a_seasons_forecasts_do_not_depend_on_seasons_evaluated_before_it():
     assert multi._ratio == 1.06 and not np.isclose(multi._strategy_inputs(None, example, "x", 90.0)["wear"], expected)
 
 
-def _team_wear_race(devs, seed=0, laps=50):
-    """Two cars per team, two stints (soft then hard), each team's wear the field's
-    plus its deviation; cars far apart (no traffic)."""
+def _team_wear_race(devs, seed=0, laps=50, compounds=None):
+    """Two cars per team, two stints (soft then hard unless `compounds` gives a team
+    its own pair), each team's wear the field's plus its deviation; cars far apart
+    (no traffic)."""
     rng = np.random.default_rng(seed)
     rows, lineage_of = [], {}
     for k, (team, dev) in enumerate(devs.items()):
+        first, second = (compounds or {}).get(team, ("SOFT", "HARD"))
         for j in range(2):
             number = str(10 * k + j + 1)
             lineage_of[number] = team
@@ -479,7 +481,7 @@ def _team_wear_race(devs, seed=0, laps=50):
                 clock += seconds
                 rows.append({"LapNumber": lap, "DriverNumber": number, "LapTime": pd.Timedelta(seconds=seconds),
                              "Time": pd.Timedelta(seconds=clock), "Stint": stint, "TyreLife": float(age),
-                             "Compound": "SOFT" if stint == 1 else "HARD", "TrackStatus": "1", "IsAccurate": True,
+                             "Compound": first if stint == 1 else second, "TrackStatus": "1", "IsAccurate": True,
                              "Deleted": False, "PitInTime": pd.NaT, "PitOutTime": pd.NaT,
                              "Position": float(2 * k + j + 1)})
     return pd.DataFrame(rows), lineage_of
@@ -509,3 +511,51 @@ def test_team_wear_pools_earlier_races_and_shrinks_towards_the_field():
     assert index == [0, 1, 2] and mean[2] == 0.0                                    # unknown team: the field
     few = race_sim.TeamWear().fit(races[:5])
     assert few.decay is None and few.predict(["a"], races) is None
+
+
+def test_a_team_confounded_with_its_own_compound_is_left_out():
+    """Team d alone runs mediums then hards: its wear cannot be told from the
+    medium's. With no team effect at all, no spurious deviations either."""
+    from predictor import race_sim
+    truth = {"a": 0.0, "b": 0.0, "c": 0.0, "d": 0.0}
+    laps, lineage_of = _team_wear_race(truth, compounds={"d": ("MEDIUM", "MEDIUM")})
+    devs = race_sim.team_wear_deviations(laps, lineage_of)
+    assert "d" not in set(devs.lineage) and len(devs) == 3
+    assert (devs.dev.abs() < 4 * devs.se + 1e-3).all()
+
+
+def test_team_wear_deviations_do_not_depend_on_team_labels():
+    from predictor import race_sim
+    truth = {"a": 0.02, "b": -0.01, "c": 0.0, "d": -0.01}
+    laps, lineage_of = _team_wear_race(truth, compounds={"c": ("MEDIUM", "HARD")})
+    one = race_sim.team_wear_deviations(laps, lineage_of).set_index("lineage")
+    rename = {"a": "z", "b": "y", "c": "x", "d": "w"}
+    two = race_sim.team_wear_deviations(laps, {k: rename[v] for k, v in lineage_of.items()}).set_index("lineage")
+    for team, other in rename.items():
+        assert np.isclose(one.dev[team], two.dev[other], atol=1e-9) and np.isclose(one.se[team], two.se[other], atol=1e-9)
+
+
+def test_the_returned_errors_describe_the_centred_deviations():
+    """With no team effect the centred deviations scatter around zero by their
+    returned standard errors (over many simulated races)."""
+    from predictor import race_sim
+    z = []
+    for seed in range(40):
+        laps, lineage_of = _team_wear_race({t: 0.0 for t in "abcde"}, seed=seed,
+                                           compounds={"e": ("MEDIUM", "HARD")})
+        devs = race_sim.team_wear_deviations(laps, lineage_of)
+        z.extend(devs.dev / devs.se)
+    assert len(z) == 200 and 0.8 < np.std(z) < 1.25 and abs(np.mean(z)) < 0.2
+
+
+def test_traffic_covers_cars_a_lap_apart():
+    from predictor import race_sim
+    t = lambda s: pd.Timedelta(seconds=s)
+    laps = pd.DataFrame({"DriverNumber": ["1", "2", "3", "1"], "LapNumber": [10, 9, 9, 11],
+                         "Time": [t(1000.0), t(1000.5), t(1050.0), t(1090.2)]})
+    traffic = race_sim.traffic_laps(laps)
+    # car 2 (a lap down) crosses 0.5 s behind the leader on its next lap: in traffic;
+    # the leader, 0.5 s ahead of a car a lap down, is not being lapped: not in traffic
+    assert ("2", 9) in traffic and ("1", 10) not in traffic and ("3", 9) not in traffic
+    being_lapped = pd.DataFrame({"DriverNumber": ["9", "1"], "LapNumber": [20, 21], "Time": [t(500.0), t(500.6)]})
+    assert race_sim.traffic_laps(being_lapped) == {("9", 20), ("1", 21)}
