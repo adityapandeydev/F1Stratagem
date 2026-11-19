@@ -196,7 +196,7 @@ def test_race_champions_route_by_forecast_moment():
     assert router.name == "race_champion" and router.champions == RACE_CHAMPIONS
     before = types.SimpleNamespace(cutoff_label="pre_weekend")
     after = types.SimpleNamespace(cutoff_label="last")
-    assert router.models[router.route(before)].name == "race:v2a"
+    assert router.models[router.route(before)].name == "race:mix3f"
     assert router.models[router.route(after)].name == "race:v1a"
 
 

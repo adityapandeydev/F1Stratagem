@@ -137,7 +137,14 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # qualifying) is level with v2b at the last cutoff (-0.00004, noise). Retirements by
 # circuit and team (v1ar, v2ar, v2bwr) are within noise against their bases at both
 # cutoffs (better on 2024 and in retirement Brier); race:v2bwr is the simulation base.
-RACE_CHAMPIONS = {"pre_weekend": "race2a", "after_session": "race1a"}
+# Stage 3 (tyres and strategy): race:v3f (team tyre wear from race stints) is the
+# development simulator; alone it is not better beyond noise than either champion.
+# Its 50/50 mixture with race:v2a (race:mix3f, frozen: weights not searched) before
+# the weekend: -0.00031 [-0.00051, -0.00011] against race:v2a, 15+ better, every
+# season better, 2024 -0.00023: promoted. Its mixture with race:v1a (race:mix3f1a)
+# after qualifying: -0.00038 [-0.00073, -0.00003], 15+ within noise, but 2024 level
+# (+0.00002): not promoted under the rule (2024 must confirm); race:v1a stays.
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race1a"}
 
 
 class ChampionRouter:
@@ -321,8 +328,12 @@ def model_registry():
                                           neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                           strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                           team_wear=True),
-            # the development simulator mixed 50/50 with the serving champion of each moment
-            "race_mix3f": lambda: ForecastMixture(["race3f", "race_champion"], [0.5, 0.5], "race:mix3f"),
+            # the development simulator mixed 50/50 with a champion (frozen: no weight search);
+            # race:mix3f is the pre-weekend champion, race:mix3f1a the after-qualifying candidate.
+            # (Both were evaluated as one mixture with the champion router, which served race:v2a
+            # before the weekend and race:v1a after qualifying.)
+            "race_mix3f": lambda: ForecastMixture(["race3f", "race2a"], [0.5, 0.5], "race:mix3f"),
+            "race_mix3f1a": lambda: ForecastMixture(["race3f", "race1a"], [0.5, 0.5], "race:mix3f1a"),
             "race3fl": lambda: _race_model("pace3wrlqwt", "race:v3fl", simulated=True, forecast_battles=True,
                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
