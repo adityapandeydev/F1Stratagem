@@ -106,6 +106,11 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
     return model
 
 
+def _clean_air(model, min_gap):
+    from .cleanair import with_clean_air
+    return with_clean_air(model, min_gap)
+
+
 def _race_model(pace, name, simulated=False, **options):
     from .race import RaceModel, SimulatedRace
     if simulated:
@@ -267,6 +272,11 @@ def model_registry():
             "pace3wrqf": lambda: _pace_model(3, weekend=True, races=True, knockout=True, failures=True),
             "pace3wrqw": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True),
             "pace3wrqwt": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True),
+            # race pace from clean-air laps only (cleanair.py): 1.0 s and 1.5 s to the car ahead
+            "pace3wrqwta1": lambda: _clean_air(_pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                           robust=True), 1.0),
+            "pace3wrqwta15": lambda: _clean_air(_pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                            robust=True), 1.5),
             "pace3wrlqwt": lambda: _pace_model(3, weekend=True, races=True, long_runs=True, knockout=True, wet_noise=True,
                                                robust=True),
             "pace3wrqwp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, push="split"),
@@ -305,6 +315,8 @@ def model_registry():
             # race forecasts (race.py) on the champion's pace model; fits shared with it
             "race1a": lambda: _race_model("pace3wrqwt", "race:v1a"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
+            "race1aa1": lambda: _race_model("pace3wrqwta1", "race:v1aa1"),
+            "race1aa15": lambda: _race_model("pace3wrqwta15", "race:v1aa15"),
             "race2a": lambda: _race_model("pace3wrqwt", "race:v2a", simulated=True),
             "race2as": lambda: _race_model("pace3wrqwt", "race:v2as", simulated=True, pass_shift=True),
             "race2af": lambda: _race_model("pace3wrqwt", "race:v2af", simulated=True, forecast_battles=True),

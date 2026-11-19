@@ -798,3 +798,16 @@ def test_following_gaps_come_from_runs_behind_the_same_car():
     assert race_sim.follow_quantiles(gaps) is None                    # too few laps to learn from
     q = race_sim.follow_quantiles(np.r_[np.full(800, 0.2), np.full(800, 2.0)])
     assert q[0] == race_sim.MIN_FOLLOW and q[-1] == 2.0 and len(q) == 21
+
+
+def test_clean_air_pace_leaves_out_laps_in_dirty_air():
+    from predictor import cleanair
+    from predictor.evaluation import model_registry
+    t = lambda s: pd.Timedelta(seconds=s)
+    laps = pd.DataFrame({"DriverNumber": ["1", "2", "3"], "LapNumber": [5, 5, 5], "Time": [t(500.0), t(500.6), t(503.0)],
+                         "LapTime": [t(90.0), t(90.1), t(91.0)]})
+    out = cleanair.dirty_air_removed(laps, 1.0)
+    assert out.LapTime.notna().tolist() == [True, False, True]       # car 2 crossed 0.6 s behind car 1
+    model = model_registry()["race1aa1"]()
+    assert isinstance(model.pace, cleanair.CleanAirPaceModel) and model.pace.min_gap == 1.0
+    assert model.pace.name.endswith(f"-air1v{cleanair.VERSION}")
