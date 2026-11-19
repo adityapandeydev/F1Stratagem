@@ -749,3 +749,18 @@ def test_race_labels_map_to_the_nominated_compound():
     monaco = t[(t.season == 2018) & (t.event_name.str.startswith("Monaco"))].event_key.iloc[0]
     assert tyres.identity(monaco, "SOFT") == ("2018", "hypersoft", 6)
     assert tyres.identity(key, "INTERMEDIATE") is None
+
+
+def test_a_held_up_car_keeps_a_gap_of_its_own():
+    """With FOLLOW_GAPS a held car settles at a drawn gap (median about 1 s) instead
+    of exactly MIN_FOLLOW behind; without it, races are unchanged."""
+    from predictor import race_sim
+    pace, grid, model, neutral, strategy = _strategy_race()
+    model.coef = np.array([-8.0, -1.9, -0.3, -1.6, 0.2, 0.7])      # passing all but impossible: trains form
+    run = lambda **k: race_sim.simulate(pace, grid, model, 0.0, 30, 90.0, 0.3, np.random.default_rng(2), neutral=neutral,
+                                        strategy=strategy, trace=True, keyed=True, **k)
+    glued, spaced = run(), run(follow=race_sim.FOLLOW_GAPS)
+    gaps = lambda t: np.diff(np.sort(t[:, 10:], axis=2), axis=2).ravel()
+    at_minimum = lambda g: np.mean(np.abs(g - race_sim.MIN_FOLLOW) < 1e-6)
+    assert at_minimum(gaps(glued["time"])) > 0.2 and at_minimum(gaps(spaced["time"])) < at_minimum(gaps(glued["time"])) / 3
+    assert np.array_equal(run()["time"], glued["time"])

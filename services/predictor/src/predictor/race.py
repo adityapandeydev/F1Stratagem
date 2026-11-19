@@ -283,7 +283,8 @@ class SimulatedRace(RaceModel):
 
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
-                 car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False):
+                 car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False,
+                 following=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -294,6 +295,7 @@ class SimulatedRace(RaceModel):
         self.team_wear = team_wear
         self._team_devs, self._team_models, self._team = {}, {}, None
         self.pit_model = pit_model
+        self.following = following
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
@@ -635,7 +637,8 @@ class SimulatedRace(RaceModel):
         return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
-                                 self._race_strategy(context.get("strategy"), setting))
+                                 self._race_strategy(context.get("strategy"), setting),
+                                 follow=race_sim.FOLLOW_GAPS if self.following else None)
 
     @staticmethod
     def _race_strategy(strategy, setting):

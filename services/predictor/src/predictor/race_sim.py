@@ -54,7 +54,13 @@ STOP_BANDS = (8, 14)         # pace rank: front cars up to 8, middle up to 14, b
 TYRE_ERAS = (2022,)          # first seasons of new tyre eras (18-inch wheels from 2022)
 MIN_ERA_RACES = 10           # fewer dry races in the era: tyre history from every era
 MIN_WEAR_PAIRS = 15          # races with practice and race wear needed to calibrate weekend wear
-CIRCUIT_PRIOR = 2.0     # races: weight of the typical value in a circuit's pit loss, stops and wear
+CIRCUIT_PRIOR = 2.0
+# Gap a held-up car keeps behind the car ahead (s, 5% quantiles; the first is the
+# 0.35 s minimum). Measured 2018-2024 on 16,737 laps of runs of 5+ laps behind the
+# same car that began within 1 s: median 0.98 s, a quarter beyond 1.75 s, a tenth
+# beyond 3.2 s (followers drop back to save tyres and temperatures).
+FOLLOW_GAPS = (0.35, 0.44, 0.53, 0.6, 0.65, 0.71, 0.76, 0.81, 0.86, 0.91, 0.98, 1.08, 1.21, 1.36, 1.54, 1.75,
+               2.04, 2.5, 3.22, 4.88, 8.0)     # races: weight of the typical value in a circuit's pit loss, stops and wear
 MIN_GREEN_LAPS = 10     # racing laps a race needs to give a lap reference
 
 
@@ -186,7 +192,7 @@ def circuit_propensity(frame, base):
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
              strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
-             stop_laps=None):
+             stop_laps=None, follow=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -204,7 +210,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     numbers keyed by draw, lap, car and purpose, so variants share their scenarios;
     `free_traffic`: nobody is held up or passes; `fixed_counts`: each car's planned
     stop count per draw (draws x entrants); `stop_laps`: each entrant's planned stop
-    laps (entrants x k, 1-based, padded with 0)."""
+    laps (entrants x k, 1-based, padded with 0). `follow`: the quantiles of the gap a
+    held-up car keeps behind the car ahead (FOLLOW_GAPS; None: held at MIN_FOLLOW)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -236,7 +243,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           np.ascontiguousarray(np.zeros((0, 0)) if fixed_counts is None else fixed_counts,
                                                                dtype=np.int64),
                                           np.ascontiguousarray(np.zeros((0, 0)) if stop_laps is None else stop_laps,
-                                                               dtype=np.int64))
+                                                               dtype=np.int64),
+                                          np.asarray(() if follow is None else follow, dtype=float))
 
 
 def car_deviations(table, pace):
