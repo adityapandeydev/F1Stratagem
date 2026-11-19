@@ -149,8 +149,13 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwt", "after_session": "pace3wrqwt",
 # frozen): -0.00055 [-0.00086, -0.00025], 15+ better, 2024 -0.00132 (rule amended
 # beforehand: 2024 within +0.0001): promoted, then WITHDRAWN on review: its following
 # gaps were measured on 2018-2024 itself (leaking into the evaluated seasons) and a
-# held car did not keep its gap. race:v1a serves until the corrected race:v3ff passes.
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race1a"}
+# held car did not keep its gap. race:v1a served until the corrected race:v3ff passed.
+# Corrected (gaps learned per season from earlier races, from held-up cars only; the
+# gap kept while held), race:mix3ff1a after qualifying: -0.00047 [-0.00083, -0.00011]
+# against race:v1a, 15+ better (-0.00053), 2024 -0.00109: promoted. Most of the gain is
+# the mixture (race:v3f with race:v1a: -0.00038); race:v3ff alone is level with v1a
+# after qualifying and worse than race:v3f before the weekend (+0.00052).
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3f", "after_session": "race_mix3ff1a"}
 
 
 class ChampionRouter:
