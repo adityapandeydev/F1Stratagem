@@ -284,7 +284,7 @@ class SimulatedRace(RaceModel):
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
                  car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False,
-                 following=False, follow_penalty=False):
+                 following=False, follow_penalty=False, lap_effect_wear=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -299,6 +299,7 @@ class SimulatedRace(RaceModel):
         self._gaps, self._follow_tables, self._follow = {}, {}, None
         self._runs, self._release = {}, 0.0
         self.follow_penalty = follow_penalty
+        self.lap_effect_wear = lap_effect_wear
         self._penalties, self._penalty_tables, self._penalty = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
@@ -377,7 +378,8 @@ class SimulatedRace(RaceModel):
             if race.session_id not in self._stops:
                 laps = view.laps(race.session_id)
                 record = race_sim.stop_record(laps)
-                self._stops[race.session_id] = (record, race_sim.race_wear(laps) if record is not None else None)
+                wear = race_sim.lap_effect_wear if self.lap_effect_wear else race_sim.race_wear
+                self._stops[race.session_id] = (record, wear(laps) if record is not None else None)
             record, wear = self._stops[race.session_id]
             races.append((self.pace.circuit(view, race.event_key), record, wear))
         if self.weekend_wear:

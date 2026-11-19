@@ -382,6 +382,17 @@ def model_registry():
                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                            team_wear=True, following=True, follow_penalty=True),
             "race_mix3fp1a": lambda: ForecastMixture(["race3fp", "race1a"], [0.5, 0.5], "race:mix3fp1a"),
+            # tyre wear from lap effects (no assumed fuel rate) on the two champions' simulators
+            "race3ffw": lambda: _race_model("pace3wrqwt", "race:v3ffw", simulated=True, forecast_battles=True,
+                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                            team_wear=True, following=True, lap_effect_wear=True),
+            "race3fw": lambda: _race_model("pace3wrqwt", "race:v3fw", simulated=True, forecast_battles=True,
+                                           neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                           strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                           team_wear=True, lap_effect_wear=True),
+            "race_mix3ffw1a": lambda: ForecastMixture(["race3ffw", "race1a"], [0.5, 0.5], "race:mix3ffw1a"),
+            "race_mix3fw2a": lambda: ForecastMixture(["race3fw", "race2a"], [0.5, 0.5], "race:mix3fw2a"),
             # corrected all-laps race pace (clean-air pace) with the following penalty in the simulator
             "race3fpc": lambda: _race_model("pace3wrqwtfp", "race:v3fpc", simulated=True, forecast_battles=True,
                                             neutralisations=True, weekend_lap=True, detailed_retirements=True,
