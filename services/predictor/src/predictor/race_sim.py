@@ -193,7 +193,7 @@ def circuit_propensity(frame, base):
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
              strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
-             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None, fresh_peak=None):
+             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None, fresh_peak=None, windows=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -214,7 +214,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     laps (entrants x k, 1-based, padded with 0). `follow`: the quantiles of the gap a
     held-up car keeps behind the car ahead (None: held at MIN_FOLLOW);
     `follow_release`: the per-lap chance that a held car leaves its gap to attack;
-    `fresh_peak`: % of a lap faster on the 1st, 2nd, ... green lap of a set fitted at
+    `windows`: learned share of the race of each planned stop (`pooled_windows`; None:
+    evenly spread stints); `fresh_peak`: % of a lap faster on the 1st, 2nd, ... green lap of a set fitted at
     a stop (None: none); `follow_penalty`: lap-time penalties (% of a lap) of a lap begun within 1, 2, 3 s
     of the car ahead (None: none)."""
     laps = int(laps)
@@ -254,7 +255,8 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           np.asarray(() if follow_penalty is None else
                                                      np.asarray(follow_penalty, dtype=float) * lap_seconds / 100, dtype=float),
                                           np.asarray(() if fresh_peak is None else
-                                                     np.asarray(fresh_peak, dtype=float) * lap_seconds / 100, dtype=float))
+                                                     np.asarray(fresh_peak, dtype=float) * lap_seconds / 100, dtype=float),
+                                          np.asarray(() if windows is None else windows, dtype=float))
 
 
 def car_deviations(table, pace):
@@ -875,6 +877,47 @@ def _identified_fit(blocks, y, k):
     last = list(range(x.shape[1] - k, x.shape[1]))
     se = np.sqrt(np.clip(np.diag(sigma2 * (pinv @ pinv.T))[last], 0, None))
     return beta[last], se, np.asarray(estimable(x, last))
+
+
+MAX_WINDOW_STOPS = 3    # stop counts with learned windows
+MIN_WINDOW_CARS = 30    # cars of a count needed to learn its windows
+
+
+def stop_windows(laps):
+    """Share of the race at which each stop of a dry race's finishers was made, for
+    cars whose every stop was under green flags (planned, not taken at a
+    neutralisation): {count: [[share of stop 1, ...], ...]} for counts 1 to
+    MAX_WINDOW_STOPS; None for a wet race or one without laps. Measured 2019-2024:
+    one stop at 0.42 of the race, two at 0.26 and 0.63 (not evenly spread stints:
+    the light-fuel last stint runs longest)."""
+    if laps.empty or "PitInTime" not in laps or wet_session(laps):
+        return None
+    total = int(laps.LapNumber.max())
+    periods = neutral_periods(laps) or []
+    neutral = {lap for start, _, length in periods for lap in range(start, start + length)}
+    out = {}
+    for _, g in laps.groupby(laps.DriverNumber.astype(str)):
+        if g.LapNumber.max() < total - 1:
+            continue
+        stops = sorted(int(n) for n in g[g.PitInTime.notna() & (g.LapNumber < total)].LapNumber)
+        if not 1 <= len(stops) <= MAX_WINDOW_STOPS or any(s in neutral or s + 1 in neutral for s in stops):
+            continue
+        out.setdefault(len(stops), []).append([s / total for s in stops])
+    return out
+
+
+def pooled_windows(races):
+    """Flat learned windows for `simulate` from the races' `stop_windows`: per count
+    1, 2, ... the mean share of each stop, until a count with fewer than
+    MIN_WINDOW_CARS cars (it and higher counts use evenly spread stints); None
+    without the one-stop windows."""
+    out = []
+    for count in range(1, MAX_WINDOW_STOPS + 1):
+        cars = [shares for r in races if r for shares in r.get(count, [])]
+        if len(cars) < MIN_WINDOW_CARS:
+            break
+        out.extend(np.mean(np.array(cars, dtype=float), axis=0).tolist())
+    return np.array(out) if out else None
 
 
 FRESH_LAPS = 3          # green laps of a new set with their own fresh-tyre peak

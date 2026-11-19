@@ -954,3 +954,14 @@ def test_fresh_peak_support_counts_identified_estimates_per_lap():
     assert np.allclose(race_sim.pooled_fresh_peak(some), [0.3, 0.2, 0.0])        # lap 3 unsupported: none
     gap = [[0.3, np.nan, 0.1]] * race_sim.MIN_FRESH_RACES
     assert np.allclose(race_sim.pooled_fresh_peak(gap), [0.3, 0.0, 0.0])         # nothing after an unsupported lap
+
+
+def test_stop_windows_are_learned_from_green_flag_stops_of_finishers():
+    from predictor import race_sim
+    laps = _synthetic_race([10, 11, 12, 14, 16, 18, 19, 20], laps=40)
+    windows = race_sim.stop_windows(laps)
+    assert sorted(windows) == [1] and len(windows[1]) == 8
+    assert np.isclose(np.mean(windows[1]), np.mean([10, 11, 12, 14, 16, 18, 19, 20]) / 40)
+    pooled = race_sim.pooled_windows([windows] * 4)            # 32 one-stop cars, no two-stop ones
+    assert np.allclose(pooled, [np.mean(windows[1])])
+    assert race_sim.pooled_windows([windows] * 3) is None       # 24 cars: too few

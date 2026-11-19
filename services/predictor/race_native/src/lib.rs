@@ -314,12 +314,17 @@ impl Strategy {
         }
     }
 
-    /// Planned stop laps (1-based, ascending) of one car making `count` stops.
-    fn plan(&self, car: usize, laps: usize, count: usize, rng: &mut Rand) -> Vec<usize> {
+    /// Planned stop laps (1-based, ascending) of one car making `count` stops: at the
+    /// learned share of the race of each stop (`windows`, see `Race::windows`), else at
+    /// evenly spread stints, with the stint noise.
+    fn plan(&self, car: usize, laps: usize, count: usize, windows: &[f64], rng: &mut Rand) -> Vec<usize> {
         let last = laps.saturating_sub(1).max(2);
+        let offset = count * count.saturating_sub(1) / 2; // counts 1, 2, 3: offsets 0, 1, 3
+        let learned = count >= 1 && offset + count <= windows.len();
         let mut plan: Vec<usize> = (1..=count)
             .map(|j| {
-                let at = laps as f64 * j as f64 / (count + 1) as f64 + self.stint_noise * rng.normal(P_PLAN, j, car);
+                let share = if learned { windows[offset + j - 1] } else { j as f64 / (count + 1) as f64 };
+                let at = laps as f64 * share + self.stint_noise * rng.normal(P_PLAN, j, car);
                 (at.round().max(2.0) as usize).min(last)
             })
             .collect();
@@ -472,6 +477,10 @@ struct Race {
     /// fresh-tyre peak (s faster) on the 1st, 2nd, ... green lap of a set fitted at a
     /// stop (not the starting set), on top of the wear line; empty: none
     fresh_peak: Vec<f64>,
+    /// learned pit windows: the share of the race at which each stop of a car making
+    /// 1, 2, 3 stops is planned, flat ([1-stop], [2-stop: 1st, 2nd], [3-stop: ...]);
+    /// empty (or a count beyond it): evenly spread stints
+    windows: Vec<f64>,
     neutral: Neutral,
     strategy: Strategy,
 }
@@ -572,13 +581,14 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
         diag.laps_of.unwrap().to_vec()
     } else if pits {
         match diag.fixed {
-            Some(fixed) => (0..n).map(|car| strategy.plan(car, race.laps, fixed[car].max(0) as usize, rng)).collect(),
+            Some(fixed) => (0..n).map(|car| strategy.plan(car, race.laps, fixed[car].max(0) as usize, &race.windows, rng))
+                .collect(),
             None => {
                 let count = strategy.count(rng);
                 (0..n)
                     .map(|car| {
                         let own = strategy.own(car, count, rng);
-                        strategy.plan(car, race.laps, own, rng)
+                        strategy.plan(car, race.laps, own, &race.windows, rng)
                     })
                     .collect()
             }
@@ -898,6 +908,7 @@ fn simulate<'py>(
     follow_release: f64,
     follow_penalty: PyReadonlyArray1<f64>,
     fresh_peak: PyReadonlyArray1<f64>,
+    windows: PyReadonlyArray1<f64>,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -960,6 +971,7 @@ fn simulate<'py>(
             }
         },
         fresh_peak: fresh_peak.as_slice()?.to_vec(),
+        windows: windows.as_slice()?.to_vec(),
         neutral,
         strategy: Strategy {
             wear,
@@ -1180,7 +1192,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
             term: 0.0, shift: 0.0, laps, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak,
+            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak, windows: vec![],
             neutral: Neutral { hazard: vec![0.0; laps], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1200,7 +1212,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[-0.8, -1.9, -0.3, -1.6, 0.2, 0.7]).unwrap(),
             term: 0.0, shift: 0.0, laps, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak,
+            min_follow: 0.35, follow: vec![], follow_release: 0.0, follow_penalty: [0.0; 3], fresh_peak: peak, windows: vec![],
             neutral: Neutral { hazard, kinds: [0.0, 1.0, 0.0], lengths: [vec![1], vec![2], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1231,6 +1243,20 @@ mod tests {
     }
 
     #[test]
+    fn learned_windows_place_the_stops() {
+        let strategy = Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
+                                  residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                  pit_coef: vec![], passing: 0.0, lap_seconds: 90.0 };
+        let mut g = Pcg64::seed_from_u64(1);
+        let windows = [0.42, 0.26, 0.63];
+        assert_eq!(strategy.plan(0, 50, 1, &windows, &mut Rand::Seq(&mut g)), vec![21]);
+        assert_eq!(strategy.plan(0, 50, 2, &windows, &mut Rand::Seq(&mut g)), vec![13, 32]);
+        // three stops: not learned here, evenly spread
+        assert_eq!(strategy.plan(0, 50, 3, &windows, &mut Rand::Seq(&mut g)), vec![13, 25, 38]);
+        assert_eq!(strategy.plan(0, 50, 1, &[], &mut Rand::Seq(&mut g)), vec![25]);
+    }
+
+    #[test]
     fn fresh_tyre_peak_applies_only_after_a_stop() {
         let base = fresh_car(vec![]);
         assert!((base - 22.0).abs() < 1e-9, "{base}");
@@ -1254,7 +1280,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
             neutral: Neutral {
                 hazard,
                 kinds: [1.0, 0.0, 0.0],
@@ -1292,7 +1318,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1321,7 +1347,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
             neutral: Neutral { hazard: vec![0.0; 22], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1356,7 +1382,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
             neutral: Neutral { hazard: neutral_hazard, kinds: [1.0, 0.0, 0.0], lengths: [vec![3], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.8, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1390,7 +1416,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![2.0, 2.0],
             follow_release: 0.0,
-            follow_penalty: [0.0; 3], fresh_peak: vec![],
+            follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1411,7 +1437,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
             term: 0.0, shift: 0.0, laps: 10, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3], fresh_peak: vec![],
+            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3], fresh_peak: vec![], windows: vec![],
             neutral: Neutral { hazard: vec![0.0; 10], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
