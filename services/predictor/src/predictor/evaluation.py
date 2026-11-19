@@ -205,6 +205,8 @@ def model_registry():
             "pace3wrqf": lambda: _pace_model(3, weekend=True, races=True, knockout=True, failures=True),
             "pace3wrqw": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True),
             "pace3wrqwt": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True),
+            "pace3wrlqwt": lambda: _pace_model(3, weekend=True, races=True, long_runs=True, knockout=True, wet_noise=True,
+                                               robust=True),
             "pace3wrqwp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, push="split"),
             # name pace:v3wrqwp ("split" adds no letter)
             # forecasts by the target's condition (c), with each driver's wet ability (y)
@@ -253,6 +255,8 @@ def model_registry():
             "race1ar": lambda: _race_model("pace3wrqwt", "race:v1ar", detailed_retirements=True),
             "race2ar": lambda: _race_model("pace3wrqwt", "race:v2ar", simulated=True, detailed_retirements=True),
             "race2bwr": lambda: _race_model("pace3wrqwt", "race:v2bwr", simulated=True, forecast_battles=True,
+                                            neutralisations=True, weekend_lap=True, detailed_retirements=True),
+            "race2bwl": lambda: _race_model("pace3wrlqwt", "race:v2bwl", simulated=True, forecast_battles=True,
                                             neutralisations=True, weekend_lap=True, detailed_retirements=True),
             "race3a": lambda: _race_model("pace3wrqwt", "race:v3a", simulated=True, forecast_battles=True,
                                           neutralisations=True, weekend_lap=True, detailed_retirements=True,
