@@ -334,6 +334,7 @@ def model_registry():
             # before the weekend and race:v1a after qualifying.)
             "race_mix3f": lambda: ForecastMixture(["race3f", "race2a"], [0.5, 0.5], "race:mix3f"),
             "race_mix3f1a": lambda: ForecastMixture(["race3f", "race1a"], [0.5, 0.5], "race:mix3f1a"),
+            "race_mix3ff1a": lambda: ForecastMixture(["race3ff", "race1a"], [0.5, 0.5], "race:mix3ff1a"),
             "race3g": lambda: _race_model("pace3wrqwt", "race:v3g", simulated=True, forecast_battles=True,
                                           neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                           strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
