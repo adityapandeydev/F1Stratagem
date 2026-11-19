@@ -1,4 +1,4 @@
-﻿.PHONY: api api-build api-test analysis analysis-install frontend frontend-install frontend-build \
+﻿.PHONY: api api-build api-test analysis analysis-test frontend frontend-install frontend-build \
         f1data-install f1data-test archive-verify predictor-install predictor-native predictor-test migrate-up migrate-down dev setup
 
 # --- API ---
@@ -13,10 +13,10 @@ api-test:
 
 # --- Analysis service ---
 analysis:
-	cd services/analysis && python -m uvicorn src.main:app --host 0.0.0.0 --port 8081 --reload
+	cd services/analysis && cargo build --release
 
-analysis-install:
-	cd services/analysis && pip install -r requirements.txt
+analysis-test:
+	cd services/analysis && cargo test --release
 
 # --- Data archive ---
 f1data-install:
@@ -71,6 +71,6 @@ setup:
 	@echo "1. Copy .env.example to .env and configure"
 	@echo "2. Create PostgreSQL database: f1stratagem"
 	@echo "3. Run: make migrate-up"
-	@echo "4. Run: make analysis-install f1data-install"
+	@echo "4. Run: make analysis f1data-install"
 	@echo "5. Run: make frontend-install"
 	@echo "6. Start services: make dev"

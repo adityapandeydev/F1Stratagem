@@ -60,3 +60,4 @@ desktop.ini
 # Rust build output
 services/predictor/native/target/
 services/predictor/race_native/target/
+services/analysis/target/
