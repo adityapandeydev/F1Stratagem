@@ -614,22 +614,23 @@ def test_the_pit_model_learns_that_losing_places_deters_a_stop():
     assert model.coef is not None and lost < -1.5          # per 10 cars: about -3
 
 
-def _pit_race(offsets=(0.0, 8.0, 18.0, 30.0), stop_lap=6, stopper="1", delay=25.0, neutral_laps=(), laps=12):
+def _pit_race(offsets=(0.0, 8.0, 18.0, 30.0), stop_lap=6, stopper="1", delay=25.0, neutral_laps=(), laps=12,
+              out_delay=0.0):
     """Cars at fixed gaps (s, at lap 1's end), 90 s laps; `stopper` pits at the end
-    of `stop_lap`, its in-lap `delay` s slower."""
+    of `stop_lap`, its in-lap `delay` s slower and its out-lap `out_delay` s."""
     rows = []
     for k, offset in enumerate(offsets):
         d = str(k + 1)
         clock, age, stint = offset, 0, 1
         for lap in range(1, laps + 1):
             age += 1
-            seconds = 90.0 + (delay if d == stopper and lap == stop_lap else 0.0)
+            seconds = 90.0 + (delay if d == stopper and lap == stop_lap else 0.0)                 + (out_delay if d == stopper and lap == stop_lap + 1 else 0.0)
             clock += seconds
             rows.append({"LapNumber": lap, "DriverNumber": d, "Time": pd.Timedelta(seconds=clock),
                          "LapTime": pd.Timedelta(seconds=seconds), "TyreLife": float(age), "Stint": stint,
                          "Compound": "MEDIUM", "TrackStatus": "4" if lap in neutral_laps else "1",
                          "PitInTime": pd.Timedelta(seconds=clock) if d == stopper and lap == stop_lap else pd.NaT,
-                         "PitOutTime": pd.NaT})
+                         "PitOutTime": pd.Timedelta(seconds=clock - 85.0) if d == stopper and lap == stop_lap + 1 else pd.NaT})
             if d == stopper and lap == stop_lap:
                 age, stint = 0, 2
     return pd.DataFrame(rows)
@@ -662,7 +663,7 @@ def test_training_and_the_simulator_build_the_same_features_from_one_race_state(
     laps = _pit_race(neutral_laps=(6,))
     pace = {"1": -0.3, "2": 0.1, "3": 0.0, "4": 0.4}
     rows = race_sim.pit_decisions(laps, 22.0, pace, wear=0.06, sc_ratio=0.8)
-    for lap in (4, 6):
+    for lap in (4, 6, 7):            # 7: the lap after car 1's stop, its loss wholly charged
         here = rows[rows.lap == lap].sort_values("driver")
         before = laps[laps.LapNumber == lap - 1].sort_values("DriverNumber")
         python = race_sim.pit_features(here.age, here.stops, here.lap, 12, here.neutral, here.position, here.lost,
@@ -720,3 +721,17 @@ def test_keyed_variants_share_their_scenarios():
     assert np.abs(free["held"]).max() == 0.0 and np.abs(one["held"]).max() > 0.0
     fixed = run(fixed_counts=np.full((60, 10), 2))
     assert (fixed["stops"] == 2).all()                           # each car's count as given
+
+
+def test_the_state_after_a_stop_has_the_whole_stop_behind_the_car():
+    """Timing splits a stop between in-lap and out-lap; the simulator charges it at
+    the in-lap's end. The next decisions see the same field either way."""
+    from predictor import race_sim
+    columns = ["driver", "lap", "age", "stops", "position", "lost", "clean_air", "gap_ahead", "gap_behind",
+               "cover_behind", "cover_ahead"]
+    whole = race_sim.pit_decisions(_pit_race(delay=25.0), 22.0, {})
+    split = race_sim.pit_decisions(_pit_race(delay=5.0, out_delay=20.0), 22.0, {})
+    after = lambda f: f[f.lap >= 7][columns].sort_values(["lap", "driver"]).reset_index(drop=True)
+    assert after(whole).equals(after(split))
+    # 25 s behind its old place: car 1 now runs behind car 3 (18 s back) and ahead of car 4 (30 s back)
+    assert after(whole).query("lap == 7 and driver == '1'").position.iloc[0] == 3

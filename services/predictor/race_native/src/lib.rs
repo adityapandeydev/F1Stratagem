@@ -561,11 +561,22 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                     let on_lap: Vec<f64> = tyre_laps.iter().map(|a| a + 1.0).collect();
                     boxed = strategy.decide(lap1, race.laps, true, strategy.sc_ratio * strategy.pit_loss, &time, seconds,
                                             &on_lap, &wear, &stops, &pitted, rng);
+                    // stopped as the neutralisation begins, before the field closes up (as planned stops)
                     for car in 0..n {
-                        if boxed[car] && stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
-                            event[car] = 3;
+                        if boxed[car] {
+                            if stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
+                                event[car] = 3;
+                            }
+                            time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
+                            age[car] = 0.0;
+                            tyre_laps[car] = 0.0;
+                            stops[car] += 1;
+                            if event[car] == 0 {
+                                event[car] = 2;
+                            }
                         }
                     }
+                    boxed = vec![false; n];
                 }
             } else if pits {
                 for car in 0..n {
@@ -598,32 +609,31 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                     boxed = strategy.decide(lap1, race.laps, true, strategy.sc_ratio * strategy.pit_loss, &time, seconds,
                                             &on_lap, &wear, &stops, &pitted, rng);
                     for car in 0..n {
-                        if boxed[car] && stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
-                            event[car] = 3;
+                        if boxed[car] {
+                            if stops[car] == 0 && lap1 + PIT_LAST_LAPS == race.laps {
+                                event[car] = 3;
+                            }
+                            time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
+                            age[car] = 0.0;
+                            tyre_laps[car] = 0.0;
+                            stops[car] += 1;
+                            if event[car] == 0 {
+                                event[car] = 2;
+                            }
                         }
                     }
-                }
-                if neutral_kind == RED {
+                    if boxed.iter().any(|&b| b) && neutral_kind == SC {
+                        close_up(&mut time, &mut order, race.neutral.sc_gap);
+                    }
                     boxed = vec![false; n];
                 }
-                // the stops called for this neutralised lap, at its end, at the neutralised loss
+                // a car that stopped on this lap starts its new set (its next lap is the set's first)
                 for car in 0..n {
-                    if boxed[car] {
-                        time[car] += strategy.sc_ratio * strategy.cost(lap1, car, rng);
-                        age[car] = 0.0;
-                        tyre_laps[car] = 0.0;
-                        stops[car] += 1;
-                        if event[car] == 0 {
-                            event[car] = 2;
-                        }
-                    } else {
+                    if event[car] != 2 && event[car] != 3 {
                         tyre_laps[car] += 1.0;
                     }
                 }
-                if boxed.iter().any(|&b| b) && neutral_kind == SC {
-                    close_up(&mut time, &mut order, race.neutral.sc_gap);
-                }
-                pitted = std::mem::replace(&mut boxed, vec![false; n]);
+                pitted = event.iter().map(|&e| e == 2 || e == 3).collect();
             } else {
                 if pits && !started && neutral_kind != RED {
                     let mut stopped = false;
@@ -1126,6 +1136,45 @@ mod tests {
         neutral.neutral.lengths = [vec![3], vec![1], vec![1]];
         let (_, stops) = race_times(&neutral, &[0.0], &[1.0], &mut Rand::Seq(&mut Pcg64::seed_from_u64(3)), &Diag::default(), None);
         assert_eq!(stops[0], 3);
+    }
+
+    /// Two cars, the leader 50 s ahead; a safety car from lap 5. Only the leader
+    /// stops as it comes out: `learned` by a hazard calling in the leader on a
+    /// neutralised lap, else by its plan (one stop, due within the window). The
+    /// order at the end of lap 5.
+    fn safety_car_stop(learned: bool) -> Vec<i64> {
+        let mut neutral_hazard = vec![0.0; 20];
+        neutral_hazard[4] = 1.0;
+        let mut hazard = vec![0.0; PIT_FEATURES + 1];
+        hazard[0] = -50.0;
+        hazard[1 + 11] = 100.0; // neutralised lap
+        hazard[1 + 13] = -700.0; // position / 20: the leader stops (z = +15), the other car not (z = -20)
+        let race = Race {
+            coef: coefficients(&[-50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
+            term: 0.0, shift: 0.0, laps: 20, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
+            min_follow: 0.35,
+            neutral: Neutral { hazard: neutral_hazard, kinds: [1.0, 0.0, 0.0], lengths: [vec![3], vec![1], vec![1]],
+                               sc_gap: 0.52, red_end: 0.0 },
+            strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.8, stops_mean: 1.0, stint_noise: 0.0, window: 6,
+                                 residuals: vec![], deviate: vec![], team: vec![], team_mean: vec![], team_sd: vec![],
+                                 pit_coef: if learned { hazard } else { vec![] }, passing: 0.0, lap_seconds: 90.0 },
+        };
+        let grid = [1.0, 1.0 + 50.0 / 0.25]; // the second car starts 50 s behind
+        let fixed = [1i64, 0];
+        let diag = Diag { fixed: if learned { None } else { Some(&fixed) }, free: false };
+        let mut trace = Trace::new(20, 2);
+        race_times(&race, &[0.0, 0.0], &grid, &mut Rand::Seq(&mut Pcg64::seed_from_u64(1)), &diag, Some(&mut trace));
+        assert!(trace.event[4 * 2] == 2 && trace.event[4 * 2 + 1] == 0, "only the leader stops, on lap 5");
+        let mut positions = vec![0i64; 2];
+        rank(&trace.time[4 * 2..4 * 2 + 2], &mut positions);
+        positions
+    }
+
+    #[test]
+    fn a_stop_as_the_safety_car_comes_out_is_charged_alike_for_planned_and_learned_stops() {
+        // charged before the field closes up: 50 - 17.6 s ahead, the leader keeps the lead
+        assert_eq!(safety_car_stop(false), vec![1, 2]);
+        assert_eq!(safety_car_stop(true), vec![1, 2]);
     }
 
     #[test]

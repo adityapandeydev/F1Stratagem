@@ -595,7 +595,11 @@ def pit_decisions(laps, loss, pace, wear=None, sc_ratio=SC_PIT_RATIO):
     end of the lap before (no consequence of this lap's stop can enter it), the
     car's tyre age on this lap (TyreLife), whether this lap is neutralised (then
     places lost and clean air use `sc_ratio` x `loss`), and who pitted at the end of
-    the lap before. `loss`: the race's green pit loss (s); `pace`: driver -> race
+    the lap before. The simulator charges a stop in full at the end of its in-lap,
+    while timing splits it between the in-lap and the out-lap: a car that pitted at
+    the end of the lap before is placed at its out-lap crossing less that lap's
+    typical lap (the median of the cars neither entering nor leaving the pits), its
+    stop then wholly behind it as in the simulator. `loss`: the race's green pit loss (s); `pace`: driver -> race
     pace (%); `wear`: the race's tyre wear (%/lap of age; WEAR without)."""
     if laps.empty or wet_session(laps) or "PitInTime" not in laps:
         return pd.DataFrame()
@@ -609,7 +613,18 @@ def pit_decisions(laps, loss, pace, wear=None, sc_ratio=SC_PIT_RATIO):
     for lap in range(PIT_FIRST_LAP, total - PIT_LAST_LAPS + 1):
         if lap - 1 not in by_lap or lap not in by_lap:
             continue
-        field = by_lap[lap - 1].sort_values("end")
+        field = by_lap[lap - 1].copy()
+        stopped = field.PitInTime.notna()
+        if stopped.any():
+            out = by_lap[lap].set_index("d")
+            clean = out[out.PitInTime.isna() & out.PitOutTime.isna()].LapTime.dt.total_seconds()
+            typical = float(clean.median()) if len(clean) else np.nan
+            for i in field.index[stopped]:
+                d = field.at[i, "d"]
+                if d in out.index and np.isfinite(typical):
+                    crossing = out.loc[d, "end"]
+                    field.at[i, "end"] = float(crossing.iloc[0] if isinstance(crossing, pd.Series) else crossing) - typical
+        field = field.sort_values("end")
         ends, drivers = field.end.to_numpy(), field.d.to_numpy()
         now = by_lap[lap].set_index("d")
         expected = loss * (sc_ratio if lap in neutral else 1.0)
