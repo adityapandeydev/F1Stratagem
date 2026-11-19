@@ -482,9 +482,49 @@ fn pass_probability<'py>(
     Ok(out.into_pyarray_bound(py))
 }
 
+/// Stop counts (draws x entrants) the simulator gives: the shared plan rounded from
+/// `stops_mean`, then each car's own count from `deviate` (three chances per car),
+/// by the rules `simulate` uses (for checking the distribution).
+#[pyfunction]
+fn stop_counts<'py>(
+    py: Python<'py>,
+    stops_mean: f64,
+    deviate: PyReadonlyArray1<f64>,
+    entrants: usize,
+    draws: usize,
+    seed: u64,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let deviate = deviate.as_slice()?.to_vec();
+    if !deviate.is_empty() && deviate.len() != 3 * entrants {
+        return Err(PyValueError::new_err("three deviation chances per entrant"));
+    }
+    let strategy = Strategy {
+        wear: 0.0,
+        pit_loss: 1.0,
+        sc_ratio: 1.0,
+        stops_mean,
+        stint_noise: 0.0,
+        window: 0,
+        residuals: vec![],
+        deviate,
+    };
+    let mut counts = vec![0i64; draws * entrants];
+    for (d, row) in counts.chunks_mut(entrants.max(1)).enumerate() {
+        let mut rng = Pcg64::seed_from_u64(seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let count = strategy.count(&mut rng);
+        for (car, out) in row.iter_mut().enumerate() {
+            *out = strategy.own(car, count, &mut rng) as i64;
+        }
+    }
+    numpy::ndarray::Array2::from_shape_vec((draws, entrants), counts)
+        .map(|a| a.into_pyarray_bound(py))
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 #[pymodule]
 fn predictor_race_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate, m)?)?;
+    m.add_function(wrap_pyfunction!(stop_counts, m)?)?;
     m.add_function(wrap_pyfunction!(pass_probability, m)?)?;
     Ok(())
 }

@@ -312,6 +312,7 @@ def test_a_stop_costs_its_in_and_out_laps_against_the_cars_staying_out():
     laps.loc[(laps.DriverNumber == "2") & (laps.LapNumber == 6), "LapTime"] = pd.Timedelta(seconds=103)
     record = stop_record(laps)
     assert record["green"] == [23.0] and record["neutral"] == [] and np.isclose(record["stops_per_car"], 1 / 3)
+    assert record["modal"] == 0                                    # two of the three cars ran without a stop
 
 
 def test_circuit_strategy_values_are_shrunk_towards_the_typical_race():
@@ -377,3 +378,29 @@ def test_stop_history_never_reads_past_2024(tmp_path):
     assert len(race_sim.history_stops(tmp_path, 2026)["residuals"]) == 6     # 2023-2024 only
     assert len(race_sim.history_stops(tmp_path, 2024)["residuals"]) == 3
     assert race_sim.history_stops(tmp_path, 2023) is None
+
+
+def test_the_plan_and_the_deviations_reproduce_the_observed_stop_counts(tmp_path):
+    """Four one-stop finishers and one two-stop: mean 1.20. The shared plan is the
+    modal count, so the deviations are not counted twice."""
+    import predictor_race_native
+    from predictor import race_sim
+    tables = tmp_path / "external" / "jolpica" / "tables"
+    tables.mkdir(parents=True)
+    stops = [(2023, 1, d, 1, "22.0") for d in "abcde"] + [(2023, 1, "e", 2, "22.0")]
+    pd.DataFrame(stops, columns=["season", "round", "driverId", "stop", "duration"]).to_parquet(tables / "pitstops.parquet")
+    results = [("2023", "1", str(g), "50", "Finished", d) for g, d in enumerate("abcde", 1)]
+    pd.DataFrame(results, columns=["season", "round", "grid", "laps", "status", "Driver_driverId"]).to_parquet(
+        tables / "results.parquet")
+    history = race_sim.history_stops(tmp_path, 2024)
+    assert np.isclose(history["deviate"][0, 0], 0.2)
+    record = {"green": [22.0] * 6, "neutral": [], "stops_per_car": 1.2, "modal": 1}
+    strategy = race_sim.StrategyModel().fit([("x", record, 0.05)], history).race("x", 90.0)
+    assert strategy["stops"] == 1.0
+    pace = np.tile(np.arange(5, dtype=float), (3, 1))
+    counts = predictor_race_native.stop_counts(strategy["stops"], race_sim.car_deviations(strategy["deviate"], pace),
+                                               5, 40000, 11)
+    assert abs(counts.mean() - 1.2) < 0.01
+    assert set(np.unique(counts)) == {1, 2}
+    # without deviations the plan stays the mean, as before
+    assert race_sim.StrategyModel().fit([("x", record, 0.05)]).race("x", 90.0)["stops"] == 1.2

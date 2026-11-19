@@ -273,7 +273,9 @@ def history_stops(root, before_season):
 def stop_record(laps):
     """Pit stops of a dry race: dict green (each green-flag stop's loss against the
     cars not stopping on those laps, s), neutral (the same under a safety car or
-    virtual one), stops_per_car; None for a wet race or one without laps."""
+    virtual one), stops_per_car (all stops over all cars), modal (the most common
+    count among the cars running to the end, None without any); None for a wet race
+    or one without laps."""
     if laps.empty or "PitInTime" not in laps or wet_session(laps):
         return None
     periods = neutral_periods(laps) or []
@@ -294,7 +296,12 @@ def stop_record(laps):
         loss = row.t + out - field[lap] - field[lap + 1]
         if np.isfinite(loss):
             (under if lap in neutral or lap + 1 in neutral else green).append(float(loss))
-    return {"green": green, "neutral": under, "stops_per_car": stops / max(laps.DriverNumber.nunique(), 1)}
+    running = laps.groupby("DriverNumber").LapNumber.max() >= last - 2
+    counts = (laps[laps.stop & (laps.LapNumber < last)].groupby("DriverNumber").size()
+              .reindex(running[running].index, fill_value=0))
+    modal = int(counts.mode().min()) if len(counts) else None
+    return {"green": green, "neutral": under, "stops_per_car": stops / max(laps.DriverNumber.nunique(), 1),
+            "modal": modal}
 
 
 def race_wear(laps):
@@ -322,7 +329,13 @@ class StrategyModel:
         records = [(c, r, w) for c, r, w in races if r is not None]
         green = [np.median(r["green"]) for _, r, _ in records if len(r["green"]) >= 4]
         self.pit_loss = float(np.median(green)) if green else PIT_LOSS
-        self.stops = float(np.mean([r["stops_per_car"] for _, r, _ in records])) if records else STOPS
+        # with per-car deviations the shared plan is the race's most common count (the
+        # deviations were measured against it); else the mean, which already holds them
+        planned = stops is not None and stops.get("deviate") is not None
+        key = "modal" if planned else "stops_per_car"
+        records = [(c, {**r, "plan": r.get(key) if r.get(key) is not None else r["stops_per_car"]}, w)
+                   for c, r, w in records]
+        self.stops = float(np.mean([r["plan"] for _, r, _ in records])) if records else (1.0 if planned else STOPS)
         wears = [w for _, _, w in records if w is not None and np.isfinite(w)]
         self.wear = float(np.median(wears)) if wears else WEAR
         residuals = [x - np.median(r["green"]) for _, r, _ in records if len(r["green"]) >= 4 for x in r["green"]]
@@ -342,7 +355,7 @@ class StrategyModel:
             wear = [w for _, w in here if w is not None and np.isfinite(w)]
             self.circuits[circuit] = {
                 "pit_loss": (sum(losses) + CIRCUIT_PRIOR * self.pit_loss) / (len(losses) + CIRCUIT_PRIOR),
-                "stops": (sum(r["stops_per_car"] for r, _ in here) + CIRCUIT_PRIOR * self.stops) / (len(here) + CIRCUIT_PRIOR),
+                "stops": (sum(r["plan"] for r, _ in here) + CIRCUIT_PRIOR * self.stops) / (len(here) + CIRCUIT_PRIOR),
                 "wear": (sum(wear) + CIRCUIT_PRIOR * self.wear) / (len(wear) + CIRCUIT_PRIOR)}
         return self
 
