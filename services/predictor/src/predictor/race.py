@@ -284,7 +284,7 @@ class SimulatedRace(RaceModel):
     def __init__(self, pace, name, pass_shift=False, forecast_battles=False, neutralisations=False,
                  weekend_lap=False, detailed_retirements=False, strategy=False, pit_lane=False,
                  car_strategies=False, pit_noise=False, weekend_wear=False, team_wear=False, pit_model=False,
-                 following=False):
+                 following=False, follow_penalty=False):
         super().__init__(pace, name, detailed_retirements=detailed_retirements)
         self.strategy = strategy
         self.pit_lane, self.car_strategies = pit_lane, car_strategies
@@ -298,6 +298,8 @@ class SimulatedRace(RaceModel):
         self.following = following
         self._gaps, self._follow_tables, self._follow = {}, {}, None
         self._runs, self._release = {}, 0.0
+        self.follow_penalty = follow_penalty
+        self._penalties, self._penalty_tables, self._penalty = {}, {}, None
         self._pit_rows, self._pass_rates, self._pit_models, self._pit = {}, {}, {}, None
         self._strategies, self._stops, self._strategy = {}, {}, None
         self.weekend_lap = weekend_lap
@@ -362,6 +364,7 @@ class SimulatedRace(RaceModel):
         self._pit = self._pit_models.get(season) if self.pit_model else None
         follow = self._follow_tables.get(season) if self.following else None
         self._follow, self._release = (follow if follow is not None else (None, 0.0))
+        self._penalty = self._penalty_tables.get(season) if self.follow_penalty else None
 
     def _fit_strategy(self, season):
         """Pit loss, stops and wear per circuit from the dry races before `season`."""
@@ -415,6 +418,18 @@ class SimulatedRace(RaceModel):
             return None
         runs = np.concatenate([self._runs[r.session_id] for r in view.sessions[view.sessions.session_type == "R"].itertuples()])
         return table, (1.0 / float(runs.mean()) if len(runs) else 0.0)   # a hold ends on average after its mean length
+
+    def _fit_penalty(self, season):
+        """The following penalty of cars not held up, from the dry races before `season`."""
+        view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
+        for race in view.sessions[view.sessions.session_type == "R"].itertuples():
+            if race.session_id not in self._penalties:
+                laps = view.laps(race.session_id)
+                pace = race_sim.race_pace(laps)
+                pace = dict(zip(pace.driver_number.astype(str), pace.pace)) if not pace.empty else {}
+                self._penalties[race.session_id] = race_sim.following_penalty(laps, pace)
+        races = [self._penalties[r.session_id] for r in view.sessions[view.sessions.session_type == "R"].itertuples()]
+        return race_sim.pooled_penalty(races)
 
     def _pass_rate(self, view, race):
         if race.session_id not in self._pass_rates:
@@ -579,6 +594,8 @@ class SimulatedRace(RaceModel):
             self._ratios[season] = self._fit_ratio(season)
         if self.following and season not in self._follow_tables:
             self._follow_tables[season] = self._fit_following(season)
+        if self.follow_penalty and season not in self._penalty_tables:
+            self._penalty_tables[season] = self._fit_penalty(season)
         if self.strategy and season not in self._strategies:
             self._strategies[season] = self._fit_strategy(season)
         self._activate(season)
@@ -663,7 +680,7 @@ class SimulatedRace(RaceModel):
                                  context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
                                  self._race_strategy(context.get("strategy"), setting),
-                                 follow=self._follow, follow_release=self._release)
+                                 follow=self._follow, follow_release=self._release, follow_penalty=self._penalty)
 
     @staticmethod
     def _race_strategy(strategy, setting):

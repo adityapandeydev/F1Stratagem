@@ -193,7 +193,7 @@ def circuit_propensity(frame, base):
 
 def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, rng, pass_shift=0.0, neutral=None,
              strategy=None, with_stops=False, trace=False, keyed=False, free_traffic=False, fixed_counts=None,
-             stop_laps=None, follow=None, follow_release=0.0):
+             stop_laps=None, follow=None, follow_release=0.0, follow_penalty=None):
     """Finishing order (draws x entrants, 1 = first) of `laps` laps, run natively
     (`predictor_race_native.simulate`, its own random numbers seeded from `rng`).
 
@@ -213,7 +213,9 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     stop count per draw (draws x entrants); `stop_laps`: each entrant's planned stop
     laps (entrants x k, 1-based, padded with 0). `follow`: the quantiles of the gap a
     held-up car keeps behind the car ahead (None: held at MIN_FOLLOW);
-    `follow_release`: the per-lap chance that a held car leaves its gap to attack."""
+    `follow_release`: the per-lap chance that a held car leaves its gap to attack;
+    `follow_penalty`: lap-time penalties (% of a lap) of a lap begun within 1, 2, 3 s
+    of the car ahead (None: none)."""
     laps = int(laps)
     if neutral is None:
         neutral = {"hazard": np.zeros(laps), "kinds": np.array([1.0, 0.0, 0.0]),
@@ -247,7 +249,9 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           np.ascontiguousarray(np.zeros((0, 0)) if stop_laps is None else stop_laps,
                                                                dtype=np.int64),
                                           np.asarray(() if follow is None else follow, dtype=float),
-                                          float(follow_release))
+                                          float(follow_release),
+                                          np.asarray(() if follow_penalty is None else
+                                                     np.asarray(follow_penalty, dtype=float) * lap_seconds / 100, dtype=float))
 
 
 def car_deviations(table, pace):
@@ -759,6 +763,65 @@ def held_runs(laps, pace=None):
         faster = who.driver.map(lambda d: pace.get(d, np.inf)) < who.ahead.map(lambda d: pace.get(d, -np.inf))
         runs = runs[faster.reindex(runs.index).fillna(False).astype(bool)]
     return g, runs[(runs.n >= FOLLOW_RUN) & (runs["first"] < FOLLOW_START)]
+
+
+PENALTY_BANDS = (1.0, 2.0, 3.0)    # s: a lap begun within these gaps of the car ahead (against 3 s or more)
+
+
+def following_penalty(laps, pace=None):
+    """A dry race's following penalty (% of a lap) of laps begun within 1, 2 and 3 s
+    of the car ahead, against the same drivers' laps 3 s or more back in the same
+    stint: least squares of 100 log lap time on lap effects (fuel burn, track
+    evolution), stint effects, each stint's tyre-age slope and the three bands.
+    (penalties, laps per band); None without enough data. `pace`: driver -> race pace;
+    with it, laps behind a car the driver is faster than (held up: the simulator's
+    holding rules already charge for that) are left out, so the penalty is what
+    following costs a car that is not being held. Measured 2018-2024 so: about 0.43%
+    within 1 s, 0.29% at 1-2 s, 0.13% at 2-3 s (of a lap)."""
+    if laps.empty or wet_session(laps) or "Position" not in laps:
+        return None
+    f = clean_race_laps(laps).dropna(subset=["Time", "Position"])
+    if f.empty:
+        return None
+    f = f.assign(end=f.Time.dt.total_seconds(), position=f.Position.astype(int))
+    crossing = {(lap, pos): t for lap, pos, t in zip(f.LapNumber, f.position, f.end)}
+    who = {(lap, pos): d for lap, pos, d in zip(f.LapNumber, f.position, f.driver_number)}
+    previous = {(d, lap): t for d, lap, t in zip(f.driver_number, f.LapNumber, f.end)}
+    # the gap at the START of the lap: the previous lap's crossings
+    start = {(lap + 1, pos): t for (lap, pos), t in crossing.items()}
+    gap = [previous.get((d, lap - 1), np.nan) - start.get((lap, pos - 1), np.nan)
+           if pos > 1 else np.inf for d, lap, pos in zip(f.driver_number, f.LapNumber, f.position)]
+    ahead = [who.get((lap - 1, pos - 1)) for lap, pos in zip(f.LapNumber, f.position)]
+    f = f.assign(gap=gap, stint=f.driver_number + "-" + f.Stint.astype(str), age=f.TyreLife.astype(float),
+                 y=100 * np.log(f.seconds.to_numpy()), ahead=ahead)
+    if pace is not None:
+        held = [(a is not None and g < PENALTY_BANDS[-1] and pace.get(d, np.inf) < pace.get(a, -np.inf))
+                for d, a, g in zip(f.driver_number, f.ahead, f.gap)]
+        f = f[~np.asarray(held, dtype=bool)]
+    f = f[np.isfinite(f.gap) | (f.position == 1)]
+    f = f[f.stint.map(f.stint.value_counts()) >= 8]
+    if f.stint.nunique() < 6:
+        return None
+    columns = [pd.get_dummies(f.LapNumber, prefix="lap", drop_first=True, dtype=float),
+               pd.get_dummies(f.stint, prefix="st", dtype=float)]
+    for st in f.stint.unique():
+        columns.append(pd.DataFrame({f"age:{st}": (f.stint == st).to_numpy(float) * f.age}, index=f.index))
+    edges = (0.0,) + PENALTY_BANDS
+    bands = np.column_stack([((f.gap >= lo) & (f.gap < hi)).to_numpy(float) for lo, hi in zip(edges, edges[1:])])
+    columns.append(pd.DataFrame(bands, index=f.index, columns=["b1", "b2", "b3"]))
+    x = pd.concat(columns, axis=1)
+    beta, *_ = np.linalg.lstsq(x.to_numpy(), f.y.to_numpy(), rcond=None)
+    return beta[-3:], bands.sum(axis=0)
+
+
+def pooled_penalty(races, min_laps=15):
+    """Median per band of the races' penalties with at least `min_laps` laps in the
+    band (% of a lap); None without races."""
+    out = []
+    for band in range(3):
+        vals = [p[band] for p, n in (r for r in races if r is not None) if n[band] >= min_laps]
+        out.append(float(np.median(vals)) if vals else 0.0)
+    return np.array(out) if any(out) else None
 
 
 def follow_quantiles(gaps):

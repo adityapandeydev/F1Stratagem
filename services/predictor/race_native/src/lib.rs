@@ -92,6 +92,7 @@ fn lap_of_draw(
     held_ahead: &mut [usize],
     attack_u: &[f64],
     release: f64,
+    penalty: &[f64; 3],
 ) {
     let n = time.len();
     order.clear();
@@ -104,6 +105,17 @@ fn lap_of_draw(
         before.push(time[car]);
         after.push(time[car] + (seconds[car] + scale * noise[car]));
         own.push(seconds[car]);
+    }
+    if penalty.iter().any(|&p| p != 0.0) {
+        // following penalty: a car starting the lap within 1, 2 or 3 s of the car
+        // ahead loses that band's time on it
+        for k in 1..n {
+            let gap = before[k] - before[k - 1];
+            let band = if gap < 1.0 { 0 } else if gap < 2.0 { 1 } else if gap < 3.0 { 2 } else { 3 };
+            if band < 3 {
+                after[k] += penalty[band];
+            }
+        }
     }
     for k in 1..n {
         let gap = before[k] - before[k - 1];
@@ -455,6 +467,8 @@ struct Race {
     follow: Vec<f64>,
     /// per-lap chance that a held car leaves its gap to attack
     follow_release: f64,
+    /// lap-time penalty (s) of a car starting the lap within 1, 2 or 3 s of the car ahead
+    follow_penalty: [f64; 3],
     neutral: Neutral,
     strategy: Strategy,
 }
@@ -769,6 +783,7 @@ fn race_times(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, diag: 
                 &mut held_ahead,
                 &attack_u,
                 race.follow_release,
+                &race.follow_penalty,
             );
         }
         for car in 0..n {
@@ -859,6 +874,7 @@ fn simulate<'py>(
     stop_laps: PyReadonlyArray2<i64>,
     follow: PyReadonlyArray1<f64>,
     follow_release: f64,
+    follow_penalty: PyReadonlyArray1<f64>,
 ) -> PyResult<PyObject> {
     let shape = seconds.as_array().shape().to_vec();
     if grid.as_array().shape() != shape.as_slice() {
@@ -914,6 +930,12 @@ fn simulate<'py>(
             table
         },
         follow_release,
+        follow_penalty: {
+            let p = follow_penalty.as_slice()?;
+            if p.is_empty() { [0.0; 3] } else {
+                p.try_into().map_err(|_| PyValueError::new_err("three following penalties: <1 s, 1-2 s, 2-3 s"))?
+            }
+        },
         neutral,
         strategy: Strategy {
             wear,
@@ -1143,6 +1165,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
+            follow_penalty: [0.0; 3],
             neutral: Neutral {
                 hazard,
                 kinds: [1.0, 0.0, 0.0],
@@ -1180,6 +1203,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
+            follow_penalty: [0.0; 3],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1208,6 +1232,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
+            follow_penalty: [0.0; 3],
             neutral: Neutral { hazard: vec![0.0; 22], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.5, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1242,6 +1267,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![],
             follow_release: 0.0,
+            follow_penalty: [0.0; 3],
             neutral: Neutral { hazard: neutral_hazard, kinds: [1.0, 0.0, 0.0], lengths: [vec![3], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 22.0, sc_ratio: 0.8, stops_mean: 1.0, stint_noise: 0.0, window: 6,
@@ -1275,6 +1301,7 @@ mod tests {
             min_follow: 0.35,
             follow: vec![2.0, 2.0],
             follow_release: 0.0,
+            follow_penalty: [0.0; 3],
             neutral: Neutral { hazard: vec![0.0; 20], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
@@ -1295,7 +1322,7 @@ mod tests {
         let race = Race {
             coef: coefficients(&[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap(),
             term: 0.0, shift: 0.0, laps: 10, start_noise: 0.0, start_spacing: 0.25, scale: 0.0, battle_gap: 2.5,
-            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release,
+            min_follow: 0.35, follow: vec![3.0, 3.0], follow_release: release, follow_penalty: [0.0; 3],
             neutral: Neutral { hazard: vec![0.0; 10], kinds: [1.0, 0.0, 0.0], lengths: [vec![1], vec![1], vec![1]],
                                sc_gap: 0.52, red_end: 0.0 },
             strategy: Strategy { wear: 0.0, pit_loss: 0.0, sc_ratio: 1.0, stops_mean: 1.0, stint_noise: 0.0, window: 0,
