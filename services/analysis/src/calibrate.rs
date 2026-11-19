@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::archive::Archive;
-use crate::pace::{self, Agg, Compounds, RaceFilter, RaceModel, TeamTimes};
+use crate::pace::{self, Agg, Compounds, LapTrend, RaceFilter, RaceModel, TeamTimes};
 
 /// What a published gap is measured in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,30 +134,34 @@ pub fn candidates(archive: &Archive, event_key: &str, min_laps: usize) -> Result
     let Some(race) = archive.session_of_type(event_key, "R")? else { bail!("{event_key} has no race") };
     let laps = archive.laps(&race.session_id)?;
     let mut out = Vec::new();
-    for (compounds, cname) in [(Compounds::All, "all"), (Compounds::Slicks, "slick"), (Compounds::Inters, "inter")] {
+    for (compounds, cname) in [(Compounds::All, "all"), (Compounds::Slicks, "slick")] {
         for min_gap_s in [None, Some(1.0), Some(2.0)] {
-            let filter = RaceFilter { compounds, min_gap_s, ..RaceFilter::default() };
-            let gname = min_gap_s.map_or("anygap".to_string(), |g| format!("gap>{g}"));
-            for team_wear in [false, true] {
-                for lap_slope_per_compound in [false, true] {
-                    for trim_sigma in [None, Some(3.0)] {
-                        for traffic_term in [false, true] {
-                            if traffic_term && min_gap_s.is_some() {
-                                continue;
-                            }
-                            let model = RaceModel { team_wear, lap_slope_per_compound, trim_sigma, traffic_term };
-                            let mname = format!(
-                                "fit{}{}{}{}",
-                                if team_wear { "+teamwear" } else { "" },
-                                if lap_slope_per_compound { "+lapxcomp" } else { "" },
-                                if trim_sigma.is_some() { "+trim3" } else { "" },
-                                if traffic_term { "+traffic" } else { "" },
-                            );
-                            for (agg, aname) in [(Agg::Best, "best"), (Agg::Mean, "mean2")] {
-                                out.push(Candidate {
-                                    name: format!("{mname},{cname},{gname},{aname}"),
-                                    times: pace::race_model_team_times(&laps, &filter, &model, agg, min_laps),
-                                });
+            for skip_after_neutral in [0, 1, 2] {
+                let filter = RaceFilter { compounds, min_gap_s, skip_after_neutral, ..RaceFilter::default() };
+                let gname = min_gap_s.map_or("anygap".to_string(), |g| format!("gap>{g}"));
+                let rname = if skip_after_neutral > 0 { format!(",restart{skip_after_neutral}") } else { String::new() };
+                for team_wear in [false, true] {
+                    for (lap_trend, tname) in
+                        [(LapTrend::Linear, ""), (LapTrend::LinearPerCompound, "+lapxcomp"), (LapTrend::PerLap, "+perlap")]
+                    {
+                        for trim_sigma in [None, Some(3.0)] {
+                            for traffic_term in [false, true] {
+                                if traffic_term && min_gap_s.is_some() {
+                                    continue;
+                                }
+                                let model = RaceModel { team_wear, lap_trend, trim_sigma, traffic_term };
+                                let mname = format!(
+                                    "fit{}{tname}{}{}",
+                                    if team_wear { "+teamwear" } else { "" },
+                                    if trim_sigma.is_some() { "+trim3" } else { "" },
+                                    if traffic_term { "+traffic" } else { "" },
+                                );
+                                for (agg, aname) in [(Agg::Best, "best"), (Agg::Mean, "mean2"), (Agg::LapBest, "lapbest")] {
+                                    out.push(Candidate {
+                                        name: format!("{mname},{cname},{gname}{rname},{aname}"),
+                                        times: pace::race_model_team_times(&laps, &filter, &model, agg, min_laps),
+                                    });
+                                }
                             }
                         }
                     }

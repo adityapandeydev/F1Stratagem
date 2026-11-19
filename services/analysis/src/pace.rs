@@ -1,10 +1,11 @@
-//! Team pace of one session, measured from that session's own laps.
+//! Team race pace of one race, measured from that race's own laps.
 //!
-//! Every function here is a calculation on recorded laps: no priors, no weighting
-//! across sessions. Results are a representative lap time per team, turned into a
-//! percentage gap to the quickest team with [`gaps_pct`].
+//! A least-squares fit of the kept laps separates the car from tyre compound, tyre
+//! age, fuel and track evolution, all measured within the race: no priors, no
+//! weighting across races. Results are a representative lap time per team, turned
+//! into gaps to the quickest team with [`gaps_pct`] or [`gaps_s`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use nalgebra::{DMatrix, DVector};
 
@@ -13,20 +14,16 @@ use crate::laps::{self, Lap};
 /// Team -> representative lap time in seconds.
 pub type TeamTimes = BTreeMap<String, f64>;
 
-/// How a team's two (or more) drivers combine into one number.
+/// How a team's cars combine into one number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agg {
-    /// The quicker driver.
+    /// Fit each driver, keep the quicker driver.
     Best,
-    /// The mean of the drivers.
+    /// Fit each driver, take the mean of the drivers.
     Mean,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stat {
-    Fastest,
-    Median,
-    Mean,
+    /// On every lap number keep the team's quickest kept lap (either car), then fit
+    /// the team on those laps.
+    LapBest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,12 +43,27 @@ pub struct RaceFilter {
     pub skip_laps: u32,
     /// Keep only laps the timing feed marks accurate.
     pub accurate_only: bool,
+    /// Laps this many or fewer after a safety car, virtual safety car or red flag
+    /// are left out (restarts: cold tyres, bunched field). 0 keeps them.
+    pub skip_after_neutral: u32,
 }
 
 impl Default for RaceFilter {
     fn default() -> Self {
-        Self { compounds: Compounds::All, min_gap_s: None, skip_laps: 1, accurate_only: true }
+        Self { compounds: Compounds::All, min_gap_s: None, skip_laps: 1, accurate_only: true, skip_after_neutral: 0 }
     }
+}
+
+/// How lap number enters the fit: fuel burn and track evolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LapTrend {
+    /// One slope for the race.
+    Linear,
+    /// One slope per compound.
+    LinearPerCompound,
+    /// A separate time for every lap number, shared by all cars: absorbs any change
+    /// of conditions (drying, rain, rubber) lap by lap.
+    PerLap,
 }
 
 /// Terms of the per-race lap-time regression.
@@ -59,10 +71,7 @@ impl Default for RaceFilter {
 pub struct RaceModel {
     /// Tyre-age slope per team (else one per compound).
     pub team_wear: bool,
-    /// Lap-number slope per compound (else one for the race). The lap-number term
-    /// carries fuel burn and track evolution; tyre age resets at stops, so the two
-    /// are separable within one race without assuming a fuel rate.
-    pub lap_slope_per_compound: bool,
+    pub lap_trend: LapTrend,
     /// Drop laps whose residual exceeds this many robust standard deviations, then refit.
     pub trim_sigma: Option<f64>,
     /// Gap to the car ahead as a term (seconds lost when within 2 s), instead of filtering.
@@ -79,36 +88,6 @@ pub fn gaps_s(times: &TeamTimes) -> BTreeMap<String, f64> {
     times.iter().map(|(team, t)| (team.clone(), t - best)).collect()
 }
 
-fn combine(per_driver: &HashMap<String, f64>, teams: &HashMap<String, String>, agg: Agg) -> TeamTimes {
-    let mut grouped: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for (driver, t) in per_driver {
-        if let Some(team) = teams.get(driver) {
-            grouped.entry(team.clone()).or_default().push(*t);
-        }
-    }
-    grouped
-        .into_iter()
-        .map(|(team, ts)| {
-            let v = match agg {
-                Agg::Best => ts.iter().copied().fold(f64::INFINITY, f64::min),
-                Agg::Mean => ts.iter().sum::<f64>() / ts.len() as f64,
-            };
-            (team, v)
-        })
-        .collect()
-}
-
-fn statistic(values: &mut [f64], stat: Stat) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    Some(match stat {
-        Stat::Fastest => values.iter().copied().fold(f64::INFINITY, f64::min),
-        Stat::Mean => values.iter().sum::<f64>() / values.len() as f64,
-        Stat::Median => median(values),
-    })
-}
-
 fn median(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.total_cmp(b));
     let n = values.len();
@@ -119,21 +98,18 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
-/// Qualifying (or any one-lap session): each driver's best valid lap.
-pub fn one_lap_team_times(session: &[Lap], agg: Agg) -> TeamTimes {
-    let mut best: HashMap<String, f64> = HashMap::new();
-    for lap in session.iter().filter(|l| !l.deleted) {
-        if let Some(t) = lap.lap_time {
-            let e = best.entry(lap.driver.clone()).or_insert(f64::INFINITY);
-            *e = e.min(t);
-        }
-    }
-    combine(&best, &laps::driver_teams(session), agg)
+fn is_neutralised(lap: &Lap) -> bool {
+    lap.track_status.as_deref().is_some_and(|s| s.contains(['4', '5', '6', '7']))
 }
 
 /// The race laps a filter keeps, with each lap's gap to the car ahead.
 pub fn race_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> Vec<(&'a Lap, f64, Option<f64>)> {
     let gaps = laps::gaps_ahead(race);
+    let neutral: BTreeSet<u32> = race.iter().filter(|l| is_neutralised(l)).map(|l| l.lap_number).collect();
+    let after_neutral = |n: u32| {
+        filter.skip_after_neutral > 0
+            && neutral.range(n.saturating_sub(filter.skip_after_neutral)..n).next().is_some()
+    };
     race.iter()
         .zip(gaps)
         .filter_map(|(lap, gap)| {
@@ -149,231 +125,232 @@ pub fn race_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> Vec<(&'a Lap, f64,
                 && !lap.deleted
                 && lap.lap_number > filter.skip_laps
                 && (!filter.accurate_only || lap.accurate)
+                && !after_neutral(lap.lap_number)
                 && filter.min_gap_s.is_none_or(|min| gap.is_none_or(|g| g > min));
             keep.then_some((lap, t, gap))
         })
         .collect()
 }
 
-/// A plain statistic of each driver's kept race laps.
-pub fn race_stat_team_times(race: &[Lap], filter: &RaceFilter, stat: Stat, agg: Agg, min_laps: usize) -> TeamTimes {
-    let mut per_driver: HashMap<String, Vec<f64>> = HashMap::new();
-    for (lap, t, _) in race_laps(race, filter) {
-        per_driver.entry(lap.driver.clone()).or_default().push(t);
-    }
-    let values: HashMap<String, f64> = per_driver
-        .into_iter()
-        .filter(|(_, ts)| ts.len() >= min_laps)
-        .filter_map(|(d, mut ts)| statistic(&mut ts, stat).map(|v| (d, v)))
-        .collect();
-    combine(&values, &laps::driver_teams(race), agg)
+/// One lap entering the fit. `entity` is the driver, or the team for [`Agg::LapBest`].
+#[derive(Debug, Clone)]
+struct Obs {
+    entity: String,
+    team: String,
+    compound: String,
+    age: f64,
+    lap: u32,
+    time: f64,
+    gap: Option<f64>,
 }
 
-/// What a lap is compared with on the same lap number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LapBase {
-    /// The quickest kept lap of that lap number.
-    Fastest,
-    /// The median kept lap of that lap number.
-    Median,
-}
-
-/// Lap-by-lap relative pace: every kept lap as a ratio to the field on the same lap
-/// number (so changing conditions affect everyone alike), then a statistic of each
-/// driver's ratios. Returned as a time-like value (ratio x the race's median kept lap)
-/// so [`gaps_pct`] gives the same percentages.
-pub fn race_per_lap_team_times(
-    race: &[Lap],
-    filter: &RaceFilter,
-    base: LapBase,
-    stat: Stat,
-    agg: Agg,
-    min_laps: usize,
-    min_cars: usize,
-) -> TeamTimes {
-    let kept = race_laps(race, filter);
-    let mut by_lap: BTreeMap<u32, Vec<f64>> = BTreeMap::new();
-    for (lap, t, _) in &kept {
-        by_lap.entry(lap.lap_number).or_default().push(*t);
-    }
-    let bases: HashMap<u32, f64> = by_lap
+fn observations(race: &[Lap], filter: &RaceFilter, agg: Agg, min_laps: usize) -> Vec<Obs> {
+    let teams = laps::driver_teams(race);
+    let mut obs: Vec<Obs> = race_laps(race, filter)
         .into_iter()
-        .filter(|(_, ts)| ts.len() >= min_cars)
-        .map(|(n, mut ts)| {
-            let b = match base {
-                LapBase::Fastest => ts.iter().copied().fold(f64::INFINITY, f64::min),
-                LapBase::Median => median(&mut ts),
-            };
-            (n, b)
+        .map(|(lap, time, gap)| {
+            let team = teams.get(&lap.driver).cloned().unwrap_or_default();
+            Obs {
+                entity: if agg == Agg::LapBest { team.clone() } else { lap.driver.clone() },
+                team,
+                compound: lap.compound.clone().unwrap_or_default(),
+                age: lap.tyre_life.unwrap_or(0.0),
+                lap: lap.lap_number,
+                time,
+                gap,
+            }
         })
         .collect();
-    let mut all: Vec<f64> = kept.iter().map(|(_, t, _)| *t).collect();
-    if all.is_empty() {
-        return TeamTimes::new();
-    }
-    let scale = median(&mut all);
-    let mut per_driver: HashMap<String, Vec<f64>> = HashMap::new();
-    for (lap, t, _) in &kept {
-        if let Some(b) = bases.get(&lap.lap_number) {
-            per_driver.entry(lap.driver.clone()).or_default().push(t / b);
+    if agg == Agg::LapBest {
+        let mut quickest: BTreeMap<(String, u32), Obs> = BTreeMap::new();
+        for o in obs {
+            let key = (o.team.clone(), o.lap);
+            match quickest.get(&key) {
+                Some(kept) if kept.time <= o.time => {}
+                _ => {
+                    quickest.insert(key, o);
+                }
+            }
         }
+        obs = quickest.into_values().collect();
     }
-    let values: HashMap<String, f64> = per_driver
-        .into_iter()
-        .filter(|(_, rs)| rs.len() >= min_laps)
-        .filter_map(|(d, mut rs)| statistic(&mut rs, stat).map(|v| (d, v * scale)))
-        .collect();
-    combine(&values, &laps::driver_teams(race), agg)
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for o in &obs {
+        *counts.entry(o.entity.clone()).or_default() += 1;
+    }
+    obs.retain(|o| counts[&o.entity] >= min_laps);
+    obs
 }
 
-/// Driver effects from a least-squares fit of every kept lap:
-/// lap time = driver + compound offset + wear x tyre age + slope x lap number (+ traffic).
-/// A driver's time is the fitted lap at a common reference (most-run compound, median
-/// tyre age and lap number), so drivers are compared on equal tyres and fuel.
+/// Least-squares fit of every kept lap:
+/// lap time = entity + compound offset + wear x tyre age + lap trend (+ traffic).
+/// An entity's time is its fitted lap at a common reference (most-run compound,
+/// median tyre age and lap number, free air), so cars are compared on equal tyres
+/// and fuel.
 pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceModel, agg: Agg, min_laps: usize) -> TeamTimes {
-    let kept = race_laps(race, filter);
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (lap, _, _) in &kept {
-        *counts.entry(lap.driver.as_str()).or_default() += 1;
-    }
-    let mut rows: Vec<(&Lap, f64, Option<f64>)> =
-        kept.into_iter().filter(|(l, _, _)| counts[l.driver.as_str()] >= min_laps).collect();
-    if rows.is_empty() {
+    let mut obs = observations(race, filter, agg, min_laps);
+    if obs.is_empty() {
         return TeamTimes::new();
     }
-    let teams = laps::driver_teams(race);
-
-    let mut drivers: Vec<String> = rows.iter().map(|(l, _, _)| l.driver.clone()).collect();
-    drivers.sort();
-    drivers.dedup();
-    let mut compound_counts: BTreeMap<String, usize> = BTreeMap::new();
-    for (l, _, _) in &rows {
-        *compound_counts.entry(l.compound.clone().unwrap_or_default()).or_default() += 1;
-    }
-    let reference_compound = compound_counts.iter().max_by_key(|(_, n)| **n).map(|(c, _)| c.clone()).unwrap();
-    let compounds: Vec<String> = compound_counts.keys().cloned().collect();
-    let mut team_names: Vec<String> = drivers.iter().filter_map(|d| teams.get(d).cloned()).collect();
-    team_names.sort();
-    team_names.dedup();
-
     let mut fit = None;
-    for _pass in 0..2 {
-        let design = Design::new(&drivers, &compounds, &reference_compound, &team_names, model);
-        let (x, y) = design.matrix(&rows, &teams);
+    for pass in 0..2 {
+        let design = Design::new(&obs, model);
+        let (x, y) = design.matrix(&obs);
         let Ok(beta) = x.clone().svd(true, true).solve(&y, 1e-10) else { return TeamTimes::new() };
         let residuals = &y - &x * &beta;
         fit = Some((design, beta));
-        let Some(k) = model.trim_sigma else { break };
+        // Trim once, then refit; the final fit and its laps stay together.
+        let (Some(k), 0) = (model.trim_sigma, pass) else { break };
         let mut abs: Vec<f64> = residuals.iter().map(|r| r.abs()).collect();
         let sigma = 1.4826 * median(&mut abs);
         let keep: Vec<bool> = residuals.iter().map(|r| r.abs() <= k * sigma).collect();
         if keep.iter().all(|&k| k) {
             break;
         }
-        rows = rows.into_iter().zip(keep).filter_map(|(r, k)| k.then_some(r)).collect();
+        obs = obs.into_iter().zip(keep).filter_map(|(o, k)| k.then_some(o)).collect();
     }
-    let (design, beta) = fit.unwrap();
+    let (design, beta) = fit.expect("fitted at least once");
 
-    let mut ages: Vec<f64> = rows.iter().filter_map(|(l, _, _)| l.tyre_life).collect();
-    let mut lap_numbers: Vec<f64> = rows.iter().map(|(l, _, _)| l.lap_number as f64).collect();
-    let age_ref = if ages.is_empty() { 0.0 } else { median(&mut ages) };
-    let lap_ref = median(&mut lap_numbers);
+    let mut ages: Vec<f64> = obs.iter().map(|o| o.age).collect();
+    let mut laps_run: Vec<f64> = obs.iter().map(|o| o.lap as f64).collect();
+    let reference_age = median(&mut ages);
+    let reference_lap = median(&mut laps_run).round() as u32;
 
-    let per_driver: HashMap<String, f64> = drivers
+    let entity_team: BTreeMap<&str, &str> = obs.iter().map(|o| (o.entity.as_str(), o.team.as_str())).collect();
+    let fitted: Vec<(String, String, f64)> = entity_team
         .iter()
-        .filter_map(|d| {
-            let team = teams.get(d)?;
-            let reference = Reference { driver: d, team, compound: &reference_compound, age: age_ref, lap: lap_ref };
-            Some((d.clone(), design.predict(&beta, &reference)))
+        .map(|(entity, team)| {
+            let at = Obs {
+                entity: entity.to_string(),
+                team: team.to_string(),
+                compound: design.reference_compound.clone(),
+                age: reference_age,
+                lap: design.nearest_lap(reference_lap),
+                time: 0.0,
+                gap: None,
+            };
+            (entity.to_string(), team.to_string(), design.predict(&beta, &at))
         })
         .collect();
-    combine(&per_driver, &teams, agg)
-}
 
-struct Reference<'a> {
-    driver: &'a str,
-    team: &'a str,
-    compound: &'a str,
-    age: f64,
-    lap: f64,
+    let mut by_team: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for (_, team, t) in fitted {
+        by_team.entry(team).or_default().push(t);
+    }
+    by_team
+        .into_iter()
+        .map(|(team, ts)| {
+            let v = match agg {
+                Agg::Best | Agg::LapBest => ts.iter().copied().fold(f64::INFINITY, f64::min),
+                Agg::Mean => ts.iter().sum::<f64>() / ts.len() as f64,
+            };
+            (team, v)
+        })
+        .collect()
 }
 
 /// Column layout of the regression.
 struct Design<'a> {
-    drivers: &'a [String],
-    compounds: &'a [String],
-    reference_compound: &'a str,
-    teams: &'a [String],
     model: &'a RaceModel,
+    entities: Vec<String>,
+    compounds: Vec<String>,
+    reference_compound: String,
+    teams: Vec<String>,
+    laps: Vec<u32>,
 }
 
 impl<'a> Design<'a> {
-    fn new(drivers: &'a [String], compounds: &'a [String], reference_compound: &'a str, teams: &'a [String], model: &'a RaceModel) -> Self {
-        Self { drivers, compounds, reference_compound, teams, model }
+    fn new(obs: &[Obs], model: &'a RaceModel) -> Self {
+        let unique = |f: &dyn Fn(&Obs) -> String| -> Vec<String> {
+            obs.iter().map(f).collect::<BTreeSet<_>>().into_iter().collect()
+        };
+        let mut compound_counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for o in obs {
+            *compound_counts.entry(o.compound.as_str()).or_default() += 1;
+        }
+        let reference_compound =
+            compound_counts.iter().max_by_key(|(_, n)| **n).map(|(c, _)| c.to_string()).unwrap_or_default();
+        Self {
+            model,
+            entities: unique(&|o| o.entity.clone()),
+            compounds: unique(&|o| o.compound.clone()),
+            reference_compound,
+            teams: unique(&|o| o.team.clone()),
+            laps: obs.iter().map(|o| o.lap).collect::<BTreeSet<_>>().into_iter().collect(),
+        }
     }
 
-    fn offsets(&self) -> usize {
-        self.drivers.len()
+    fn nearest_lap(&self, lap: u32) -> u32 {
+        *self.laps.iter().min_by_key(|l| l.abs_diff(lap)).unwrap_or(&lap)
+    }
+
+    fn offsets_start(&self) -> usize {
+        self.entities.len()
     }
     fn wear_start(&self) -> usize {
-        self.offsets() + self.compounds.len() - 1
+        self.offsets_start() + self.compounds.len() - 1
     }
     fn wear_columns(&self) -> usize {
         if self.model.team_wear { self.teams.len() } else { self.compounds.len() }
     }
-    fn lap_start(&self) -> usize {
+    fn trend_start(&self) -> usize {
         self.wear_start() + self.wear_columns()
     }
-    fn lap_columns(&self) -> usize {
-        if self.model.lap_slope_per_compound { self.compounds.len() } else { 1 }
+    fn trend_columns(&self) -> usize {
+        match self.model.lap_trend {
+            LapTrend::Linear => 1,
+            LapTrend::LinearPerCompound => self.compounds.len(),
+            // The first lap number is the baseline; entity columns carry the level.
+            LapTrend::PerLap => self.laps.len().saturating_sub(1),
+        }
     }
     fn traffic_column(&self) -> usize {
-        self.lap_start() + self.lap_columns()
+        self.trend_start() + self.trend_columns()
     }
     fn width(&self) -> usize {
         self.traffic_column() + usize::from(self.model.traffic_term)
     }
 
-    fn row(&self, driver: &str, team: &str, compound: &str, age: f64, lap: f64, gap: Option<f64>) -> Vec<f64> {
+    fn row(&self, o: &Obs) -> Vec<f64> {
         let mut r = vec![0.0; self.width()];
-        r[self.drivers.iter().position(|d| d == driver).unwrap()] = 1.0;
-        let others: Vec<&String> = self.compounds.iter().filter(|c| *c != self.reference_compound).collect();
-        if let Some(j) = others.iter().position(|c| *c == compound) {
-            r[self.offsets() + j] = 1.0;
+        if let Some(i) = self.entities.iter().position(|e| *e == o.entity) {
+            r[i] = 1.0;
         }
-        let ci = self.compounds.iter().position(|c| c == compound).unwrap_or(0);
-        let wear = if self.model.team_wear { self.teams.iter().position(|t| t == team).unwrap_or(0) } else { ci };
-        r[self.wear_start() + wear] = age;
-        let lap_col = if self.model.lap_slope_per_compound { ci } else { 0 };
-        r[self.lap_start() + lap_col] = lap;
+        let others: Vec<&String> = self.compounds.iter().filter(|c| **c != self.reference_compound).collect();
+        if let Some(j) = others.iter().position(|c| **c == o.compound) {
+            r[self.offsets_start() + j] = 1.0;
+        }
+        let ci = self.compounds.iter().position(|c| *c == o.compound).unwrap_or(0);
+        let wear = if self.model.team_wear { self.teams.iter().position(|t| *t == o.team).unwrap_or(0) } else { ci };
+        r[self.wear_start() + wear] = o.age;
+        match self.model.lap_trend {
+            LapTrend::Linear => r[self.trend_start()] = o.lap as f64,
+            LapTrend::LinearPerCompound => r[self.trend_start() + ci] = o.lap as f64,
+            LapTrend::PerLap => {
+                if let Some(k) = self.laps.iter().position(|l| *l == o.lap).filter(|&k| k > 0) {
+                    r[self.trend_start() + k - 1] = 1.0;
+                }
+            }
+        }
         if self.model.traffic_term {
             // Seconds of following: 2 s and more counts as free air.
-            r[self.traffic_column()] = gap.map_or(0.0, |g| (2.0 - g).max(0.0));
+            r[self.traffic_column()] = o.gap.map_or(0.0, |g| (2.0 - g).max(0.0));
         }
         r
     }
 
-    fn matrix(&self, rows: &[(&Lap, f64, Option<f64>)], teams: &HashMap<String, String>) -> (DMatrix<f64>, DVector<f64>) {
+    fn matrix(&self, obs: &[Obs]) -> (DMatrix<f64>, DVector<f64>) {
         let width = self.width();
-        let mut data = Vec::with_capacity(rows.len() * width);
-        for (lap, _, gap) in rows {
-            let team = teams.get(&lap.driver).map(String::as_str).unwrap_or("");
-            data.extend(self.row(
-                &lap.driver,
-                team,
-                lap.compound.as_deref().unwrap_or(""),
-                lap.tyre_life.unwrap_or(0.0),
-                lap.lap_number as f64,
-                *gap,
-            ));
+        let mut data = Vec::with_capacity(obs.len() * width);
+        for o in obs {
+            data.extend(self.row(o));
         }
-        let x = DMatrix::from_row_slice(rows.len(), width, &data);
-        let y = DVector::from_iterator(rows.len(), rows.iter().map(|(_, t, _)| *t));
+        let x = DMatrix::from_row_slice(obs.len(), width, &data);
+        let y = DVector::from_iterator(obs.len(), obs.iter().map(|o| o.time));
         (x, y)
     }
 
-    fn predict(&self, beta: &DVector<f64>, at: &Reference) -> f64 {
-        let r = self.row(at.driver, at.team, at.compound, at.age, at.lap, None);
-        r.iter().zip(beta.iter()).map(|(a, b)| a * b).sum()
+    fn predict(&self, beta: &DVector<f64>, at: &Obs) -> f64 {
+        self.row(at).iter().zip(beta.iter()).map(|(a, b)| a * b).sum()
     }
 }
