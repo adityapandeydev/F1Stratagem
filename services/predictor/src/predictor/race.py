@@ -396,12 +396,16 @@ class SimulatedRace(RaceModel):
         return race_sim.StrategyModel().fit(races, stops)
 
     def _fit_following(self, season):
-        """Quantiles of the gaps held-up cars kept in the dry races before `season`."""
+        """Quantiles of the gaps held-up cars (faster than the car ahead on race
+        pace) kept in the dry races before `season`."""
         view = self._archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         gaps = []
         for race in view.sessions[view.sessions.session_type == "R"].itertuples():
             if race.session_id not in self._gaps:
-                self._gaps[race.session_id] = race_sim.following_gaps(view.laps(race.session_id))
+                laps = view.laps(race.session_id)
+                pace = race_sim.race_pace(laps)
+                pace = dict(zip(pace.driver_number.astype(str), pace.pace)) if not pace.empty else {}
+                self._gaps[race.session_id] = race_sim.following_gaps(laps, pace)
             gaps.append(self._gaps[race.session_id])
         return race_sim.follow_quantiles(np.concatenate(gaps) if gaps else np.zeros(0))
 

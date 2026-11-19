@@ -712,10 +712,12 @@ class PitModel:
         return 1 / (1 + np.exp(-(self.coef[0] + features @ self.coef[1:])))
 
 
-def following_gaps(laps):
+def following_gaps(laps, pace=None):
     """Gaps (s) to the car ahead on the clean green laps of a dry race's runs of
     FOLLOW_RUN+ consecutive laps behind the same car that began within FOLLOW_START
-    s; an empty array for a wet race or one without positions."""
+    s; an empty array for a wet race or one without positions. `pace`: driver ->
+    race pace (%, lower is faster); with it only runs of a follower faster than the
+    car ahead count (held up, not a slower car falling back on its own)."""
     if laps.empty or wet_session(laps) or "Position" not in laps:
         return np.zeros(0)
     f = clean_race_laps(laps).dropna(subset=["Time", "Position"])
@@ -734,6 +736,10 @@ def following_gaps(laps):
     new = (g.ahead != g.groupby("driver").ahead.shift()) | (g.groupby("driver").lap.diff() != 1)
     g["run"] = new.cumsum()
     runs = g.groupby("run").agg(n=("lap", "size"), first=("gap", "first"))
+    if pace is not None:
+        who = g.groupby("run")[["driver", "ahead"]].first()
+        faster = who.driver.map(lambda d: pace.get(d, np.inf)) < who.ahead.map(lambda d: pace.get(d, -np.inf))
+        runs = runs[faster.reindex(runs.index).fillna(False).astype(bool)]
     keep = runs[(runs.n >= FOLLOW_RUN) & (runs["first"] < FOLLOW_START)].index
     gaps = g[g.run.isin(keep)].gap.to_numpy(dtype=float)
     return gaps[(gaps > 0) & np.isfinite(gaps)]

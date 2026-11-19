@@ -792,6 +792,9 @@ def test_following_gaps_come_from_runs_behind_the_same_car():
                          "IsAccurate": True, "Deleted": False, "Compound": "MEDIUM", "TyreLife": float(lap)})
     gaps = race_sim.following_gaps(pd.DataFrame(rows))
     assert len(gaps) == 11 and np.allclose(gaps[:7], 0.8)            # car 2 from lap 2 (lap 1 is not clean)
+    # only a follower faster than the car ahead is held up
+    assert len(race_sim.following_gaps(pd.DataFrame(rows), {"1": 0.0, "2": -0.2, "3": 0.5})) == 11
+    assert len(race_sim.following_gaps(pd.DataFrame(rows), {"1": 0.0, "2": 0.3, "3": 0.5})) == 0
     assert race_sim.follow_quantiles(gaps) is None                    # too few laps to learn from
     q = race_sim.follow_quantiles(np.r_[np.full(800, 0.2), np.full(800, 2.0)])
     assert q[0] == race_sim.MIN_FOLLOW and q[-1] == 2.0 and len(q) == 21
