@@ -79,7 +79,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
                 skills=(), season_skills=(), races=False, driver_race=False, push=False, long_runs=False,
                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
                 wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False,
-                wet_segments=False, driver_affinity=False, race_read=None):
+                wet_segments=False, driver_affinity=False, race_read=None, stint_scale=False):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, WITH_RACES, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
@@ -104,6 +104,11 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
         model.race_read = dict(race_read)
         model.name += "-r" + "".join({"lap_effects": "e", "partial": "p"}.get(k, "") for k, v in sorted(race_read.items())
                                      if v is True) + (f"m{race_read['min_laps']}" if "min_laps" in race_read else "")
+    if stint_scale:
+        # the race estimation covariance scaled by the measured stint factor (pace.stint_scale)
+        assert race_estimates, "the stint scale scales the race estimation covariance"
+        model.stint_scale = True
+        model.name += "s"
     # the wet forecast mode changes no fit: a model with it shares the fits of the one without
     if forecast == "c":
         model.fit_name = model.name
@@ -367,6 +372,17 @@ def model_registry():
             # gate B: the champions on race pace that keeps a race's largest connected group (no lap effects)
             "pace3wrqwtrp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                 robust=True, race_read={"partial": True}),
+            # C: race pace with its measured uncertainty (estimation covariance x stint scale),
+            # then with fewer clean laps needed (10, 5)
+            "pace3wrqwtrps": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                 robust=True, race_estimates=True, stint_scale=True,
+                                                 race_read={"partial": True}),
+            "pace3wrqwtrps10": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                   robust=True, race_estimates=True, stint_scale=True,
+                                                   race_read={"partial": True, "min_laps": 10}),
+            "pace3wrqwtrps5": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                  robust=True, race_estimates=True, stint_scale=True,
+                                                  race_read={"partial": True, "min_laps": 5}),
             "pace3wrqwtcrp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                  robust=True, wet_forecast=True, race_read={"partial": True}),
             "race1ap": lambda: _race_model("pace3wrqwtrp", "race:v1ap"),

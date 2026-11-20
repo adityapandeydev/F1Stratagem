@@ -1123,3 +1123,44 @@ def test_gate_b_models_read_race_pace_with_the_connected_group_only():
                                   race_read={"partial": True})
     assert pace.race_read == {"partial": True}
     assert pace.name.endswith("-rp")
+
+
+def test_stint_scale_uses_earlier_seasons_only_and_measures_the_understatement():
+    from predictor import stintnoise
+    rng = np.random.default_rng(0)
+    se = rng.uniform(0.1, 0.3, 4000)
+    season = np.repeat([2018, 2019, 2020, 2021], 1000)
+    c = np.where(season == 2018, 4.0, 9.0)                       # later seasons understated more
+    rows = pd.DataFrame({"season": season, "k": 5, "se": se, "err": rng.normal(0, np.sqrt(c) * se)})
+    scales = stintnoise.scale_by_season(rows, [2018, 2019, 2021])
+    assert 2018 not in scales                                    # nothing earlier
+    assert abs(scales[2019] - 4.0) < 0.5                         # 2018 only: never sees the 9s
+    assert 5.0 < scales[2021] < 8.5                              # 2018-2020
+    h = stintnoise.honesty(rows, {2019: 9.0})
+    assert abs(h.z_scaled.iloc[0] - 1.0) < 0.1 and h.z_raw.iloc[0] > 2.5
+
+
+def test_stint_scale_table_is_walk_forward_and_sets_the_season_fit_start():
+    from predictor import pace, evaluation
+    assert pace.stint_scale(2019) == pace.STINT_SCALE[2019]
+    assert pace.stint_scale(2026) == pace.STINT_SCALE_LATER and pace.stint_scale(2018) == pace.STINT_SCALE[2019]
+    m = evaluation.model_registry()["pace3wrqwtrps5"]()
+    assert m.race_estimates and m.stint_scale and m.race_read == {"partial": True, "min_laps": 5}
+    # the scale is held, not fitted: estimates are off in the fitted settings of a stint-scale model
+    seen = {}
+
+    def fake_fit_hyper(earlier, sessions, start, frozen=()):
+        seen["scale"] = start.estimate_scale
+        return start
+    m.fit_hyper = fake_fit_hyper
+    m.shared_from_qualifying = False
+
+    class V:
+        class archive:
+            @staticmethod
+            def view(t):
+                return V
+        sessions = pd.DataFrame({"session_id": ["a"] * 30, "session_type": ["Q"] * 30, "event_key": ["2018-01"] * 30})
+    m.sessions = lambda view: V.sessions
+    m._fit_season(V, 2021, m._default_start())
+    assert seen["scale"] == pace.STINT_SCALE[2021] and m.hyper.estimate_scale == pace.STINT_SCALE[2021]

@@ -84,6 +84,22 @@ from .laps import long_run_pace, push_pace, qualifying_trend, race_pace, segment
 from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
+# How much a race pace's estimation variance understates its real error, by the season
+# forecast: the mean squared error over the summed squared reported se of drivers cut to
+# 5-20 contiguous laps of one stint (stintnoise.py, seed 7), on dry races of earlier
+# seasons only. The estimate assumes independent laps; a stint shares its fuel and tyre
+# phase, management and traffic, so the real error is about twice the reported one.
+STINT_SCALE = {2019: 4.785, 2020: 4.406, 2021: 4.521, 2022: 4.589, 2023: 4.535, 2024: 4.373}
+STINT_SCALE_LATER = 4.454       # 2018-2024 pooled: seasons from 2025
+
+
+def stint_scale(season):
+    """The estimation-variance scale for forecasts of `season` (earlier seasons' cut stints)."""
+    season = int(season)
+    if season in STINT_SCALE:
+        return STINT_SCALE[season]
+    return STINT_SCALE_LATER if season > max(STINT_SCALE) else STINT_SCALE[min(STINT_SCALE)]
+
 SEGMENTS = ("Q1", "Q2", "Q3")
 SEGMENTED = frozenset({"Q", "SQ"})
 SLOW_CUTOFF = 1.07
@@ -463,6 +479,10 @@ class PaceModel:
         # each race's pace estimation covariance enters its observation noise, scaled by a
         # fitted estimate_scale (laps within a stint are correlated, so the raw errors are small)
         self.race_estimates = race_estimates
+        # with race_estimates: the scale of that covariance is not fitted but measured
+        # (stint_scale, earlier seasons only), so a driver with few clean laps weighs as
+        # little as his real error says (set by the evaluation factory)
+        self.stint_scale = False
         # forecasts simulate Q1, Q2 and Q3 (eliminations, a lap per segment) instead of one draw
         self.knockout = knockout
         # drivers fail to set a time in a segment with a learned, driver-specific probability
@@ -876,7 +896,8 @@ class PaceModel:
         wet = self.wet_ability and sum(n for t, n in counts.items()
                                        if t.endswith(WET_SUFFIX) and base_type(t) != t) >= MIN_WET_SESSIONS
         scalars = [s for s in Hyper.fitted(types, winter, regulation, self.weekend, affinity, new_cars, new_drivers,
-                                           form, skills, season_skills, self.race_estimates and "R" in types,
+                                           form, skills, season_skills,
+                                           self.race_estimates and not self.stint_scale and "R" in types,
                                            self.robust, wet, driver_affinity)
                    if s not in frozen]
         noise_types = [t for t in types if f"noise:{t}" not in frozen
@@ -1066,6 +1087,8 @@ class PaceModel:
         """Fit the settings on data before `season` (sets hyper and last_fit)."""
         earlier = view.archive.view(pd.Timestamp(f"{season}-01-01", tz="UTC"))
         sessions = self.sessions(earlier)
+        if self.stint_scale:
+            start = replace(start, noise=dict(start.noise), estimate_scale=stint_scale(season))
         if self.screen_base is not None:
             return self._screen_season(view, season, earlier, sessions, start)
         self.last_fit = {"converged": None, "note": "too little data; starting values used"}
