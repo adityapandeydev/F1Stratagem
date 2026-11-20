@@ -14,9 +14,9 @@
 //!    races left out (cross-validation). Skills are relative to the average driver,
 //!    which shifts every car alike and leaves car gaps unchanged.
 //!
-//! A driver gets a separate wet adjustment only with enough wet teammate races and
-//! when the adjustment is clearly larger than its uncertainty; otherwise his dry
-//! skill is used in the wet too.
+//! A driver gets a separate wet adjustment only with enough wet teammate races
+//! against at least two different teammates, and when the adjustment is clearly
+//! larger than its uncertainty; otherwise his dry skill is used in the wet too.
 //!
 //! For each race, skills come from the other races of the window only. A team's car
 //! pace in a race is the precision-weighted mean of its drivers' gaps minus their
@@ -41,6 +41,9 @@ pub const WINDOW_SEASONS: i64 = 6;
 pub const MIN_TEAMMATE_RACES: usize = 8;
 /// Wet races with a teammate comparison a driver needs for a separate wet skill.
 pub const MIN_WET_TEAMMATE_RACES: usize = 5;
+/// Different teammates a driver must have met in the wet for a separate wet skill,
+/// so a pair who only meet each other in the wet cannot set each other's wet level.
+pub const MIN_WET_TEAMMATES: usize = 2;
 /// A wet adjustment is kept only when larger than this many standard errors;
 /// otherwise the driver's dry skill is used in the wet.
 pub const WET_SIGNIFICANCE: f64 = 2.0;
@@ -220,11 +223,14 @@ impl Columns {
     fn new(groups: &[Vec<&DriverObs>], wet_allowed: Option<&BTreeSet<String>>) -> Self {
         let mut dry = BTreeMap::new();
         let mut wet_races: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        let mut wet_mates: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
         for g in groups {
             for o in g {
                 dry.entry((o.driver.clone(), o.season)).or_insert(0);
                 if o.condition == Condition::Wet {
                     wet_races.entry(o.driver.clone()).or_default().insert(o.race.as_str());
+                    let mates = wet_mates.entry(o.driver.clone()).or_default();
+                    mates.extend(g.iter().filter(|m| m.driver != o.driver).map(|m| m.driver.as_str()));
                 }
             }
         }
@@ -234,7 +240,11 @@ impl Columns {
         let n = dry.len();
         let wet = wet_races
             .into_iter()
-            .filter(|(d, r)| r.len() >= MIN_WET_TEAMMATE_RACES && wet_allowed.is_none_or(|a| a.contains(d)))
+            .filter(|(d, r)| {
+                r.len() >= MIN_WET_TEAMMATE_RACES
+                    && wet_mates[d].len() >= MIN_WET_TEAMMATES
+                    && wet_allowed.is_none_or(|a| a.contains(d))
+            })
             .enumerate()
             .map(|(i, (d, _))| (d, n + i))
             .collect();
@@ -835,6 +845,30 @@ mod tests {
         let refs: Vec<&DriverObs> = all.iter().collect();
         let skills = fit_skills(&refs, 0.1);
         assert!(skills.wet_delta.is_empty(), "{:?}", skills.wet_delta);
+    }
+
+    #[test]
+    fn a_wet_adjustment_needs_two_different_wet_teammates() {
+        // Season 2021 races 0-5 wet: every driver met one teammate only in the wet.
+        let mut all = grid([0.1, 0.1, 0.1]);
+        for o in all.iter_mut().filter(|o| o.season == 2021 && o.race.as_str() < "2021-06") {
+            o.condition = Condition::Wet;
+            if o.driver == "A" {
+                o.gap_pct -= 0.5;
+            }
+        }
+        let refs: Vec<&DriverObs> = all.iter().collect();
+        assert!(fit_skills(&refs, 0.1).wet_delta.is_empty());
+        // Wet races in 2022 too give A a second wet teammate (C): now it is measured.
+        for o in all.iter_mut().filter(|o| o.season == 2022 && o.race.as_str() < "2022-06") {
+            o.condition = Condition::Wet;
+            if o.driver == "A" {
+                o.gap_pct -= 0.5;
+            }
+        }
+        let refs: Vec<&DriverObs> = all.iter().collect();
+        let skills = fit_skills(&refs, 0.1);
+        assert!(skills.wet_delta.contains_key("A"), "{:?}", skills.wet_delta);
     }
 
     #[test]
