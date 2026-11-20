@@ -6,10 +6,16 @@
 //!    dry-tyre and on wet-tyre laps (so wet skill stays apart from dry skill), with
 //!    the precision of each gap from its stint-resampled interval.
 //! 2. Across a window of seasons: gap = car (this team, this race, this condition)
-//!    + driver skill + noise. The car term is removed by comparing teammates within
-//!    each team and race; driver skills are linked across teams by drivers who
-//!    changed teams, and fitted by weighted least squares. Skills are relative to
-//!    the average driver, which shifts every car alike and leaves car gaps unchanged.
+//!    + driver skill (this season) + noise. The car term is removed by comparing
+//!    teammates within each team and race. Driver skills are linked across teams by
+//!    drivers who changed teams and across seasons by letting each driver's skill
+//!    change from one season to the next only as much as the data supports: the
+//!    allowed change per season is chosen by how well it predicts teammate gaps in
+//!    races left out (cross-validation). Skills are relative to the average driver,
+//!    which shifts every car alike and leaves car gaps unchanged.
+//!
+//! A driver gets a separate wet adjustment only with enough wet teammate races;
+//! otherwise his dry skill is used in the wet too.
 //!
 //! For each race, skills come from the other races of the window only. A team's car
 //! pace in a race is the precision-weighted mean of its drivers' gaps minus their
@@ -29,9 +35,16 @@ use crate::pace::{self, Compounds, RaceFilter, RacePace, Recipe};
 use crate::season::{SeasonTable, SeasonTeam, Summary};
 
 /// Default seasons in the window: the race's season and the ones before it.
-pub const WINDOW_SEASONS: i64 = 3;
+pub const WINDOW_SEASONS: i64 = 6;
 /// Races with a teammate comparison a driver needs in the window to be established.
 pub const MIN_TEAMMATE_RACES: usize = 8;
+/// Wet races with a teammate comparison a driver needs for a separate wet skill.
+pub const MIN_WET_TEAMMATE_RACES: usize = 5;
+/// Candidate standard deviations (percent per season) of a driver's skill change
+/// from one season to the next; the best by cross-validation is used.
+pub const SKILL_DRIFT_CANDIDATES: [f64; 9] = [0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0, 3.0];
+/// Folds (by race) of the cross-validation choosing the skill drift.
+const DRIFT_FOLDS: usize = 5;
 /// Stint resamples behind each stage-1 gap's precision.
 const STAGE1_RESAMPLES: usize = 60;
 /// Floor on a stage-1 gap's standard deviation (percent), so no single race dominates.
@@ -51,6 +64,7 @@ pub enum Condition {
 #[derive(Debug, Clone)]
 pub struct DriverObs {
     pub race: String,
+    pub season: i64,
     pub condition: Condition,
     pub driver: String,
     pub team: String,
@@ -64,6 +78,10 @@ pub struct RaceRun {
     pub event_key: String,
     pub condition: Condition,
     pub pace: RacePace,
+}
+
+fn season_of(event_key: &str) -> i64 {
+    event_key.split('-').next().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 fn condition_recipe(condition: Condition) -> Recipe {
@@ -104,13 +122,14 @@ pub fn season_runs(archive: &Archive, season: i64) -> Result<Vec<RaceRun>> {
     Ok(runs)
 }
 
-fn observations(runs: &[RaceRun]) -> Vec<DriverObs> {
+fn observations(runs: &[&RaceRun]) -> Vec<DriverObs> {
     let mut out = Vec::new();
     for run in runs {
         for d in &run.pace.drivers {
             let sd = d.interval_pct.map_or(f64::NAN, |[lo, hi]| (hi - lo) / (2.0 * Z80));
             out.push(DriverObs {
                 race: run.event_key.clone(),
+                season: season_of(&run.event_key),
                 condition: run.condition,
                 driver: d.driver.clone(),
                 team: d.team.clone(),
@@ -130,17 +149,21 @@ fn observations(runs: &[RaceRun]) -> Vec<DriverObs> {
     out
 }
 
-/// Driver skills (percent, relative to the average driver; lower is faster) fitted
-/// from teammate comparisons.
+/// Driver skills (percent, relative to the average driver; lower is faster) per
+/// season, fitted from teammate comparisons.
 #[derive(Debug, Clone, Default)]
 pub struct Skills {
-    dry: HashMap<String, f64>,
+    /// Dry skill per driver and season with comparisons.
+    dry: HashMap<(String, i64), f64>,
+    /// Wet minus dry, for drivers with enough wet teammate races.
     wet_delta: HashMap<String, f64>,
-    variance: HashMap<(String, Condition), f64>,
+    variance: HashMap<(String, i64, Condition), f64>,
     /// Drivers linked to the largest connected part of the grid.
     linked: BTreeSet<String>,
     /// Races in which each driver had a measured teammate.
     teammate_races: HashMap<String, usize>,
+    /// The skill drift used (percent per season).
+    pub drift: f64,
 }
 
 impl Skills {
@@ -148,98 +171,217 @@ impl Skills {
         self.linked.contains(driver) && self.teammate_races.get(driver).copied().unwrap_or(0) >= MIN_TEAMMATE_RACES
     }
 
-    pub fn skill(&self, driver: &str, condition: Condition) -> f64 {
-        let dry = self.dry.get(driver).copied().unwrap_or(0.0);
+    /// The driver's season with a fitted skill nearest to `season`.
+    fn nearest_season(&self, driver: &str, season: i64) -> Option<i64> {
+        self.dry.keys().filter(|(d, _)| d == driver).map(|(_, s)| *s).min_by_key(|s| (s.abs_diff(season), -*s))
+    }
+
+    pub fn skill(&self, driver: &str, season: i64, condition: Condition) -> f64 {
+        let Some(s) = self.nearest_season(driver, season) else { return 0.0 };
+        let dry = self.dry[&(driver.to_string(), s)];
         match condition {
             Condition::Dry => dry,
             Condition::Wet => dry + self.wet_delta.get(driver).copied().unwrap_or(0.0),
         }
     }
 
-    fn variance(&self, driver: &str, condition: Condition) -> f64 {
-        self.variance.get(&(driver.to_string(), condition)).copied().unwrap_or(0.0)
+    fn variance(&self, driver: &str, season: i64, condition: Condition) -> f64 {
+        let Some(s) = self.nearest_season(driver, season) else { return 0.0 };
+        self.variance.get(&(driver.to_string(), s, condition)).copied().unwrap_or(0.0)
     }
 }
 
-/// Fit driver skills from teammate comparisons: within each team, race and
-/// condition, every driver's gap minus the team's precision-weighted mean gap equals
-/// his skill minus his teammates' weighted mean skill (the car term cancels).
-pub fn fit_skills(obs: &[&DriverObs]) -> Skills {
+/// Teammate groups: drivers of one team in one race and condition, at least two.
+fn teammate_groups<'a>(obs: &[&'a DriverObs]) -> Vec<Vec<&'a DriverObs>> {
     let mut groups: BTreeMap<(&str, Condition, &str), Vec<&DriverObs>> = BTreeMap::new();
     for o in obs {
         groups.entry((o.race.as_str(), o.condition, o.team.as_str())).or_default().push(o);
     }
-    groups.retain(|_, g| g.len() >= 2);
+    groups.into_values().filter(|g| g.len() >= 2).collect()
+}
 
-    let drivers: Vec<String> =
-        groups.values().flatten().map(|o| o.driver.clone()).collect::<BTreeSet<_>>().into_iter().collect();
-    let index: HashMap<&str, usize> = drivers.iter().enumerate().map(|(i, d)| (d.as_str(), i)).collect();
-    let n = drivers.len();
-    if n == 0 {
-        return Skills::default();
-    }
+/// Column layout: dry skill per (driver, season), then a wet adjustment per driver
+/// with enough wet teammate races.
+struct Columns {
+    dry: BTreeMap<(String, i64), usize>,
+    wet: BTreeMap<String, usize>,
+}
 
-    // Columns: dry skill per driver, then wet-minus-dry per driver.
-    let column = |driver: &str, condition: Condition| -> Vec<(usize, f64)> {
-        let i = index[driver];
-        match condition {
-            Condition::Dry => vec![(i, 1.0)],
-            Condition::Wet => vec![(i, 1.0), (n + i, 1.0)],
-        }
-    };
-    let mut rows: Vec<(Vec<f64>, f64, f64)> = Vec::new();
-    for g in groups.values() {
-        let weights: Vec<f64> = g.iter().map(|o| 1.0 / (o.sd_pct * o.sd_pct)).collect();
-        let total: f64 = weights.iter().sum();
-        let mean_gap: f64 = g.iter().zip(&weights).map(|(o, w)| o.gap_pct * w).sum::<f64>() / total;
-        let mut mean_x = vec![0.0; 2 * n];
-        for (o, w) in g.iter().zip(&weights) {
-            for (c, v) in column(&o.driver, o.condition) {
-                mean_x[c] += v * w / total;
+impl Columns {
+    fn new(groups: &[Vec<&DriverObs>]) -> Self {
+        let mut dry = BTreeMap::new();
+        let mut wet_races: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        for g in groups {
+            for o in g {
+                dry.entry((o.driver.clone(), o.season)).or_insert(0);
+                if o.condition == Condition::Wet {
+                    wet_races.entry(o.driver.clone()).or_default().insert(o.race.as_str());
+                }
             }
         }
-        for (o, w) in g.iter().zip(&weights) {
-            let mut x: Vec<f64> = mean_x.iter().map(|m| -m).collect();
-            for (c, v) in column(&o.driver, o.condition) {
-                x[c] += v;
+        for (i, v) in dry.values_mut().enumerate() {
+            *v = i;
+        }
+        let n = dry.len();
+        let wet = wet_races
+            .into_iter()
+            .filter(|(_, r)| r.len() >= MIN_WET_TEAMMATE_RACES)
+            .enumerate()
+            .map(|(i, (d, _))| (d, n + i))
+            .collect();
+        Self { dry, wet }
+    }
+
+    fn width(&self) -> usize {
+        self.dry.len() + self.wet.len()
+    }
+
+    fn of(&self, o: &DriverObs) -> Vec<(usize, f64)> {
+        let mut c = vec![(self.dry[&(o.driver.clone(), o.season)], 1.0)];
+        if o.condition == Condition::Wet {
+            if let Some(&w) = self.wet.get(&o.driver) {
+                c.push((w, 1.0));
             }
-            rows.push((x, o.gap_pct - mean_gap, *w));
+        }
+        c
+    }
+}
+
+/// Weighted rows of one teammate group: each driver's gap minus the group's
+/// precision-weighted mean gap = his skill minus the weighted mean skill (the car
+/// term cancels).
+fn group_rows(g: &[&DriverObs], cols: &Columns) -> Vec<(Vec<(usize, f64)>, f64, f64)> {
+    let weights: Vec<f64> = g.iter().map(|o| 1.0 / (o.sd_pct * o.sd_pct)).collect();
+    let total: f64 = weights.iter().sum();
+    let mean_gap: f64 = g.iter().zip(&weights).map(|(o, w)| o.gap_pct * w).sum::<f64>() / total;
+    let mut mean_x: BTreeMap<usize, f64> = BTreeMap::new();
+    for (o, w) in g.iter().zip(&weights) {
+        for (c, v) in cols.of(o) {
+            *mean_x.entry(c).or_default() += v * w / total;
         }
     }
+    g.iter()
+        .zip(&weights)
+        .map(|(o, w)| {
+            let mut x: BTreeMap<usize, f64> = mean_x.iter().map(|(c, v)| (*c, -v)).collect();
+            for (c, v) in cols.of(o) {
+                *x.entry(c).or_default() += v;
+            }
+            (x.into_iter().collect(), o.gap_pct - mean_gap, *w)
+        })
+        .collect()
+}
+
+/// Penalty rows: a driver's skill changes between consecutive seasons with a
+/// standard deviation of `drift` per season elapsed.
+fn drift_rows(cols: &Columns, drift: f64) -> Vec<(Vec<(usize, f64)>, f64, f64)> {
+    let mut seasons: BTreeMap<&str, Vec<(i64, usize)>> = BTreeMap::new();
+    for ((d, s), c) in &cols.dry {
+        seasons.entry(d.as_str()).or_default().push((*s, *c));
+    }
+    let mut rows = Vec::new();
+    for list in seasons.values() {
+        for pair in list.windows(2) {
+            let ((s0, c0), (s1, c1)) = (pair[0], pair[1]);
+            let gap = (s1 - s0) as f64;
+            rows.push((vec![(c1, 1.0), (c0, -1.0)], 0.0, 1.0 / (drift * drift * gap)));
+        }
+    }
+    rows
+}
+
+struct Solved {
+    beta: DVector<f64>,
+    /// Pseudo-inverse of the weighted normal matrix, and the data rows' dispersion.
+    inverse: DMatrix<f64>,
+    dispersion: f64,
+}
+
+fn solve(data: &[(Vec<(usize, f64)>, f64, f64)], penalty: &[(Vec<(usize, f64)>, f64, f64)], width: usize) -> Solved {
+    let rows: Vec<&(Vec<(usize, f64)>, f64, f64)> = data.iter().chain(penalty).collect();
     let m = rows.len();
-    let mut data = Vec::with_capacity(m * 2 * n);
-    let mut y = Vec::with_capacity(m);
-    for (x, target, w) in &rows {
+    let mut x = DMatrix::zeros(m, width);
+    let mut y = DVector::zeros(m);
+    for (i, (cols, target, w)) in rows.iter().enumerate() {
         let s = w.sqrt();
-        data.extend(x.iter().map(|v| v * s));
-        y.push(target * s);
+        for (c, v) in cols {
+            x[(i, *c)] += v * s;
+        }
+        y[i] = target * s;
     }
-    let x = DMatrix::from_row_slice(m, 2 * n, &data);
-    let y = DVector::from_vec(y);
     let svd = x.clone().svd(true, true);
-    let beta = svd.solve(&y, 1e-10).unwrap_or_else(|_| DVector::zeros(2 * n));
-
-    // Covariance: dispersion x pseudo-inverse of X'WX.
+    let beta = svd.solve(&y, 1e-10).unwrap_or_else(|_| DVector::zeros(width));
     let largest = svd.singular_values.iter().copied().fold(0.0, f64::max);
-    let keep: Vec<usize> = (0..svd.singular_values.len()).filter(|&i| svd.singular_values[i] > 1e-9 * largest).collect();
-    let rank = keep.len();
-    let residual = &y - &x * &beta;
-    let dispersion = if m > rank { residual.norm_squared() / (m - rank) as f64 } else { 1.0 };
     let v_t = svd.v_t.as_ref().expect("svd computed with V");
-    let cov = |a: usize, b: usize| -> f64 {
-        keep.iter().map(|&k| v_t[(k, a)] * v_t[(k, b)] / svd.singular_values[k].powi(2)).sum::<f64>() * dispersion
-    };
+    let mut inverse = DMatrix::zeros(width, width);
+    for k in 0..svd.singular_values.len() {
+        let sv = svd.singular_values[k];
+        if sv > 1e-9 * largest {
+            let v = v_t.row(k).transpose();
+            inverse += &v * v.transpose() / (sv * sv);
+        }
+    }
+    let residual = &y - &x * &beta;
+    let data_rss: f64 = (0..data.len()).map(|i| residual[i] * residual[i]).sum();
+    let dispersion = if data.len() > width { data_rss / (data.len() - width) as f64 } else { 1.0 };
+    Solved { beta, inverse, dispersion: dispersion.max(1e-12) }
+}
 
-    let mut skills = Skills::default();
-    for (i, d) in drivers.iter().enumerate() {
-        skills.dry.insert(d.clone(), beta[i]);
-        skills.wet_delta.insert(d.clone(), beta[n + i]);
-        skills.variance.insert((d.clone(), Condition::Dry), cov(i, i));
-        skills.variance.insert((d.clone(), Condition::Wet), cov(i, i) + cov(n + i, n + i) + 2.0 * cov(i, n + i));
+/// The skill drift that best predicts teammate gaps in races left out of the fit.
+pub fn choose_drift(obs: &[&DriverObs]) -> f64 {
+    let groups = teammate_groups(obs);
+    let races: Vec<&str> = groups.iter().map(|g| g[0].race.as_str()).collect::<BTreeSet<_>>().into_iter().collect();
+    let fold_of: HashMap<&str, usize> = races.iter().enumerate().map(|(i, r)| (*r, i % DRIFT_FOLDS)).collect();
+    let mut best = (f64::INFINITY, SKILL_DRIFT_CANDIDATES[0]);
+    for &drift in &SKILL_DRIFT_CANDIDATES {
+        let mut error = 0.0;
+        for fold in 0..DRIFT_FOLDS {
+            let train: Vec<Vec<&DriverObs>> = groups.iter().filter(|g| fold_of[g[0].race.as_str()] != fold).cloned().collect();
+            let test: Vec<&Vec<&DriverObs>> = groups.iter().filter(|g| fold_of[g[0].race.as_str()] == fold).collect();
+            let cols = Columns::new(&train);
+            let data: Vec<_> = train.iter().flat_map(|g| group_rows(g, &cols)).collect();
+            let solved = solve(&data, &drift_rows(&cols, drift), cols.width());
+            let skills = to_skills(&cols, &solved, &train, drift);
+            for g in test {
+                // Predicted teammate deviations from the held-out race.
+                let weights: Vec<f64> = g.iter().map(|o| 1.0 / (o.sd_pct * o.sd_pct)).collect();
+                let total: f64 = weights.iter().sum();
+                let gap_mean: f64 = g.iter().zip(&weights).map(|(o, w)| o.gap_pct * w).sum::<f64>() / total;
+                let skill_mean: f64 =
+                    g.iter().zip(&weights).map(|(o, w)| skills.skill(&o.driver, o.season, o.condition) * w).sum::<f64>() / total;
+                for (o, w) in g.iter().zip(&weights) {
+                    let predicted = skills.skill(&o.driver, o.season, o.condition) - skill_mean;
+                    error += w * (o.gap_pct - gap_mean - predicted).powi(2);
+                }
+            }
+        }
+        if error < best.0 {
+            best = (error, drift);
+        }
+    }
+    best.1
+}
+
+fn to_skills(cols: &Columns, solved: &Solved, groups: &[Vec<&DriverObs>], drift: f64) -> Skills {
+    let cov = |a: usize, b: usize| solved.inverse[(a, b)] * solved.dispersion;
+    let mut skills = Skills { drift, ..Skills::default() };
+    for ((d, s), &c) in &cols.dry {
+        skills.dry.insert((d.clone(), *s), solved.beta[c]);
+        skills.variance.insert((d.clone(), *s, Condition::Dry), cov(c, c));
+        let wet_var = match cols.wet.get(d) {
+            Some(&w) => cov(c, c) + cov(w, w) + 2.0 * cov(c, w),
+            None => cov(c, c),
+        };
+        skills.variance.insert((d.clone(), *s, Condition::Wet), wet_var);
+    }
+    for (d, &w) in &cols.wet {
+        skills.wet_delta.insert(d.clone(), solved.beta[w]);
     }
 
     // Links: teammates in a race join their drivers; keep the part with most comparisons.
-    let mut parent: Vec<usize> = (0..n).collect();
+    let drivers: Vec<&str> = cols.dry.keys().map(|(d, _)| d.as_str()).collect::<BTreeSet<_>>().into_iter().collect();
+    let index: HashMap<&str, usize> = drivers.iter().enumerate().map(|(i, d)| (*d, i)).collect();
+    let mut parent: Vec<usize> = (0..drivers.len()).collect();
     fn find(parent: &mut [usize], i: usize) -> usize {
         let mut r = i;
         while parent[r] != r {
@@ -254,7 +396,7 @@ pub fn fit_skills(obs: &[&DriverObs]) -> Skills {
         r
     }
     let mut races_of: HashMap<&str, BTreeSet<&str>> = HashMap::new();
-    for g in groups.values() {
+    for g in groups {
         let first = index[g[0].driver.as_str()];
         for o in g {
             let (a, b) = (find(&mut parent, first), find(&mut parent, index[o.driver.as_str()]));
@@ -264,17 +406,29 @@ pub fn fit_skills(obs: &[&DriverObs]) -> Skills {
     }
     let mut size: HashMap<usize, usize> = HashMap::new();
     for d in &drivers {
-        let root = find(&mut parent, index[d.as_str()]);
-        *size.entry(root).or_default() += races_of[d.as_str()].len();
+        let root = find(&mut parent, index[d]);
+        *size.entry(root).or_default() += races_of[d].len();
     }
     let main = size.iter().max_by_key(|(_, s)| **s).map(|(r, _)| *r);
     for d in &drivers {
-        if Some(find(&mut parent, index[d.as_str()])) == main {
-            skills.linked.insert(d.clone());
+        if Some(find(&mut parent, index[d])) == main {
+            skills.linked.insert(d.to_string());
         }
-        skills.teammate_races.insert(d.clone(), races_of[d.as_str()].len());
+        skills.teammate_races.insert(d.to_string(), races_of[d].len());
     }
     skills
+}
+
+/// Fit driver skills per season from teammate comparisons with the given drift.
+pub fn fit_skills(obs: &[&DriverObs], drift: f64) -> Skills {
+    let groups = teammate_groups(obs);
+    if groups.is_empty() {
+        return Skills { drift, ..Skills::default() };
+    }
+    let cols = Columns::new(&groups);
+    let data: Vec<_> = groups.iter().flat_map(|g| group_rows(g, &cols)).collect();
+    let solved = solve(&data, &drift_rows(&cols, drift), cols.width());
+    to_skills(&cols, &solved, &groups, drift)
 }
 
 /// One team's car-only pace in one race and condition.
@@ -321,8 +475,8 @@ pub fn car_run(condition: Condition, race_obs: &[&DriverObs], skills: &Skills, b
         }
         let (mut sum, mut weight) = (0.0, 0.0);
         for o in &established {
-            let var = o.sd_pct * o.sd_pct + skills.variance(&o.driver, condition);
-            sum += (o.gap_pct - skills.skill(&o.driver, condition)) / var;
+            let var = o.sd_pct * o.sd_pct + skills.variance(&o.driver, o.season, condition);
+            sum += (o.gap_pct - skills.skill(&o.driver, o.season, condition)) / var;
             weight += 1.0 / var;
         }
         let note = (established.len() < drivers.len()).then(|| ROOKIE_NOTE.to_string());
@@ -363,17 +517,23 @@ pub struct CarSeason {
     /// First and last season of the window driver skills come from.
     pub window: [i64; 2],
     pub min_teammate_races: usize,
+    /// Allowed change of a driver's skill per season (percent), chosen by cross-validation.
+    pub skill_drift: f64,
     pub all_races: SeasonTable,
     pub common_races: SeasonTable,
     pub races: Vec<CarRace>,
 }
 
+fn window_runs(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_seasons: i64) -> Vec<&RaceRun> {
+    runs.iter().filter(|(s, _)| **s > season - window_seasons && **s <= season).flat_map(|(_, r)| r).collect()
+}
+
 /// Car-only pace of every race of `season`, from the runs of every season of its
 /// window of `window_seasons` seasons (`runs[season]` for each).
 pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_seasons: i64) -> CarSeason {
-    let window: Vec<&RaceRun> =
-        runs.iter().filter(|(s, _)| **s > season - window_seasons && **s <= season).flat_map(|(_, r)| r).collect();
-    let all_obs: Vec<DriverObs> = observations(&window.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
+    let window = window_runs(season, runs, window_seasons);
+    let all_obs = observations(&window);
+    let drift = choose_drift(&all_obs.iter().collect::<Vec<_>>());
     let target: Vec<&RaceRun> = runs.get(&season).map(|r| r.iter().collect()).unwrap_or_default();
     let mut events: Vec<String> = Vec::new();
     for r in &target {
@@ -384,7 +544,7 @@ pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_season
     let mut races = Vec::new();
     for event in events {
         let others: Vec<&DriverObs> = all_obs.iter().filter(|o| o.race != event).collect();
-        let skills = fit_skills(&others);
+        let skills = fit_skills(&others, drift);
         let event_runs: Vec<&&RaceRun> = target.iter().filter(|r| r.event_key == event).collect();
         let mut car_runs = Vec::new();
         for run in &event_runs {
@@ -418,6 +578,7 @@ pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_season
         season,
         window: [season - window_seasons + 1, season],
         min_teammate_races: MIN_TEAMMATE_RACES,
+        skill_drift: drift,
         all_races: summarise(&counted),
         common_races: summarise(&common),
         races,
@@ -452,30 +613,44 @@ fn summarise(races: &[(String, Vec<(String, f64, f64)>)]) -> SeasonTable {
     SeasonTable { races: races.iter().map(|r| r.0.clone()).collect(), teams }
 }
 
-/// Internal: every driver's fitted skill over a window (percent, relative to the
-/// average driver; negative is faster), dry and wet, with teammate races. Not part
-/// of the published outputs.
-pub fn skills_table(runs: &[&RaceRun]) -> Vec<(String, f64, f64, usize, bool)> {
-    let obs = observations(&runs.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
+/// Internal driver skill table of a window (not part of the published outputs).
+pub struct SkillRow {
+    pub driver: String,
+    /// Dry skill per season of the window (percent vs the average linked driver of
+    /// the latest season; negative is faster); `None` without comparisons that season.
+    pub dry: Vec<Option<f64>>,
+    pub wet_delta: Option<f64>,
+    pub teammate_races: usize,
+    pub established: bool,
+}
+
+pub fn skills_table(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_seasons: i64) -> (Vec<i64>, f64, Vec<SkillRow>) {
+    let obs = observations(&window_runs(season, runs, window_seasons));
     let refs: Vec<&DriverObs> = obs.iter().collect();
-    let skills = fit_skills(&refs);
-    let linked: Vec<&String> = skills.linked.iter().collect();
-    let mean = linked.iter().map(|d| skills.skill(d, Condition::Dry)).sum::<f64>() / linked.len().max(1) as f64;
-    let mut out: Vec<(String, f64, f64, usize, bool)> = skills
+    let drift = choose_drift(&refs);
+    let skills = fit_skills(&refs, drift);
+    let seasons: Vec<i64> = ((season - window_seasons + 1)..=season).collect();
+    let latest: Vec<f64> = skills
         .dry
-        .keys()
-        .map(|d| {
-            (
-                d.clone(),
-                skills.skill(d, Condition::Dry) - mean,
-                skills.skill(d, Condition::Wet) - mean,
-                skills.teammate_races[d],
-                skills.established(d),
-            )
+        .iter()
+        .filter(|((d, s), _)| *s == season && skills.linked.contains(d))
+        .map(|(_, v)| *v)
+        .collect();
+    let mean = if latest.is_empty() { 0.0 } else { latest.iter().sum::<f64>() / latest.len() as f64 };
+    let drivers: BTreeSet<&String> = skills.dry.keys().map(|(d, _)| d).collect();
+    let mut rows: Vec<SkillRow> = drivers
+        .into_iter()
+        .map(|d| SkillRow {
+            driver: d.clone(),
+            dry: seasons.iter().map(|s| skills.dry.get(&(d.clone(), *s)).map(|v| v - mean)).collect(),
+            wet_delta: skills.wet_delta.get(d).copied(),
+            teammate_races: skills.teammate_races[d],
+            established: skills.established(d),
         })
         .collect();
-    out.sort_by(|a, b| a.1.total_cmp(&b.1));
-    out
+    let last = |r: &SkillRow| r.dry.iter().rev().flatten().next().copied().unwrap_or(f64::INFINITY);
+    rows.sort_by(|a, b| last(a).total_cmp(&last(b)));
+    (seasons, drift, rows)
 }
 
 #[cfg(test)]
@@ -485,6 +660,7 @@ mod tests {
     fn obs(race: &str, driver: &str, team: &str, gap: f64) -> DriverObs {
         DriverObs {
             race: race.into(),
+            season: season_of(race),
             condition: Condition::Dry,
             driver: driver.into(),
             team: team.into(),
@@ -493,77 +669,109 @@ mod tests {
         }
     }
 
-    /// Three teams over 30 races; drivers move between teams, so skills are linked
-    /// across the grid. Each race's gaps are car + skill, measured to the quickest.
-    fn grid() -> Vec<DriverObs> {
-        let skill: HashMap<&str, f64> = [("A", -0.3), ("B", 0.1), ("C", 0.0), ("D", 0.4), ("E", -0.1), ("F", 0.2)].into();
+    /// Three teams over three seasons of 10 races; drivers move between teams each
+    /// season, so skills are linked across the grid. Each race's gaps are car +
+    /// skill, measured to the quickest. `drift` changes driver B's skill by season.
+    fn grid(b_by_season: [f64; 3]) -> Vec<DriverObs> {
         let mut out = Vec::new();
-        for r in 0..30 {
-            // Pairs change at race 10 and 20.
-            let lineup: [(&str, &str, &str); 3] = match r {
-                0..=9 => [("Red", "A", "B"), ("Blue", "C", "D"), ("Green", "E", "F")],
-                10..=19 => [("Red", "A", "C"), ("Blue", "B", "E"), ("Green", "D", "F")],
-                _ => [("Red", "A", "D"), ("Blue", "C", "F"), ("Green", "B", "E")],
-            };
-            let car: HashMap<&str, f64> = [("Red", 0.0), ("Blue", 0.5 + 0.02 * r as f64), ("Green", 1.0)].into();
-            let race = format!("R{r:02}");
-            let raw: Vec<(&str, &str, f64)> = lineup
-                .iter()
-                .flat_map(|(t, a, b)| [(*t, *a, car[t] + skill[a]), (*t, *b, car[t] + skill[b])])
-                .collect();
-            let best = raw.iter().map(|x| x.2).fold(f64::INFINITY, f64::min);
-            for (t, d, v) in raw {
-                out.push(obs(&race, d, t, v - best));
+        for (si, season) in [2021, 2022, 2023].iter().enumerate() {
+            let skill: HashMap<&str, f64> =
+                [("A", -0.3), ("B", b_by_season[si]), ("C", 0.0), ("D", 0.4), ("E", -0.1), ("F", 0.2)].into();
+            for r in 0..10 {
+                let lineup: [(&str, &str, &str); 3] = match si {
+                    0 => [("Red", "A", "B"), ("Blue", "C", "D"), ("Green", "E", "F")],
+                    1 => [("Red", "A", "C"), ("Blue", "B", "E"), ("Green", "D", "F")],
+                    _ => [("Red", "A", "D"), ("Blue", "C", "F"), ("Green", "B", "E")],
+                };
+                let car: HashMap<&str, f64> = [("Red", 0.0), ("Blue", 0.5 + 0.02 * r as f64), ("Green", 1.0)].into();
+                let race = format!("{season}-{r:02}");
+                let raw: Vec<(&str, &str, f64)> = lineup
+                    .iter()
+                    .flat_map(|(t, a, b)| [(*t, *a, car[t] + skill[a]), (*t, *b, car[t] + skill[b])])
+                    .collect();
+                let best = raw.iter().map(|x| x.2).fold(f64::INFINITY, f64::min);
+                for (t, d, v) in raw {
+                    out.push(obs(&race, d, t, v - best));
+                }
             }
         }
         out
     }
 
+    fn car_gaps(all: &[DriverObs], race: &str, drift: f64) -> CarRun {
+        let others: Vec<&DriverObs> = all.iter().filter(|o| o.race != race).collect();
+        let skills = fit_skills(&others, drift);
+        let mine: Vec<&DriverObs> = all.iter().filter(|o| o.race == race).collect();
+        car_run(Condition::Dry, &mine, &skills, 90.0)
+    }
+
     #[test]
     fn recovers_car_gaps_with_the_driver_removed() {
-        let all = grid();
-        let race = "R25";
-        let others: Vec<&DriverObs> = all.iter().filter(|o| o.race != race).collect();
-        let skills = fit_skills(&others);
-        let mine: Vec<&DriverObs> = all.iter().filter(|o| o.race == race).collect();
-        let run = car_run(Condition::Dry, &mine, &skills, 90.0);
+        let run = car_gaps(&grid([0.1, 0.1, 0.1]), "2023-05", 0.1);
         let gap = |t: &str| run.teams.iter().find(|c| c.team == t).unwrap().gap_pct;
-        assert!(gap("Red").abs() < 1e-6);
-        assert!((gap("Blue") - (0.5 + 0.02 * 25.0)).abs() < 1e-6, "{run:?}");
-        assert!((gap("Green") - 1.0).abs() < 1e-6, "{run:?}");
+        assert!(gap("Red").abs() < 1e-3, "{run:?}");
+        assert!((gap("Blue") - 0.6).abs() < 1e-3, "{run:?}");
+        assert!((gap("Green") - 1.0).abs() < 1e-3, "{run:?}");
         assert!(run.teams.iter().all(|t| t.note.is_none()));
     }
 
     #[test]
+    fn a_driver_whose_form_changes_between_seasons_is_followed() {
+        // B is much slower in his first season than later. With few links, teammate gaps
+        // cannot fully tell "B improved" from "his teammates got slower" (the smallest
+        // total change splits it between them), but a season skill with the drift chosen
+        // by cross-validation must still beat one fixed skill clearly.
+        let all = grid([0.8, 0.1, 0.1]);
+        let refs: Vec<&DriverObs> = all.iter().collect();
+        let drift = choose_drift(&refs);
+        assert!(drift >= 0.3, "drift {drift}");
+        let error = |drift: f64| {
+            let run = car_gaps(&all, "2023-05", drift);
+            let gap = |t: &str| run.teams.iter().find(|c| c.team == t).unwrap().gap_pct;
+            (gap("Blue") - 0.6).abs() + (gap("Green") - 1.0).abs()
+        };
+        let (chosen, fixed) = (error(drift), error(SKILL_DRIFT_CANDIDATES[0]));
+        assert!(chosen < 0.8 * fixed, "chosen {chosen} fixed {fixed}");
+    }
+
+    #[test]
     fn a_rookie_is_not_removed_and_the_race_is_marked() {
-        let mut all = grid();
-        // G replaces F in race 25 only: no comparisons elsewhere.
-        for o in all.iter_mut().filter(|o| o.race == "R25" && o.driver == "F") {
+        let mut all = grid([0.1, 0.1, 0.1]);
+        // G replaces F in one race only: no comparisons elsewhere.
+        for o in all.iter_mut().filter(|o| o.race == "2023-05" && o.driver == "F") {
             o.driver = "G".into();
         }
-        let others: Vec<&DriverObs> = all.iter().filter(|o| o.race != "R25").collect();
-        let skills = fit_skills(&others);
-        assert!(!skills.established("G"));
-        let mine: Vec<&DriverObs> = all.iter().filter(|o| o.race == "R25").collect();
-        let run = car_run(Condition::Dry, &mine, &skills, 90.0);
+        let run = car_gaps(&all, "2023-05", 0.1);
         let blue = run.teams.iter().find(|c| c.team == "Blue").unwrap();
         assert_eq!(blue.drivers, vec!["C".to_string()]);
         assert_eq!(blue.note.as_deref(), Some(ROOKIE_NOTE));
-        assert!((blue.gap_pct - (0.5 + 0.02 * 25.0)).abs() < 1e-6);
+        assert!((blue.gap_pct - 0.6).abs() < 1e-3);
     }
 
     #[test]
     fn unlinked_teams_are_not_established() {
-        // Two teams whose drivers never meet anyone else: they form their own part.
-        let mut all = grid();
-        for r in 0..30 {
-            for (d, v) in [("X", 0.0), ("Y", 0.2)] {
-                all.push(obs(&format!("R{r:02}"), d, "Solo", 2.0 + v));
+        let mut all = grid([0.1, 0.1, 0.1]);
+        for season in [2021, 2022, 2023] {
+            for r in 0..10 {
+                for (d, v) in [("X", 0.0), ("Y", 0.2)] {
+                    all.push(obs(&format!("{season}-{r:02}"), d, "Solo", 2.0 + v));
+                }
             }
         }
         let refs: Vec<&DriverObs> = all.iter().collect();
-        let skills = fit_skills(&refs);
+        let skills = fit_skills(&refs, 0.1);
         assert!(skills.established("A"));
         assert!(!skills.established("X"));
+    }
+
+    #[test]
+    fn wet_skill_needs_enough_wet_teammate_races() {
+        let mut all = grid([0.1, 0.1, 0.1]);
+        for o in all.iter_mut().filter(|o| o.race == "2022-03" || o.race == "2022-04") {
+            o.condition = Condition::Wet;
+        }
+        let refs: Vec<&DriverObs> = all.iter().collect();
+        let skills = fit_skills(&refs, 0.1);
+        assert!(skills.wet_delta.is_empty(), "two wet races are not enough");
     }
 }
