@@ -394,7 +394,7 @@ fn main() -> Result<()> {
                 for s in &seasons {
                     print!(" {s:>7}");
                 }
-                println!(" {:>7} {:>6} {:>5}", "wet+", "races", "estab");
+                println!(" {:>7} {:>13} {:>6} {:>5}", "80% +-", "wet+ (80% +-)", "races", "estab");
                 for r in rows {
                     print!("{:<5}", r.driver);
                     for v in &r.dry {
@@ -403,8 +403,12 @@ fn main() -> Result<()> {
                             None => print!(" {:>7}", "-"),
                         }
                     }
-                    let wet = r.wet_delta.map_or("-".to_string(), |w| format!("{w:.3}"));
-                    println!(" {wet:>7} {:>6} {:>5}", r.teammate_races, if r.established { "yes" } else { "no" });
+                    let range = r.range80.map_or("-".to_string(), |v| format!("{v:.3}"));
+                    let wet = match (r.wet_delta, r.wet_range80) {
+                        (Some(w), Some(h)) => format!("{w:.3} ({h:.3})"),
+                        _ => "-".to_string(),
+                    };
+                    println!(" {range:>7} {wet:>13} {:>6} {:>5}", r.teammate_races, if r.established { "yes" } else { "no" });
                 }
             }
             if let Some(path) = json {
