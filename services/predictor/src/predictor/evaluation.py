@@ -145,9 +145,13 @@ def _race_model(pace, name, simulated=False, **options):
 # beyond noise, 15+ and 2024 (-0.000098) fine: promoted. After the session -0.000020,
 # noise, nothing worse beyond noise, 2024 -0.000061: kept as a tie (tie-break: races
 # with an unseparable driver are used instead of dropped). Gate A (lap effects,
-# v3wrqwt-re) was not adopted: +0.000082 after the session, -0.000012 before.
+# v3wrqwt-re) was not adopted: +0.000082 after the session, -0.000012 before. The
+# wet champion with the same reading (v3wrqwt-rpc), scored on the 15 wet qualifyings:
+# +0.000003 [-0.000026, +0.000036] after the session, +0.000027 [-0.000021, +0.000078]
+# before (90% bootstrap, 3 batches): level, kept as a tie so every forecast reads race
+# pace the same way.
 CHAMPIONS = {"pre_weekend": "pace3wrqwtrp", "after_session": "pace3wrqwtrp",
-             "pre_weekend_wet": "pace3wrqwtc", "after_session_wet": "pace3wrqwtc"}
+             "pre_weekend_wet": "pace3wrqwtcrp", "after_session_wet": "pace3wrqwtcrp"}
 
 # Race champions (2019-24, 128 races, RPS against race:v1a). Before the weekend the
 # lap-by-lap simulation: race:v2a -0.00030 [-0.00049, -0.00011], 15+ within noise,
@@ -178,7 +182,14 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrp", "after_session": "pace3wrqwtrp",
 # after qualifying and worse than race:v3f before the weekend (+0.00052). With held cars
 # able to leave their gap and attack (re-gated): -0.00060 [-0.00093, -0.00028], 15+
 # -0.00065, 2024 -0.00119, winner log loss better: confirmed.
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3fw2a", "after_session": "race_mix3ffn1a"}
+# Gate B (2026-11-21, 3 seed batches, race pace keeping a race's largest connected group
+# in every component): before the weekend race:mix3fwp2ap -0.000099 [-0.000196,
+# -0.000010], outcome and winner log loss better beyond noise, 15+ -0.000094 (noise),
+# 2024 -0.00019: promoted. After qualifying race:mix3ffnp1ap -0.000045 [-0.000096,
+# +0.000004] (noise), outcome and winner better beyond noise, 15+ -0.000006, 2024
+# -0.000015: kept as a tie. Gate A (lap effects) was not adopted: 2024 +0.000104
+# before the weekend, +0.00023 after qualifying (limit +0.0001).
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2ap", "after_session": "race_mix3ffnp1ap"}
 
 
 class ChampionRouter:
@@ -356,6 +367,8 @@ def model_registry():
             # gate B: the champions on race pace that keeps a race's largest connected group (no lap effects)
             "pace3wrqwtrp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                 robust=True, race_read={"partial": True}),
+            "pace3wrqwtcrp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                 robust=True, wet_forecast=True, race_read={"partial": True}),
             "race1ap": lambda: _race_model("pace3wrqwtrp", "race:v1ap"),
             "race2ap": lambda: _race_model("pace3wrqwtrp", "race:v2ap", simulated=True),
             "race3ffnp": lambda: _race_model("pace3wrqwtrp", "race:v3ffnp", simulated=True, forecast_battles=True,

@@ -196,8 +196,8 @@ def test_race_champions_route_by_forecast_moment():
     assert router.name == "race_champion" and router.champions == RACE_CHAMPIONS
     before = types.SimpleNamespace(cutoff_label="pre_weekend")
     after = types.SimpleNamespace(cutoff_label="last")
-    assert router.models[router.route(before)].name == "race:mix3fw2a"
-    assert router.models[router.route(after)].name == "race:mix3ffn1a"
+    assert router.models[router.route(before)].name == "race:mix3fwp2ap"
+    assert router.models[router.route(after)].name == "race:mix3ffnp1ap"
 
 
 def test_the_battle_model_can_read_forecast_pace_differences():
