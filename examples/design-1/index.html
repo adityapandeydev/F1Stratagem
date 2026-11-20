@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pit Wall</title>
+  <script>
+    // Apply the theme before the first paint (no flash on load).
+    (function () { try {
+      var q = new URLSearchParams(location.search), r = document.documentElement;
+      r.dataset.theme = q.get("theme") || localStorage.getItem("f1x-theme") || "carbon";
+      r.dataset.mode = q.get("mode") || localStorage.getItem("f1x-mode") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    } catch (e) {} })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="../shared/themes.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="side">
+    <a class="brand" href="../index.html"><span class="mark">F1</span><span>Stratagem</span></a>
+    <nav class="side-nav" aria-label="Sections">
+      <a class="nav-item" href="#home" data-page="home"><span class="ico">◧</span>Home</a>
+      <a class="nav-item" href="#race" data-page="race"><span class="ico">◉</span>Race</a>
+      <a class="nav-item" href="#analysis" data-page="analysis"><span class="ico">▤</span>Analysis</a>
+      <a class="nav-item" href="#seasons" data-page="seasons"><span class="ico">▦</span>Seasons</a>
+      <a class="nav-item" href="#calendar" data-page="calendar"><span class="ico">◍</span>Calendar</a>
+      <a class="nav-item" href="#predictions" data-page="predictions"><span class="ico">◔</span>Predictions</a>
+      <a class="nav-item" href="#track" data-page="track"><span class="ico">⌘</span>Track map</a>
+      <a class="nav-item" href="#community" data-page="community"><span class="ico">◎</span>Community</a>
+    </nav>
+    <div class="side-foot">
+      <div id="theme"></div>
+      <a class="nav-item signin" href="#account" data-page-link="account">Sign in</a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="strip">
+      <div class="strip-item"><span class="lbl">Next</span><b>Las Vegas GP</b><span class="muted">R22 · 2d 14h</span></div>
+      <div class="strip-item live"><span class="pulse"></span><b>FP2</b><span class="muted">lap 18 · placeholder</span></div>
+      <label class="search"><span>⌕</span><input placeholder="Search drivers, races, circuits"></label>
+    </header>
+
+    <section class="page" data-page="home">
+      <div class="title-row"><h1>Season 2024</h1><span class="muted">Data through round 24</span></div>
+      <div class="grid g-home">
+        <div class="panel kpi"><span class="lbl">Drivers' champion</span><b id="kpi-driver"></b><span class="muted" id="kpi-driver-sub"></span></div>
+        <div class="panel kpi"><span class="lbl">Constructors' champion</span><b id="kpi-team"></b><span class="muted" id="kpi-team-sub"></span></div>
+        <div class="panel kpi"><span class="lbl">Races analysed</span><b>24</b><span class="muted">team race pace, car only</span></div>
+        <div class="panel" id="next-race"></div>
+        <div class="panel wide"><div class="panel-head"><h2>Race pace</h2><span class="muted">season 2024</span></div><div id="pace-home"></div></div>
+        <div class="panel"><div class="panel-head"><h2>Constructors</h2></div><div id="st-home"></div></div>
+        <div class="panel full"><div class="panel-head"><h2>Latest races</h2><a class="link" href="#seasons" data-goto="seasons">All races →</a></div><div class="race-row" id="races-home"></div></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="race">
+      <div class="title-row"><h1 id="race-title"></h1><span class="muted">Round 21 · race pace</span></div>
+      <div class="grid g-race">
+        <div class="panel wide"><div class="panel-head"><h2>Race pace</h2><span class="muted">equal tyres and fuel, clear air</span></div><div id="pace-race"></div></div>
+        <div class="panel" id="track-race"></div>
+        <div class="panel" id="strategy"></div>
+        <div class="panel" id="live"></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="analysis">
+      <div class="title-row"><h1>Analysis</h1><span class="muted">measured from the timing data</span></div>
+      <div class="grid g-race">
+        <div class="panel wide"><div class="panel-head"><h2>Season race pace</h2></div><div id="pace-analysis"></div></div>
+        <div class="panel modules">
+          <h2>Modules</h2>
+          <ul class="module-list">
+            <li><b>Race pace</b><span class="live-tag">live</span></li>
+            <li><b>Tyre degradation</b><span>next</span></li>
+            <li><b>Lap explorer</b><span>next</span></li>
+            <li><b>Telemetry compare</b><span>planned</span></li>
+            <li><b>Corner speeds</b><span>planned</span></li>
+            <li><b>Pit stops and strategy</b><span>planned</span></li>
+            <li><b>Overtaking and mobility</b><span>planned</span></li>
+            <li><b>Reliability</b><span>planned</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" data-page="seasons">
+      <div class="title-row"><h1>Seasons</h1>
+        <div id="season-pick"><button data-value="2024">2024</button><button data-value="2023">2023</button><button data-value="2022">2022</button><button data-value="2021">2021</button></div>
+      </div>
+      <div class="panel full" id="summaries"></div>
+      <div class="grid g-seasons">
+        <div class="panel"><div class="panel-head"><h2>Drivers</h2></div><div id="st-drivers"></div></div>
+        <div class="panel"><div class="panel-head"><h2>Constructors</h2></div><div id="st-cons"></div></div>
+      </div>
+      <h2 class="section-h">Every race</h2>
+      <div class="race-grid" id="races-all"></div>
+    </section>
+
+    <section class="page" data-page="calendar"><div class="title-row"><h1>Calendar</h1></div><div class="grid g-seasons"><div class="panel" id="cal"></div><div class="panel" id="cal-login"></div></div></section>
+    <section class="page" data-page="predictions"><div class="title-row"><h1>Predictions</h1></div><div class="grid g-seasons"><div class="panel" id="pred"></div><div class="panel" id="pred-strat"></div></div></section>
+    <section class="page" data-page="track"><div class="title-row"><h1>Track map</h1></div><div class="panel" id="track-full"></div></section>
+    <section class="page" data-page="community"><div class="title-row"><h1>Community</h1></div><div class="grid g-seasons"><div class="panel" id="comm"></div><div class="panel" id="comm-login"></div></div></section>
+  </div>
+
+  <script src="../shared/data.js"></script>
+  <script src="../shared/core.js"></script>
+  <script>
+    const D = window.F1DATA, X = window.F1X;
+    X.mountThemePicker(document.getElementById("theme"));
+    const nav = X.navigation(document.querySelector(".side-nav"), { vertical: true });
+    document.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); nav.show(a.dataset.goto, true); }));
+    document.querySelector("[data-page-link='account']").addEventListener("click", (e) => { e.preventDefault(); nav.show("community", true); });
+
+    const champ = D.standings.drivers[0], cons = D.standings.constructors[0];
+    document.getElementById("kpi-driver").textContent = champ.name;
+    document.getElementById("kpi-driver-sub").textContent = champ.points + " pts · " + champ.wins + " wins";
+    document.getElementById("kpi-team").textContent = X.team(cons.team).name;
+    document.getElementById("kpi-team-sub").textContent = cons.points + " pts · " + cons.wins + " wins";
+    document.getElementById("race-title").textContent = D.race.name + " " + D.season;
+
+    X.placeholders.nextRace(document.getElementById("next-race"), D);
+    X.paceCard(document.getElementById("pace-home"), "season", D);
+    X.standings(document.getElementById("st-home"), D, "constructors", 10);
+    X.raceCards(document.getElementById("races-home"), { races: D.races.slice(-6).reverse() }, { compact: true });
+    X.paceCard(document.getElementById("pace-race"), "race", D);
+    X.placeholders.track(document.getElementById("track-race"));
+    X.placeholders.strategy(document.getElementById("strategy"));
+    X.placeholders.live(document.getElementById("live"));
+    X.paceCard(document.getElementById("pace-analysis"), "season", D);
+    X.segmented(document.getElementById("season-pick"), "2024", () => {});
+    X.placeholders.summaries(document.getElementById("summaries"));
+    X.standings(document.getElementById("st-drivers"), D, "drivers", 20);
+    X.standings(document.getElementById("st-cons"), D, "constructors");
+    X.raceCards(document.getElementById("races-all"), D);
+    X.placeholders.calendar(document.getElementById("cal"));
+    X.placeholders.login(document.getElementById("cal-login"));
+    X.placeholders.predictions(document.getElementById("pred"));
+    X.placeholders.strategy(document.getElementById("pred-strat"));
+    X.placeholders.track(document.getElementById("track-full"));
+    X.placeholders.community(document.getElementById("comm"));
+    X.placeholders.login(document.getElementById("comm-login"));
+  </script>
+</body>
+</html>

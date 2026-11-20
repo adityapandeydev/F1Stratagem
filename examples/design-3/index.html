@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bento</title>
+  <script>
+    // Apply the theme before the first paint (no flash on load).
+    (function () { try {
+      var q = new URLSearchParams(location.search), r = document.documentElement;
+      r.dataset.theme = q.get("theme") || localStorage.getItem("f1x-theme") || "carbon";
+      r.dataset.mode = q.get("mode") || localStorage.getItem("f1x-mode") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    } catch (e) {} })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="../shared/themes.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="../index.html"><span class="blob"></span>Stratagem</a>
+    <div class="bar-tools"><div id="theme"></div><button class="btn" type="button" id="signin">Sign in</button></div>
+  </header>
+
+  <main>
+    <section class="page" data-page="home">
+      <h1 class="hello">2024, at a glance</h1>
+      <div class="bento">
+        <div class="tile t-next" data-goto="race" id="next-race"></div>
+        <div class="tile t-champ"><p class="ph-kicker">Champion</p><b id="champ"></b><span id="champ-sub"></span></div>
+        <div class="tile t-live" id="live"></div>
+        <div class="tile t-pace"><div class="tile-head"><h2>Race pace</h2><span>season 2024</span></div><div id="pace-home"></div></div>
+        <div class="tile t-cons" data-goto="seasons"><div class="tile-head"><h2>Constructors</h2><span>tap for more</span></div><div id="st-home"></div></div>
+        <div class="tile t-track" data-goto="track" id="track"></div>
+        <div class="tile t-cal" data-goto="calendar" id="cal-mini"></div>
+        <div class="tile t-comm" data-goto="community" id="comm-mini"></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="race">
+      <h1 class="hello" id="race-title"></h1>
+      <div class="bento">
+        <div class="tile t-pace"><div class="tile-head"><h2>Race pace</h2><span>equal tyres and fuel, clear air</span></div><div id="pace-race"></div></div>
+        <div class="tile t-side" id="strategy"></div>
+        <div class="tile t-side" id="track-race"></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="seasons">
+      <div class="season-head"><h1 class="hello">Seasons</h1><div id="season-pick"><button data-value="2024">2024</button><button data-value="2023">2023</button><button data-value="2022">2022</button><button data-value="2021">2021</button></div></div>
+      <div class="tile" id="summaries"></div>
+      <div class="race-bento" id="races-all"></div>
+      <div class="bento two">
+        <div class="tile"><div class="tile-head"><h2>Drivers</h2></div><div id="st-drivers"></div></div>
+        <div class="tile"><div class="tile-head"><h2>Constructors</h2></div><div id="st-cons"></div></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="calendar"><h1 class="hello">Calendar</h1><div class="bento two"><div class="tile" id="cal"></div><div class="tile" id="pred"></div></div></section>
+    <section class="page" data-page="track"><h1 class="hello">Track map</h1><div class="tile" id="track-full"></div></section>
+    <section class="page" data-page="community"><h1 class="hello">Community</h1><div class="bento two"><div class="tile" id="comm"></div><div class="tile" id="login"></div></div></section>
+  </main>
+
+  <nav class="dock" aria-label="Sections">
+    <a class="nav-item" href="#home" data-page="home"><span class="ico">⌂</span><span class="txt">Home</span></a>
+    <a class="nav-item" href="#race" data-page="race"><span class="ico">◉</span><span class="txt">Race</span></a>
+    <a class="nav-item" href="#seasons" data-page="seasons"><span class="ico">▦</span><span class="txt">Seasons</span></a>
+    <a class="nav-item" href="#calendar" data-page="calendar"><span class="ico">◍</span><span class="txt">Calendar</span></a>
+    <a class="nav-item" href="#track" data-page="track"><span class="ico">⌘</span><span class="txt">Track</span></a>
+    <a class="nav-item" href="#community" data-page="community"><span class="ico">◎</span><span class="txt">Community</span></a>
+  </nav>
+
+  <script src="../shared/data.js"></script>
+  <script src="../shared/core.js"></script>
+  <script>
+    const D = window.F1DATA, X = window.F1X;
+    X.mountThemePicker(document.getElementById("theme"));
+    const nav = X.navigation(document.querySelector(".dock"));
+    document.getElementById("signin").addEventListener("click", () => nav.show("community", true));
+    document.querySelectorAll("[data-goto]").forEach((t) => {
+      t.tabIndex = 0;
+      t.addEventListener("click", (e) => { if (e.target.closest("button")) return; nav.show(t.dataset.goto, true); });
+    });
+    const champ = D.standings.drivers[0];
+    document.getElementById("champ").textContent = champ.name;
+    document.getElementById("champ-sub").textContent = champ.points + " points · " + champ.wins + " wins";
+    document.getElementById("race-title").textContent = D.race.name + " " + D.season;
+    X.placeholders.nextRace(document.getElementById("next-race"), D);
+    X.placeholders.live(document.getElementById("live"));
+    X.paceCard(document.getElementById("pace-home"), "season", D);
+    X.standings(document.getElementById("st-home"), D, "constructors", 6);
+    X.placeholders.track(document.getElementById("track"));
+    X.placeholders.calendar(document.getElementById("cal-mini"));
+    X.placeholders.community(document.getElementById("comm-mini"));
+    X.paceCard(document.getElementById("pace-race"), "race", D);
+    X.placeholders.strategy(document.getElementById("strategy"));
+    X.placeholders.track(document.getElementById("track-race"));
+    X.segmented(document.getElementById("season-pick"), "2024", () => {});
+    X.placeholders.summaries(document.getElementById("summaries"));
+    X.raceCards(document.getElementById("races-all"), D);
+    X.standings(document.getElementById("st-drivers"), D, "drivers", 20);
+    X.standings(document.getElementById("st-cons"), D, "constructors");
+    X.placeholders.calendar(document.getElementById("cal"));
+    X.placeholders.predictions(document.getElementById("pred"));
+    X.placeholders.track(document.getElementById("track-full"));
+    X.placeholders.community(document.getElementById("comm"));
+    X.placeholders.login(document.getElementById("login"));
+  </script>
+</body>
+</html>

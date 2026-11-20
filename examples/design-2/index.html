@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Broadcast</title>
+  <script>
+    // Apply the theme before the first paint (no flash on load).
+    (function () { try {
+      var q = new URLSearchParams(location.search), r = document.documentElement;
+      r.dataset.theme = q.get("theme") || localStorage.getItem("f1x-theme") || "carbon";
+      r.dataset.mode = q.get("mode") || localStorage.getItem("f1x-mode") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    } catch (e) {} })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&display=swap">
+  <link rel="stylesheet" href="../shared/themes.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="../index.html">F1<span>STRATAGEM</span></a>
+      <nav class="top-nav" aria-label="Sections">
+        <a class="nav-item" href="#weekend" data-page="weekend">Race weekend</a>
+        <a class="nav-item" href="#analysis" data-page="analysis">Analysis</a>
+        <a class="nav-item" href="#history" data-page="history">History</a>
+        <a class="nav-item" href="#calendar" data-page="calendar">Calendar</a>
+        <a class="nav-item" href="#predictions" data-page="predictions">Predictions</a>
+        <a class="nav-item" href="#community" data-page="community">Community</a>
+      </nav>
+      <div class="top-tools"><div id="theme"></div><button class="btn primary" type="button" id="signin">Sign in</button></div>
+    </div>
+  </header>
+
+  <section class="page" data-page="weekend">
+    <div class="hero">
+      <div class="hero-inner">
+        <div class="hero-copy" id="next-race"></div>
+        <div class="hero-track" id="hero-track"></div>
+      </div>
+      <div class="ticker"><div class="ticker-track"><span>FP2 · lap 18 · track green</span><span>Placeholder live ticker</span><span>Weather · 21 °C air · 34 °C track</span><span>Pit lane open</span><span>FP2 · lap 18 · track green</span><span>Placeholder live ticker</span><span>Weather · 21 °C air · 34 °C track</span><span>Pit lane open</span></div></div>
+    </div>
+    <div class="wrap mag">
+      <article class="feature">
+        <p class="kicker">Last race · <span id="race-name"></span></p>
+        <h2 class="headline">Who had the fastest car?</h2>
+        <div class="card" id="pace-race"></div>
+      </article>
+      <aside class="rail">
+        <div class="card" id="strategy"></div>
+        <div class="card" id="live"></div>
+        <div class="card"><h3 class="rail-h">Constructors 2024</h3><div id="st-rail"></div></div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="page" data-page="analysis">
+    <div class="wrap">
+      <p class="kicker">Analysis</p>
+      <h2 class="headline">Race pace across the 2024 season</h2>
+      <div class="card big" id="pace-season"></div>
+      <div class="tiles">
+        <div class="tile"><b>Tyre degradation</b><span>Coming next</span></div>
+        <div class="tile"><b>Lap explorer</b><span>Coming next</span></div>
+        <div class="tile"><b>Telemetry compare</b><span>Planned</span></div>
+        <div class="tile"><b>Corner speeds</b><span>Planned</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" data-page="history">
+    <div class="wrap">
+      <div class="history-head">
+        <div><p class="kicker">History</p><h2 class="headline">The 2024 season</h2></div>
+        <div id="season-pick"><button data-value="2024">2024</button><button data-value="2023">2023</button><button data-value="2022">2022</button><button data-value="2021">2021</button></div>
+      </div>
+      <div class="strip" id="races-all"></div>
+      <div class="card" id="summaries"></div>
+      <div class="two">
+        <div class="card"><h3 class="rail-h">Drivers</h3><div id="st-drivers"></div></div>
+        <div class="card"><h3 class="rail-h">Constructors</h3><div id="st-cons"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" data-page="calendar"><div class="wrap two"><div class="card" id="cal"></div><div class="card" id="track-full"></div></div></section>
+  <section class="page" data-page="predictions"><div class="wrap two"><div class="card" id="pred"></div><div class="card" id="pred-strat"></div></div></section>
+  <section class="page" data-page="community"><div class="wrap two"><div class="card" id="comm"></div><div class="card" id="login"></div></div></section>
+
+  <script src="../shared/data.js"></script>
+  <script src="../shared/core.js"></script>
+  <script>
+    const D = window.F1DATA, X = window.F1X;
+    X.mountThemePicker(document.getElementById("theme"));
+    const nav = X.navigation(document.querySelector(".top-nav"));
+    document.getElementById("signin").addEventListener("click", () => nav.show("community", true));
+    document.getElementById("race-name").textContent = D.race.name + " " + D.season;
+    X.placeholders.nextRace(document.getElementById("next-race"), D);
+    X.placeholders.track(document.getElementById("hero-track"));
+    X.paceCard(document.getElementById("pace-race"), "race", D);
+    X.placeholders.strategy(document.getElementById("strategy"));
+    X.placeholders.live(document.getElementById("live"));
+    X.standings(document.getElementById("st-rail"), D, "constructors", 10);
+    X.paceCard(document.getElementById("pace-season"), "season", D);
+    X.segmented(document.getElementById("season-pick"), "2024", () => {});
+    X.raceCards(document.getElementById("races-all"), D);
+    X.placeholders.summaries(document.getElementById("summaries"));
+    X.standings(document.getElementById("st-drivers"), D, "drivers", 20);
+    X.standings(document.getElementById("st-cons"), D, "constructors");
+    X.placeholders.calendar(document.getElementById("cal"));
+    X.placeholders.track(document.getElementById("track-full"));
+    X.placeholders.predictions(document.getElementById("pred"));
+    X.placeholders.strategy(document.getElementById("pred-strat"));
+    X.placeholders.community(document.getElementById("comm"));
+    X.placeholders.login(document.getElementById("login"));
+  </script>
+</body>
+</html>

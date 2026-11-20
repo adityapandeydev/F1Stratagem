@@ -1,0 +1,82 @@
+/* Option 3: Bento. Tile home, floating dock navigation, soft rounded shapes. */
+body { font-family: "Plus Jakarta Sans", system-ui, sans-serif; padding-bottom: 110px; }
+main { width: min(1280px, 100% - 2rem); margin: 0 auto; }
+
+.bar { width: min(1280px, 100% - 2rem); margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 1.1rem 0; gap: 0.8rem 1rem; }
+.bar-tools { flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 800; font-size: 1.2rem; color: var(--ink); text-decoration: none; }
+.blob { width: 28px; height: 28px; border-radius: 40% 60% 55% 45%; background: var(--accent); animation: morph 6s ease-in-out infinite; }
+@keyframes morph { 50% { border-radius: 60% 40% 45% 55%; transform: rotate(20deg); } }
+.bar-tools { display: flex; align-items: center; gap: 0.8rem; }
+
+.hello { font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 800; letter-spacing: -0.03em; margin: 0.6rem 0 1.2rem; }
+.season-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+
+.bento {
+  display: grid; gap: 14px; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-auto-rows: minmax(120px, auto);
+  margin-bottom: 14px;
+}
+.bento.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tile {
+  position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 26px; padding: 1.2rem;
+  min-width: 0; animation: tile-in 0.7s var(--spring) both; transition: transform 0.45s var(--spring), box-shadow 0.3s;
+}
+.bento .tile:nth-child(1) { animation-delay: 0ms; } .bento .tile:nth-child(2) { animation-delay: 60ms; }
+.bento .tile:nth-child(3) { animation-delay: 120ms; } .bento .tile:nth-child(4) { animation-delay: 180ms; }
+.bento .tile:nth-child(5) { animation-delay: 240ms; } .bento .tile:nth-child(6) { animation-delay: 300ms; }
+.bento .tile:nth-child(7) { animation-delay: 360ms; } .bento .tile:nth-child(8) { animation-delay: 420ms; }
+@keyframes tile-in { from { opacity: 0; transform: scale(0.9) translateY(18px); } }
+.tile[data-goto] { cursor: pointer; }
+.tile[data-goto]:hover { transform: translateY(-5px) rotate(-0.3deg); box-shadow: var(--shadow); }
+.tile[data-goto]:active { transform: scale(0.97); transition-duration: 0.1s; }
+.tile-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.8rem; gap: 0.5rem; }
+.tile-head h2 { margin: 0; font-size: 1.05rem; }
+.tile-head span { color: var(--muted); font-size: 0.8rem; }
+
+.t-next { grid-column: span 2; grid-row: span 2; background: linear-gradient(160deg, var(--accent-soft), var(--surface) 60%); }
+.t-next .ph-title { font-size: 1.7rem; font-weight: 800; }
+.t-champ { grid-column: span 2; display: flex; flex-direction: column; justify-content: center; gap: 0.2rem; }
+.t-champ b { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em; }
+.t-champ span { color: var(--muted); }
+.t-live { grid-column: span 2; }
+.t-pace { grid-column: span 4; grid-row: span 3; }
+.t-cons { grid-column: span 2; grid-row: span 2; }
+.t-track { grid-column: span 2; grid-row: span 2; }
+.t-cal { grid-column: span 2; grid-row: span 2; }
+.t-comm { grid-column: span 2; grid-row: span 2; }
+.t-side { grid-column: span 2; grid-row: span 2; }
+#page-race .t-pace { grid-row: span 4; }
+
+.race-bento { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin: 14px 0; }
+.race-bento .race-card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 1rem; transition: transform 0.45s var(--spring); }
+.race-bento .race-card:hover { transform: translateY(-4px) scale(1.01); }
+.rc-round { background: var(--accent); color: var(--accent-ink); padding: 0.1rem 0.5rem; border-radius: 999px; }
+
+/* Floating dock with a sliding bubble. */
+.dock {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30; display: flex; gap: 4px; padding: 7px;
+  width: max-content; max-width: calc(100% - 1.5rem); overflow-x: auto;
+  background: color-mix(in oklab, var(--surface) 82%, transparent); backdrop-filter: blur(16px);
+  border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow);
+  animation: dock-in 0.8s var(--spring) 0.2s both;
+}
+@keyframes dock-in { from { transform: translate(-50%, 120%); } }
+.dock .nav-thumb { left: 0; top: 0; background: var(--accent); border-radius: 999px; }
+.dock .nav-item {
+  position: relative; z-index: 1; display: flex; align-items: center; gap: 0.45rem; padding: 0.7rem 1rem; border-radius: 999px;
+  color: var(--ink-2); text-decoration: none; font-weight: 700; font-size: 0.88rem;
+}
+.dock .nav-item[aria-current="page"] { color: var(--accent-ink); }
+.dock .ico { font-size: 1.05rem; }
+
+/* Rounder controls for this design. */
+.pace-canvas { border-radius: 18px; }
+
+@media (max-width: 1100px) {
+  .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .t-next, .t-champ, .t-live, .t-pace, .t-cons, .t-track, .t-cal, .t-comm, .t-side { grid-column: span 2; grid-row: auto; }
+}
+@media (max-width: 680px) {
+  .dock .txt { display: none; }
+  .bento.two { grid-template-columns: 1fr; }
+}

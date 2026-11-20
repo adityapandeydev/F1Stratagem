@@ -1,0 +1,75 @@
+/* Option 2: Broadcast. Top bar with a sliding underline, race-weekend hero,
+   magazine layout with a feature column and a side rail. */
+body { font-family: "Barlow", system-ui, sans-serif; }
+.headline, .kicker, .brand, .top-nav .nav-item, .ph-title, .ph-countdown b, .rail-h, .tile b {
+  font-family: "Barlow Condensed", "Barlow", sans-serif; letter-spacing: 0.01em;
+}
+.wrap { width: min(1240px, 100% - 2.4rem); margin: 0 auto; padding: 1.6rem 0 3rem; }
+
+.top { position: sticky; top: 0; z-index: 20; background: color-mix(in oklab, var(--bg) 90%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.top-inner { width: min(1240px, 100% - 2.4rem); margin: 0 auto; display: flex; align-items: center; gap: 1.5rem; height: 64px; }
+.brand { font-weight: 800; font-size: 1.5rem; color: var(--accent); text-decoration: none; font-style: italic; }
+.brand span { color: var(--ink); margin-left: 0.15rem; }
+.top-nav { display: flex; gap: 0.2rem; height: 100%; align-items: stretch; }
+.top-nav .nav-thumb { top: auto !important; height: 3px !important; border-radius: 3px 3px 0 0; background: var(--accent); margin-top: 61px; }
+.top-nav .nav-item {
+  position: relative; z-index: 1; display: flex; align-items: center; padding: 0 0.8rem; text-decoration: none;
+  color: var(--ink-2); font-weight: 700; font-size: 1.05rem; text-transform: uppercase;
+}
+.top-nav .nav-item:hover, .top-nav .nav-item[aria-current="page"] { color: var(--ink); }
+.top-tools { margin-left: auto; display: flex; align-items: center; gap: 0.8rem; }
+
+.hero {
+  position: relative; overflow: hidden; border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(115deg, var(--accent-soft) 0 38%, transparent 38%),
+    repeating-linear-gradient(115deg, transparent 0 24px, color-mix(in oklab, var(--line) 50%, transparent) 24px 25px),
+    var(--surface);
+}
+.hero-inner { width: min(1240px, 100% - 2.4rem); margin: 0 auto; display: grid; grid-template-columns: 1.1fr 1fr; gap: 2rem; padding: 2.4rem 0 1.6rem; align-items: center; }
+.hero-copy { animation: hero-in 0.8s var(--spring) both; }
+.hero-copy .ph-title { font-size: clamp(2.2rem, 5vw, 3.8rem); line-height: 0.95; text-transform: uppercase; font-weight: 800; }
+.hero-copy .ph-countdown b { font-size: 2rem; }
+.hero-track { animation: hero-in 0.9s var(--spring) 0.1s both; }
+.hero-track .ph-kicker, .hero-track .ph-title { display: none; }
+.hero-track .ph-track { max-height: 260px; }
+@keyframes hero-in { from { opacity: 0; transform: translateX(-24px); } }
+.ticker { border-top: 1px solid var(--line); background: var(--surface-2); overflow: hidden; white-space: nowrap; }
+.ticker-track { display: inline-flex; gap: 3rem; padding: 0.55rem 0; animation: ticker 30s linear infinite; font-weight: 600; font-size: 0.85rem; color: var(--ink-2); }
+@keyframes ticker { to { transform: translateX(-50%); } }
+
+.kicker { margin: 0 0 0.1rem; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.95rem; }
+.headline { margin: 0 0 1rem; font-size: clamp(1.8rem, 3.5vw, 2.6rem); text-transform: uppercase; font-weight: 800; line-height: 1; }
+.mag { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 1.6rem; }
+.rail { display: grid; gap: 1rem; align-content: start; }
+.rail-h { margin: 0 0 0.6rem; font-size: 1.3rem; text-transform: uppercase; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1.1rem;
+  border-top: 3px solid var(--accent); animation: card-in 0.6s var(--spring) both;
+}
+.card.big { padding: 1.4rem; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; margin-top: 1.2rem; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; margin-top: 1.2rem; }
+.tile { padding: 1rem; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); display: grid; gap: 0.3rem; transition: transform 0.4s var(--spring); }
+.tile:hover { transform: translateY(-4px); }
+.tile b { font-size: 1.3rem; text-transform: uppercase; }
+.tile span { color: var(--muted); font-size: 0.85rem; }
+
+.history-head { display: flex; justify-content: space-between; align-items: end; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.strip { display: grid; grid-auto-flow: column; grid-auto-columns: 230px; gap: 0.8rem; overflow-x: auto; padding: 0.3rem 0.1rem 1rem; scroll-snap-type: x mandatory; margin-bottom: 1.2rem; }
+.strip .race-card { scroll-snap-align: start; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0.9rem; border-left: 3px solid var(--accent); }
+.strip .race-card h4 { font-family: "Barlow Condensed", sans-serif; font-size: 1.35rem; text-transform: uppercase; }
+
+/* The race pace card in a broadcast frame: square canvas corners. */
+.pace-canvas { border-radius: 2px; }
+.seg, .seg .seg-thumb, .seg button { border-radius: 3px; }
+
+@media (max-width: 980px) {
+  .top-nav { overflow-x: auto; }
+  .hero-inner, .mag, .two { grid-template-columns: 1fr; }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .top-inner { flex-wrap: wrap; height: auto; padding: 0.6rem 0; }
+  .top-nav .nav-thumb { margin-top: 0; }
+}
