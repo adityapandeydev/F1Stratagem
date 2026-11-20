@@ -16,12 +16,12 @@ stages of the race model.
 | `baselines.py` | Reference models: uniform, championship order, persistence, practice pace, qualifying order. |
 | `pace.py` | Pace model: Kalman filter over car, driver, team × session offsets, weekend effect, circuit affinities, wet ability and winter reset; settings fit; qualifying forecasts (Q1/Q2/Q3 simulation); state draws for the race model. |
 | `program.py` | The filter's bookkeeping: records a run (which states exist, when they are added, parked, reset, observed) as a flat program. |
-| `native/` | The filter's arithmetic in Rust (`predictor_native`, built with maturin): replays a program for given settings and returns the log-likelihood and final state. |
+| `kernels/pace/` | The filter's arithmetic in Rust (`predictor_native`, built with maturin): replays a program for given settings and returns the log-likelihood and final state. |
 | `laps.py` | Lap-level corrections: corrected race pace (tyres, tyre age, fuel; drying races lap by lap) with its estimation covariance; practice push laps and long runs; wet track evolution and segment wetness in qualifying; green-lap pass counts. |
 | `race.py` | Race model: race pace and grid draws from the pace model, the grid known at the cutoff, retirements, settings fitted per season and cutoff by RPS; the lap-by-lap variant. |
 | `retirements.py` | Retirements by circuit (incident factor, Jolpica results from 1996 and labelled races from 2018) and team (mechanical factor, learned within the season from last season's). |
 | `race_sim.py` | Battles from position data, the battle (pass) model, race length and lap reference, neutralisations (track status from 2018, inferred from Jolpica lap times before) and their hazard model, the lap-by-lap simulation driver. |
-| `race_native/` | The race simulation in Rust (`predictor_race_native`): start, laps, passes, neutralisations and their random numbers, one generator per draw, draws in parallel. |
+| `kernels/race/` | The race simulation in Rust (`predictor_race_native`): start, laps, passes, neutralisations and their random numbers, one generator per draw, draws in parallel. |
 | `track.py` | Corners and track profiles from telemetry; the circuit layout table (`circuit_layouts.csv`). |
 | `fitcache.py` | Fitted settings saved per model and season under a key covering model, start, code and data; reused across cutoffs and runs. |
 | `evaluation.py` | Walk-forward evaluation, metrics, paired comparisons (event and block bootstrap), results by stage of the season, quick screens. |
@@ -73,7 +73,7 @@ predictor evaluate --session R --cutoff last --seasons 2019 2020 2021 2022 2023 
 ```
 
 Rebuild a native module after changing it: `make predictor-native`. Rebuilding
-`native/` changes the fit cache key, so every pace model refits; `race_native/`
+`kernels/pace/` changes the fit cache key, so every pace model refits; `kernels/race/`
 does not affect cached fits.
 
 `--cutoff` takes `pre_weekend`, `after_<session>` (e.g. `after_FP2`) or `last`

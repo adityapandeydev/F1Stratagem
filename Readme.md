@@ -146,8 +146,8 @@ f1data verify                               # audit an existing archive in data/
 
 # prediction engine: the Python package, then its Rust modules
 uv pip install -e "services/predictor[dev]"
-cd services/predictor/native; maturin develop --release
-cd services/predictor/race_native; maturin develop --release
+cd services/predictor/kernels/pace; maturin develop --release
+cd services/predictor/kernels/race; maturin develop --release
 
 # services, each in its own terminal
 cd api; go run ./cmd/server                                   # :8080

@@ -218,7 +218,7 @@ F1Stratagem/
 ├── api/                      Go API (cmd/, internal/, migrations/)
 ├── services/
 │   ├── analysis/             FastAPI analysis service; own cache in data/ (git-ignored)
-│   ├── predictor/            Prediction engine (pace model, race model, evaluation; Rust in native/, race_native/)
+│   ├── predictor/            Prediction engine (pace model, race model, evaluation; Rust in kernels/pace, kernels/race)
 │   └── news/                 News and upgrade service (planned)
 ├── packages/
 │   └── f1data/               Archive collection, verification and readers; CLI `f1data`

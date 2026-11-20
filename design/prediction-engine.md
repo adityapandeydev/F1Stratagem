@@ -332,8 +332,8 @@ stay in the tests. Two modules exist:
 
 | Module | Role | Why Rust |
 |---|---|---|
-| `predictor_native` (`services/predictor/native`) | Kalman filter replay for the pace model | Fits replay the filter thousands of times: 4.3–6.4× faster fits |
-| `predictor_race_native` (`services/predictor/race_native`) | The race simulation for every draw, random numbers included | The lap loop was 90% of a race-model evaluation: 27–41× faster |
+| `predictor_native` (`services/predictor/kernels/pace`) | Kalman filter replay for the pace model | Fits replay the filter thousands of times: 4.3–6.4× faster fits |
+| `predictor_race_native` (`services/predictor/kernels/race`) | The race simulation for every draw, random numbers included | The lap loop was 90% of a race-model evaluation: 27–41× faster |
 
 They are separate because the fit cache fingerprints `predictor_native`:
 rebuilding it invalidates every cached pace fit (hours of refitting), so race
@@ -354,7 +354,7 @@ The filter is split in two. Which states exist, when they
 are added, parked, reset or removed, and which states each observation touches
 depend on the sessions only, never on the settings. Python records that once
 as a flat program (`program.py`); a Rust extension module, `predictor_native`
-(`services/predictor/native`, built with maturin and PyO3), replays it for a
+(`services/predictor/kernels/pace`, built with maturin and PyO3), replays it for a
 set of settings and returns the log-likelihood and the final mean and
 covariance. A settings fit records once and replays the program for every
 candidate; a forecast records up to its cutoff and samples from the returned

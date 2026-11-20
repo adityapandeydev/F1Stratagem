@@ -33,14 +33,14 @@ predictor-install:
 	uv pip install -e "services/predictor[dev]"
 	$(MAKE) predictor-native
 
-# the Rust modules: the pace filter (native) and the race lap (race_native)
+# the Rust kernels: the pace filter (kernels/pace) and the race simulation (kernels/race)
 predictor-native:
-	cd services/predictor/native && maturin develop --release
-	cd services/predictor/race_native && maturin develop --release
+	cd services/predictor/kernels/pace && maturin develop --release
+	cd services/predictor/kernels/race && maturin develop --release
 
 predictor-test:
 	python -m pytest services/predictor
-	cd services/predictor/race_native && cargo test --release
+	cd services/predictor/kernels/race && cargo test --release
 
 # --- Frontend ---
 frontend:

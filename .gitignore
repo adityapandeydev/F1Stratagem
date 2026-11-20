@@ -58,6 +58,6 @@ desktop.ini
 *.tmp
 
 # Rust build output
-services/predictor/native/target/
-services/predictor/race_native/target/
+services/predictor/kernels/pace/target/
+services/predictor/kernels/race/target/
 services/analysis/target/
