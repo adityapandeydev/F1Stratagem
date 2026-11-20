@@ -83,6 +83,9 @@ enum Command {
         /// Seasons of the driver-skill window (the season and those before it).
         #[arg(long, default_value_t = car_pace::WINDOW_SEASONS)]
         window: i64,
+        /// Also use sprint races as teammate comparisons for driver skills.
+        #[arg(long)]
+        with_sprints: bool,
     },
     /// Car-only race pace of one race: driver skills removed.
     CarRace {
@@ -92,14 +95,22 @@ enum Command {
         /// Seasons of the driver-skill window (the season and those before it).
         #[arg(long, default_value_t = car_pace::WINDOW_SEASONS)]
         window: i64,
+        /// Also use sprint races as teammate comparisons for driver skills.
+        #[arg(long)]
+        with_sprints: bool,
     },
 }
 
 /// Seasons whose races a car-only season needs (its driver-skill window).
-fn window_runs(archive: &Archive, season: i64, window: i64) -> Result<std::collections::BTreeMap<i64, Vec<car_pace::RaceRun>>> {
+fn window_runs(
+    archive: &Archive,
+    season: i64,
+    window: i64,
+    with_sprints: bool,
+) -> Result<std::collections::BTreeMap<i64, Vec<car_pace::RaceRun>>> {
     let mut runs = std::collections::BTreeMap::new();
     for s in (season - window + 1)..=season {
-        runs.insert(s, car_pace::season_runs(archive, s)?);
+        runs.insert(s, car_pace::season_runs(archive, s, with_sprints)?);
     }
     Ok(runs)
 }
@@ -350,8 +361,8 @@ fn main() -> Result<()> {
                 write_json(&path, &s)?;
             }
         }
-        Command::CarSeason { season, json, show_skills, window } => {
-            let runs = window_runs(&archive, season, window)?;
+        Command::CarSeason { season, json, show_skills, window, with_sprints } => {
+            let runs = window_runs(&archive, season, window, with_sprints)?;
             let s = car_pace::car_season(season, &runs, window);
             println!("car-only race pace {season}: each race measured with earlier races only ({}-{} window), shrunk skills, skill drift {} %/season, established = {}+ teammate races", s.window[0], s.window[1], s.skill_drift, s.min_teammate_races);
             let teams: Vec<String> = s.all_races.teams.iter().map(|t| t.team.clone()).collect();
@@ -408,9 +419,9 @@ fn main() -> Result<()> {
                 write_json(&path, &s)?;
             }
         }
-        Command::CarRace { event, window } => {
+        Command::CarRace { event, window, with_sprints } => {
             let season: i64 = event.split('-').next().unwrap_or("").parse()?;
-            let runs = window_runs(&archive, season, window)?;
+            let runs = window_runs(&archive, season, window, with_sprints)?;
             let s = car_pace::car_season(season, &runs, window);
             let Some(race) = s.races.iter().find(|r| r.event_key == event) else {
                 anyhow::bail!("{event} has no measured race")

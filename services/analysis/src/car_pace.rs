@@ -87,8 +87,17 @@ pub struct DriverObs {
 #[derive(Debug, Clone)]
 pub struct RaceRun {
     pub event_key: String,
+    /// A sprint race: used only as extra teammate comparisons for driver skills.
+    pub sprint: bool,
     pub condition: Condition,
     pub pace: RacePace,
+}
+
+impl RaceRun {
+    /// Identifier of the race the run measured (sprints get their own).
+    fn race_id(&self) -> String {
+        if self.sprint { format!("{}-S", self.event_key) } else { self.event_key.clone() }
+    }
 }
 
 fn season_of(event_key: &str) -> i64 {
@@ -109,25 +118,35 @@ fn condition_recipe(condition: Condition) -> Recipe {
 
 /// Every race of a season measured by the standard recipe on dry-tyre and on
 /// wet-tyre laps separately; a run counts under the same rule as the main season
-/// (tyre-corrected, at least half of the teams measured).
-pub fn season_runs(archive: &Archive, season: i64) -> Result<Vec<RaceRun>> {
+/// (tyre-corrected, at least half of the teams measured). With `with_sprints`,
+/// sprint races are measured too, as extra teammate comparisons for driver skills.
+pub fn season_runs(archive: &Archive, season: i64, with_sprints: bool) -> Result<Vec<RaceRun>> {
     let mut runs = Vec::new();
+    let kinds: &[(&str, bool)] = if with_sprints { &[("R", false), ("S", true)] } else { &[("R", false)] };
     for event_key in archive.season_events(season)? {
-        let Some(race) = archive.session_of_type(&event_key, "R")? else { continue };
-        let laps = archive.laps(&race.session_id)?;
-        for condition in [Condition::Dry, Condition::Wet] {
-            let any = laps.iter().any(|l| match condition {
-                Condition::Dry => l.is_slick(),
-                Condition::Wet => l.is_wet_tyre(),
-            });
-            if !any {
-                continue;
-            }
-            let seed = pace::seed_for(&format!("{}-{condition:?}", race.session_id));
-            let Some(p) = pace::race_pace(&laps, &condition_recipe(condition), STAGE1_RESAMPLES, seed) else { continue };
-            if p.tyre_corrected && 2 * p.teams.len() >= p.teams_in_race {
-                runs.push(RaceRun { event_key: event_key.clone(), condition, pace: p });
-            }
+        for &(session_type, sprint) in kinds {
+            let Some(race) = archive.session_of_type(&event_key, session_type)? else { continue };
+            runs.extend(session_runs(archive, &event_key, &race.session_id, sprint)?);
+        }
+    }
+    Ok(runs)
+}
+
+fn session_runs(archive: &Archive, event_key: &str, session_id: &str, sprint: bool) -> Result<Vec<RaceRun>> {
+    let laps = archive.laps(session_id)?;
+    let mut runs = Vec::new();
+    for condition in [Condition::Dry, Condition::Wet] {
+        let any = laps.iter().any(|l| match condition {
+            Condition::Dry => l.is_slick(),
+            Condition::Wet => l.is_wet_tyre(),
+        });
+        if !any {
+            continue;
+        }
+        let seed = pace::seed_for(&format!("{session_id}-{condition:?}"));
+        let Some(p) = pace::race_pace(&laps, &condition_recipe(condition), STAGE1_RESAMPLES, seed) else { continue };
+        if p.tyre_corrected && 2 * p.teams.len() >= p.teams_in_race {
+            runs.push(RaceRun { event_key: event_key.to_string(), sprint, condition, pace: p });
         }
     }
     Ok(runs)
@@ -139,7 +158,7 @@ fn observations(runs: &[&RaceRun]) -> Vec<DriverObs> {
         for d in &run.pace.drivers {
             let sd = d.interval_pct.map_or(f64::NAN, |[lo, hi]| (hi - lo) / (2.0 * Z80));
             out.push(DriverObs {
-                race: run.event_key.clone(),
+                race: run.race_id(),
                 season: season_of(&run.event_key),
                 condition: run.condition,
                 driver: d.driver.clone(),
@@ -683,7 +702,7 @@ pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_season
     let window = window_runs(season, runs, window_seasons);
     let all_obs = observations(&window);
     let drift = season_drift(&all_obs, season);
-    let target: Vec<&RaceRun> = runs.get(&season).map(|r| r.iter().collect()).unwrap_or_default();
+    let target: Vec<&RaceRun> = runs.get(&season).map(|r| r.iter().filter(|r| !r.sprint).collect()).unwrap_or_default();
     let mut events: Vec<String> = Vec::new();
     for r in &target {
         if !events.contains(&r.event_key) {
