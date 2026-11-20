@@ -41,9 +41,12 @@ use-case notation, so those views are drawn as flowcharts.
 | Decision | Choice | Rationale |
 |---|---|---|
 | API language | Go | Concurrency, mature HTTP/Postgres ecosystem. Public entry point and orchestrator of all services. |
-| Numerical work | Python services (FastAPI) | DuckDB, Polars, NumPy and FastF1 do the heavy work in native code. Components move to Rust extension modules (PyO3, built with maturin) inside the same service when that makes them faster or better with the same forecasts; Python stays for optimisers, data handling and evaluation. In place: the pace model's Kalman filter (4.3–6.4× faster fits) and the race simulation (27–41×), with the same forecasts (identical for the filter; the same distribution for the simulation, which draws its own random numbers). The rest of the race simulator and the championship simulation are built in Rust. |
+| Numerical work | Prediction engine: Python with Rust kernels. Analysis service: Rust | Prediction engine: DuckDB, Polars and NumPy do the heavy work in native code; components move to Rust extension modules (PyO3, built with maturin, in `services/predictor/kernels/`) when that makes them faster or better with the same forecasts; Python stays for optimisers, data handling and evaluation. In place: the pace model's Kalman filter (4.3–6.4× faster fits) and the race simulation (27–41×), with the same forecasts (identical for the filter; the same distribution for the simulation, which draws its own random numbers). The analysis service is a Rust crate: telemetry and lap maths for the website, one process. |
 | Repository | Monorepo, independently deployable services | Shared contracts and data code; separate processes and deploys. |
-| F1 timing, telemetry, documents | Parquet archive queried with DuckDB | Columnar, compressed, partition-scanned; hundreds of millions of telemetry rows. SQLite rejected. |
+| F1 timing, telemetry, documents | Parquet archive | Columnar, compressed, partition-scanned; hundreds of millions of telemetry rows. SQLite rejected. |
+| Archive access | `f1data` is the only writer. Readers: the prediction engine (its own needs) and the analysis service (raw timing and telemetry for the website). The Go API never reads the raw archive | The archive layout and the telemetry maths (lap windows, merging car and position data, distance, alignment between drivers, time deltas) live in one place. Rejected: the API reading telemetry itself (DuckDB in Go needs a C++ build, and the logic would exist twice); moving analysis into `api/` (folders do not change efficiency, processes do: the maths would be rewritten in Go or called from Go through a C interface). |
+| Analysis results | Precomputed after each session, the rest computed on demand and cached | What most visitors open is ready before they ask: fastest-lap and qualifying-lap traces on a distance grid, whole-race replay streams, team race pace. Anything else (for example driver A against B over all years) is computed on request, cached, and heavy requests queue one at a time. Payloads are compact (arrays or Arrow, downsampled, compressed). |
+| Hosting | One small VPS behind an HTTPS front, static frontend on a CDN, training and ingestion off the server | Fits the current load; services talk over HTTP, so any of them can move to its own machine without code changes. See [Deployment](#deployment). |
 | Application data | PostgreSQL (local in development) | Users, calendars, community content, small reference tables they join to. |
 | Archive ownership | One writer per dataset, many readers: `packages/f1data` writes source data, the prediction engine writes `forecasts/` | No two processes ever write the same files; each dataset is defined in one place. |
 | Historical source of record | Own archive | FastF1 requires an F1TV subscription since October 2026; data is needed for retraining, backtests, replay and analysis. |
@@ -99,15 +102,16 @@ graph TB
         Jobs["Job orchestration"]
     end
 
-    subgraph Services["Python services"]
-        Analysis["Analysis service"]
-        Predictor["Prediction engine"]
+    subgraph Services["Internal services"]
+        Analysis["Analysis service (Rust)"]
+        Predictor["Prediction engine (Python + Rust kernels)"]
         News["News service (planned)"]
     end
 
     subgraph Data["Data"]
         PG["PostgreSQL"]
-        Archive["Parquet archive (DuckDB)"]
+        Archive["Parquet archive"]
+        Outputs["Analysis outputs<br/>precomputed and cached results"]
     end
 
     F1Data["packages/f1data — source data writer"]
@@ -115,14 +119,16 @@ graph TB
 
     UI --> REST
     REST --> PG
-    REST -->|simple reads| Archive
+    REST -->|read| Outputs
     REST --> Jobs
-    Jobs -->|HTTP| Analysis
+    Jobs -->|"HTTP: on-demand analysis"| Analysis
     Jobs -->|HTTP| Predictor
     Jobs -->|HTTP| News
-    Analysis -->|read| Archive
+    Analysis -->|"read timing, telemetry"| Archive
+    Analysis -->|write| Outputs
     Predictor -->|read| Archive
     Predictor -->|write forecasts/| Archive
+    Predictor -->|"published forecasts"| PG
     News -->|read FIA tables| Archive
     News -->|structured records| Predictor
     Sources --> F1Data
@@ -133,24 +139,48 @@ graph TB
 |---|---|---|
 | Frontend | `frontend/` | UI, charts, 3D track and globe, calendar builder, community |
 | API | `api/` | Public HTTP/WebSocket API, Postgres access, caching, job orchestration, auth |
-| Analysis service | `services/analysis/` | Session analysis and telemetry comparison over the archive |
+| Analysis service | `services/analysis/` | Rust. The only reader of raw timing and telemetry for the website: lap and telemetry maths, precompute after each session, on-demand requests over HTTP |
 | Prediction engine | `services/predictor/` | Probabilistic forecasts, championship simulation, forecast ledger. No user state. |
 | News service | `services/news/` | Team and Pirelli releases, selected outlets; structured upgrade records |
 | Data archive | `packages/f1data/` | Sole writer of the archive's source data: collection, extraction, verification, readers |
 
-The Go API is the only public entry point. Python services are internal and are
-called over HTTP with typed contracts. For plain reads (laps, results, stints)
-the API may query the archive directly through DuckDB rather than through a
-Python service.
+The Go API is the only public entry point. The services are internal and are
+called over HTTP with typed contracts. The API never reads the raw archive: it
+reads Postgres and the analysis outputs, adds caching, auth and rate limits, and
+forwards on-demand requests to the analysis service. Published forecasts reach the
+API through Postgres; the frozen ledger files stay the prediction engine's.
+
+Analysis outputs are their own dataset with one writer, the analysis service.
+They are kept apart from the archive (never inside `data/` source datasets), and
+every cached result is keyed by the version of the session data it was computed
+from, so a re-ingested session invalidates its results.
 
 ---
 
 ## Deployment
 
-Production target. The hosting provider is not chosen yet; the shape is fixed:
-only the frontend and the API are reachable from the internet, every Python
-service runs on a private network, and the archive moves from local disk to
-object storage in the same Parquet layout.
+Production target. One small VPS (1 vCPU / 2 GB is workable, 2 vCPU / 4 GB
+comfortable, swap for memory spikes) runs the server side with Docker Compose or
+system services. Only the HTTPS front is reachable from the internet; the API and
+the analysis service talk over plain HTTP on the machine's private network (TLS
+ends at the front). Because the services talk over HTTP, any of them can move to
+its own machine later without code changes.
+
+- **On the VPS:** an HTTPS front (Caddy or nginx), the Go API, the Rust analysis
+  service, PostgreSQL (tuned small, or a managed database), the session Parquet
+  files (about 22 GB) with the reference and results tables, the analysis outputs,
+  and a scheduled precompute after each upload. Disk: a 40–80 GB SSD covers
+  several seasons; object storage (S3 or R2) also works with the same layout, but
+  reads are slower.
+- **On a CDN** (Cloudflare Pages or Netlify): the frontend's static files, and
+  precomputed analysis files where they can be served as static files.
+- **Off the server:** predictor training, evaluation and forecast publishing, and
+  `f1data` ingestion run on the developer PC or a short-lived cloud machine, which
+  uploads new session files and frozen forecasts. Live in-race forecasting is a
+  later phase and needs a stronger, always-on machine.
+- **Never deployed:** the FastF1 download cache (`fastf1_http_cache.sqlite`, 11.5 GB,
+  needed only to rebuild the archive; kept at home with a backup) and the FIA PDFs
+  (private, for licensing reasons).
 
 ```mermaid
 flowchart TB
@@ -158,40 +188,42 @@ flowchart TB
         browser["Browser"]
     end
 
-    subgraph edge["Static hosting / CDN"]
+    subgraph edge["CDN"]
         spa["Frontend bundle"]
+        static["Precomputed analysis files"]
     end
 
-    subgraph public["Public endpoint (HTTPS)"]
-        api["Go API"]
+    subgraph vps["VPS"]
+        front["HTTPS front<br/>Caddy or nginx"]
+        api["Go API<br/>cache · auth · rate limits"]
+        analysis["Analysis service (Rust)<br/>queue for heavy requests"]
+        pre["Precompute after each upload"]
+        pg[("PostgreSQL")]
+        archive[("Session Parquet files<br/>reference and results tables")]
+        outputs[("Analysis outputs")]
     end
 
-    subgraph private["Private network"]
-        analysis["Analysis service"]
-        predictor["Prediction engine (planned)"]
-        news["News service (planned)"]
-        jobs["f1data scheduled jobs<br/>source data writer"]
-    end
-
-    subgraph storage["Storage"]
-        pg[("PostgreSQL<br/>managed")]
-        archive[("Archive<br/>Parquet on object storage")]
+    subgraph offsite["Developer PC or short-lived cloud machine"]
+        f1d["f1data ingestion"]
+        pred["Prediction engine<br/>training, evaluation, publishing"]
     end
 
     providers["Data providers<br/>FastF1 · Jolpica · Open-Meteo · FIA · OpenF1"]
 
     browser -->|"HTTPS"| spa
-    browser -->|"HTTPS REST · WebSocket"| api
-    api -->|"HTTP + JSON"| analysis
-    api -->|"HTTP + JSON"| predictor
-    api -->|"HTTP + JSON"| news
+    browser -->|"HTTPS"| static
+    browser -->|"HTTPS REST · WebSocket"| front
+    front --> api
     api -->|"SQL"| pg
-    api -->|"DuckDB reads"| archive
+    api -->|"read"| outputs
+    api -->|"HTTP: on-demand requests"| analysis
     analysis -->|"read"| archive
-    predictor -->|"read, append forecasts/"| archive
-    news -->|"read FIA tables"| archive
-    jobs -->|"write"| archive
-    jobs -->|"HTTPS, rate-limited"| providers
+    analysis -->|"write"| outputs
+    pre -->|"runs"| analysis
+    outputs -.->|"publish static files"| static
+    f1d -->|"HTTPS, rate-limited"| providers
+    f1d -->|"upload new session files"| archive
+    pred -->|"upload frozen forecasts"| pg
 ```
 
 Local development: every process runs on one machine and the archive is the
@@ -201,11 +233,13 @@ repository's `data/` directory.
 flowchart LR
     browser["Browser"] -->|"localhost:5173"| vite["Vite dev server<br/>frontend/"]
     vite -->|"proxy /api"| api["Go API<br/>api/ · :8080"]
-    api -->|"HTTP · :8081"| analysis["Analysis service<br/>services/analysis/"]
+    api -->|"HTTP · :8081"| analysis["Analysis service (Rust)<br/>services/analysis/"]
     api -->|"SQL · :5432"| pg[("PostgreSQL<br/>local")]
-    analysis -->|"own cache"| cache[("services/analysis/data/")]
+    analysis -->|"write"| outputs[("analysis outputs<br/>services/analysis/data/")]
+    api -->|"read"| outputs
     cli["f1data CLI<br/>run by hand"] -->|"write"| data[("data/<br/>archive")]
-    analysis -.->|"read (target)"| data
+    analysis -->|"read"| data
+    predictor["Prediction engine<br/>services/predictor/"] -->|"read; write forecasts/"| data
 ```
 
 ---
@@ -217,7 +251,7 @@ F1Stratagem/
 ├── frontend/                 React + TypeScript + Vite + Bun
 ├── api/                      Go API (cmd/, internal/, migrations/)
 ├── services/
-│   ├── analysis/             FastAPI analysis service; own cache in data/ (git-ignored)
+│   ├── analysis/             Rust analysis service (Cargo crate); outputs and cache in data/ (git-ignored)
 │   ├── predictor/            Prediction engine (pace model, race model, evaluation; Rust in kernels/pace, kernels/race)
 │   └── news/                 News and upgrade service (planned)
 ├── packages/
@@ -245,8 +279,13 @@ F1Stratagem/
 
 ### Current state
 
-- The analysis service still loads sessions through FastF1 into its own cache and
-  writes per-session Parquet files there. It moves to archive reads.
+- The analysis service restarted as a Rust crate that reads the archive (team race
+  pace from a race's own laps is in place, command line only); the old Python worker
+  was deleted. Its HTTP server, precompute and track-map endpoint are not built yet.
+- The API's `GET /sessions/{id}/telemetry` route, used by the track map
+  (ComparePage, InteractiveTrack3D: up to 4 drivers, one lap each), has nothing to
+  call until then. It will not be restored: the analysis service's track-map
+  endpoint replaces it. A whole-race track-map mode does not exist yet.
 - Migration `001_core_schema` stores laps, stints and weather in Postgres. These
   are served from the archive instead; Postgres keeps reference tables.
 - The frontend and API predate the archive and prediction design and are being
@@ -547,8 +586,9 @@ sequenceDiagram
 
 ## Request flows
 
-Session analysis. The analysis service reads the archive; it no longer loads
-sessions from FastF1 at request time (target; see [Current state](#current-state)).
+Session analysis (target; see [Current state](#current-state)). What most visitors
+open is precomputed after each session and read from the analysis outputs (or the
+CDN); anything else is computed by the analysis service on request and cached.
 
 ```mermaid
 sequenceDiagram
@@ -557,17 +597,24 @@ sequenceDiagram
     participant FE as Frontend
     participant API as Go API
     participant PG as PostgreSQL
+    participant Out as Analysis outputs
     participant AN as Analysis service
     participant Arc as Archive
 
     User->>FE: compare drivers on a session
     FE->>API: GET /api/v1/sessions/{id}/telemetry?drivers=VER,LEC
     API->>PG: session and archive session ID
-    API->>AN: POST /telemetry/compare
-    AN->>Arc: read laps and per-driver telemetry
-    AN->>AN: align by distance, running delta
-    AN-->>API: comparison payload
-    API-->>FE: 200 OK
+    API->>Out: precomputed or cached result?
+    alt available
+        Out-->>API: compact payload
+    else not yet computed
+        API->>AN: on-demand request (queued if heavy)
+        AN->>Arc: read laps and per-driver telemetry
+        AN->>AN: lap windows, merge car and position data, distance, align, deltas
+        AN->>Out: store, keyed by session data version
+        AN-->>API: compact payload
+    end
+    API-->>FE: 200 OK (cached)
 ```
 
 Forecast publication at a cutoff (after a practice session, after qualifying,
@@ -752,10 +799,11 @@ GET  /api/v1/community/news                     community news feed and threads
 Internal service endpoints:
 
 ```
-analysis   GET  /health
-           GET  /schedule/{year}
-           POST /session/extract
-           POST /telemetry/compare
+analysis   (planned, Rust; replaces the old Python worker's routes)
+           GET  /health
+           POST /telemetry/compare   track map and traces: up to 4 drivers, one lap each
+           POST /precompute          {session} → precomputed results after an upload
+           (race pace, whole-race replay and the rest added with their features)
 predictor  GET  /health
            POST /forecast            {event, cutoff, mode} → forecast
            POST /replay              {event, from_lap}     → stream of forecasts
