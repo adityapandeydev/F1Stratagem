@@ -1111,3 +1111,15 @@ def test_partial_keeps_the_drivers_the_laps_connect():
     assert laps.race_pace(race, lap_effects=True).empty                         # not all separable: dropped
     kept = laps.race_pace(race, lap_effects=True, partial=True)
     assert sorted(kept.driver_number) == ["1", "2", "3", "4", "5"]
+
+
+def test_gate_b_models_read_race_pace_with_the_connected_group_only():
+    from predictor import evaluation
+    reg = evaluation.model_registry()
+    for name in ("pace3wrqwtrp", "race1ap", "race2ap", "race3ffnp", "race3fwp", "race_mix3ffnp1ap", "race_mix3fwp2ap"):
+        assert name in reg
+    assert reg["pace3wrqwtrp"]().name == "pace:v3wrqwt-rp"
+    pace = evaluation._pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True,
+                                  race_read={"partial": True})
+    assert pace.race_read == {"partial": True}
+    assert pace.name.endswith("-rp")
