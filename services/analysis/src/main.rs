@@ -5,8 +5,8 @@ use clap::{Parser, Subcommand};
 
 use analysis::archive::Archive;
 use analysis::calibrate;
-use analysis::pace::{Agg, Compounds, LapTrend, RaceFilter, RaceModel};
-use analysis::season;
+use analysis::pace::{self, Agg, Compounds, LapTrend, RacePace, Recipe, Traffic};
+use analysis::season::{self, SeasonTable};
 
 #[derive(Parser)]
 #[command(name = "analysis", about = "F1Stratagem analysis service")]
@@ -42,85 +42,190 @@ enum Command {
         #[arg(long)]
         filter: Option<String>,
     },
-    /// Team race pace of one race.
+    /// Team race pace of one race: teams and drivers with intervals and evidence.
     Race {
         /// Event key, e.g. 2024-20.
         #[arg(long)]
         event: String,
         #[command(flatten)]
-        recipe: Recipe,
-        #[arg(long, default_value_t = 5)]
-        min_laps: usize,
+        recipe: RecipeArgs,
+        /// Stint resamples for the intervals (0 = none).
+        #[arg(long, default_value_t = 200)]
+        resamples: usize,
+        /// Also write the full result as JSON to this file.
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
-    /// Run one team race pace recipe on every race of a season and average it.
+    /// Team race pace of every race of a season, with the season summaries.
     Season {
         #[arg(long)]
         season: i64,
         #[command(flatten)]
-        recipe: Recipe,
-        /// Drivers (or teams) with fewer kept laps are left out.
-        #[arg(long, default_value_t = 5)]
-        min_laps: usize,
+        recipe: RecipeArgs,
+        /// Stint resamples per race for the intervals (0 = none).
+        #[arg(long, default_value_t = 100)]
+        resamples: usize,
+        /// Also write the full result as JSON to this file.
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
 }
 
-/// A team race pace recipe; the defaults are the standard recipe.
+/// A recipe (v1 or v2) and optional changes to one of its parts, for comparisons.
 #[derive(clap::Args)]
-struct Recipe {
+struct RecipeArgs {
+    /// v1 (first adopted recipe) or v2 (stricter evidence rules).
+    #[arg(long, default_value = "v2")]
+    recipe: String,
     /// all (dry, intermediate, wet), slick or inter (intermediate and wet)
-    #[arg(long, default_value = "all")]
-    compounds: String,
+    #[arg(long)]
+    compounds: Option<String>,
     /// Leave out laps this close or closer to the car ahead (seconds; 0 keeps all).
-    #[arg(long, default_value_t = 2.0)]
-    min_gap: f64,
+    #[arg(long)]
+    min_gap: Option<f64>,
+    /// finish or lines (both sector lines and the finish line)
+    #[arg(long)]
+    traffic: Option<String>,
     /// Leave out laps this many or fewer after a neutralisation.
-    #[arg(long, default_value_t = 0)]
-    skip_after_neutral: u32,
+    #[arg(long)]
+    skip_after_neutral: Option<u32>,
     /// Tyre-age slope per team.
     #[arg(long)]
     team_wear: bool,
-    /// linear, lapxcomp or perlap
-    #[arg(long, default_value = "perlap")]
-    trend: String,
+    /// linear, lapxcomp, perlap or timeblocks
+    #[arg(long)]
+    trend: Option<String>,
     /// Residual trim in robust standard deviations (0 = no trim).
-    #[arg(long, default_value_t = 3.0)]
-    trim: f64,
+    #[arg(long)]
+    trim: Option<f64>,
     /// Gap to the car ahead as a term.
     #[arg(long)]
-    traffic: bool,
+    traffic_term: bool,
     /// best, mean or lapbest
-    #[arg(long, default_value = "best")]
-    agg: String,
+    #[arg(long)]
+    agg: Option<String>,
 }
 
-impl Recipe {
-    fn parts(&self) -> Result<(RaceFilter, RaceModel, Agg)> {
-        let compounds = match self.compounds.as_str() {
-            "all" => Compounds::All,
-            "slick" => Compounds::Slicks,
-            "inter" => Compounds::Inters,
-            other => anyhow::bail!("unknown compounds {other}"),
-        };
-        let lap_trend = match self.trend.as_str() {
-            "linear" => LapTrend::Linear,
-            "lapxcomp" => LapTrend::LinearPerCompound,
-            "perlap" => LapTrend::PerLap,
-            other => anyhow::bail!("unknown trend {other}"),
-        };
-        let agg = match self.agg.as_str() {
-            "best" => Agg::Best,
-            "mean" => Agg::Mean,
-            "lapbest" => Agg::LapBest,
-            other => anyhow::bail!("unknown agg {other}"),
-        };
-        let filter = RaceFilter {
-            compounds,
-            min_gap_s: (self.min_gap > 0.0).then_some(self.min_gap),
-            skip_after_neutral: self.skip_after_neutral,
-            ..RaceFilter::default()
-        };
-        let model = RaceModel { team_wear: self.team_wear, lap_trend, trim_sigma: (self.trim > 0.0).then_some(self.trim), traffic_term: self.traffic };
-        Ok((filter, model, agg))
+impl RecipeArgs {
+    fn recipe(&self) -> Result<Recipe> {
+        let mut r = Recipe::by_name(&self.recipe).ok_or_else(|| anyhow::anyhow!("unknown recipe {}", self.recipe))?;
+        if let Some(c) = &self.compounds {
+            r.filter.compounds = match c.as_str() {
+                "all" => Compounds::All,
+                "slick" => Compounds::Slicks,
+                "inter" => Compounds::Inters,
+                other => anyhow::bail!("unknown compounds {other}"),
+            };
+        }
+        if let Some(g) = self.min_gap {
+            r.filter.min_gap_s = (g > 0.0).then_some(g);
+        }
+        if let Some(t) = &self.traffic {
+            r.filter.traffic = match t.as_str() {
+                "finish" => Traffic::FinishLine,
+                "lines" => Traffic::TimingLines,
+                other => anyhow::bail!("unknown traffic {other}"),
+            };
+        }
+        if let Some(n) = self.skip_after_neutral {
+            r.filter.skip_after_neutral = n;
+        }
+        if let Some(t) = &self.trend {
+            r.model.lap_trend = match t.as_str() {
+                "linear" => LapTrend::Linear,
+                "lapxcomp" => LapTrend::LinearPerCompound,
+                "perlap" => LapTrend::PerLap,
+                "timeblocks" => LapTrend::TimeBlocks,
+                other => anyhow::bail!("unknown trend {other}"),
+            };
+        }
+        if let Some(k) = self.trim {
+            r.model.trim_sigma = (k > 0.0).then_some(k);
+        }
+        r.model.team_wear |= self.team_wear;
+        r.model.traffic_term |= self.traffic_term;
+        if let Some(a) = &self.agg {
+            r.agg = match a.as_str() {
+                "best" => Agg::Best,
+                "mean" => Agg::Mean,
+                "lapbest" => Agg::LapBest,
+                other => anyhow::bail!("unknown agg {other}"),
+            };
+        }
+        Ok(r)
+    }
+}
+
+fn write_json<T: serde::Serialize>(path: &PathBuf, value: &T) -> Result<()> {
+    std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    Ok(())
+}
+
+fn interval(i: Option<[f64; 2]>) -> String {
+    i.map_or("-".to_string(), |[lo, hi]| format!("{lo:.3}..{hi:.3}"))
+}
+
+fn print_race(p: &RacePace) {
+    println!(
+        "recipe {}  tyre-corrected {}  base lap {:.3} s  laps: {} candidates, {} unknown traffic, {} kept  resamples {} ({} used)",
+        p.recipe,
+        p.tyre_corrected,
+        p.base_lap_s,
+        p.laps.candidates,
+        p.laps.unknown_traffic,
+        p.laps.kept,
+        p.resamples,
+        p.resamples_used
+    );
+    println!("{:<18} {:<5} {:>8} {:>15} {:>8} {:>15} {:>7}", "team", "drv", "gap %", "80% %", "gap s", "80% s", "P(best)");
+    for t in &p.teams {
+        println!(
+            "{:<18} {:<5} {:>8.3} {:>15} {:>8.3} {:>15} {:>7}",
+            t.team,
+            t.driver,
+            t.gap_pct,
+            interval(t.interval_pct),
+            t.gap_s,
+            interval(t.interval_s),
+            t.p_quickest.map_or("-".to_string(), |p| format!("{:.0}%", p * 100.0))
+        );
+    }
+    println!("{:<5} {:<18} {:>8} {:>15} {:>5} {:>6} {:>7}", "drv", "team", "gap %", "80% %", "laps", "stints", "overlap");
+    for d in &p.drivers {
+        println!(
+            "{:<5} {:<18} {:>8.3} {:>15} {:>5} {:>6} {:>7}",
+            d.driver,
+            d.team,
+            d.gap_pct,
+            interval(d.interval_pct),
+            d.laps,
+            d.stints,
+            d.overlap_laps
+        );
+    }
+}
+
+fn print_table(title: &str, t: &SeasonTable) {
+    println!("\n{title}: {} races", t.races.len());
+    println!(
+        "{:<18} {:>3} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "team", "n", "mean%", "med%", "mean%0", "med%0", "mean s", "med s", "mean s0", "med s0"
+    );
+    for team in &t.teams {
+        let (p, s) = (&team.pct, &team.s);
+        println!(
+            "{:<18} {:>3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            team.team,
+            team.races_measured,
+            p.mean,
+            p.median,
+            p.mean_rebased,
+            p.median_rebased,
+            s.mean,
+            s.median,
+            s.mean_rebased,
+            s.median_rebased
+        );
     }
 }
 
@@ -180,39 +285,49 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Race { event, recipe, min_laps } => {
-            let (filter, model, agg) = recipe.parts()?;
-            let Some(race) = archive.session_of_type(&event, "R")? else { anyhow::bail!("{event} has no archived race") };
+        Command::Race { event, recipe, resamples, json } => {
+            let recipe = recipe.recipe()?;
+            let Some(race) = archive.session_of_type(&event, "R")? else {
+                anyhow::bail!("{event} has no archived race")
+            };
             let laps = archive.laps(&race.session_id)?;
-            let times = analysis::pace::race_model_team_times(&laps, &filter, &model, agg, min_laps);
-            let (pct, secs) = (analysis::pace::gaps_pct(&times), analysis::pace::gaps_s(&times));
-            let mut teams: Vec<_> = pct.iter().collect();
-            teams.sort_by(|a, b| a.1.total_cmp(b.1));
-            println!("{:<18} {:>8} {:>8}", "team", "gap %", "gap s");
-            for (team, p) in teams {
-                println!("{:<18} {:>8.3} {:>8.3}", team, p, secs[team]);
+            match pace::race_pace(&laps, &recipe, resamples, pace::seed_for(&race.session_id)) {
+                Some(p) => {
+                    print_race(&p);
+                    if let Some(path) = json {
+                        write_json(&path, &p)?;
+                    }
+                }
+                None => println!("no laps could be measured"),
             }
         }
-        Command::Season { season, recipe, min_laps } => {
-            let (filter, model, agg) = recipe.parts()?;
-            let races = season::race_gaps(&archive, season, &filter, &model, agg, min_laps)?;
-            let means = season::mean_gaps(&races);
-            let mut teams: Vec<_> = means.iter().collect();
-            teams.sort_by(|a, b| a.1 .0.total_cmp(&b.1 .0));
-            print!("{:<18} {:>7} {:>3}", "team", "mean%", "n");
-            for r in &races {
+        Command::Season { season, recipe, resamples, json } => {
+            let recipe = recipe.recipe()?;
+            let s = season::season_pace(&archive, season, &recipe, resamples)?;
+            let teams: Vec<String> = s.all_races.teams.iter().map(|t| t.team.clone()).collect();
+            print!("{:<18}", "race gap %");
+            for r in &s.races {
                 print!(" {:>6}", r.event_key.rsplit('-').next().unwrap_or(""));
             }
             println!();
-            for (team, (mean, n)) in teams {
-                print!("{:<18} {:>7.3} {:>3}", team, mean, n);
-                for r in &races {
-                    match r.gaps_pct.get(team) {
-                        Some(g) => print!(" {:>6.2}", g),
+            for team in &teams {
+                print!("{team:<18}");
+                for r in &s.races {
+                    let g = r.pace.as_ref().filter(|_| r.counted).and_then(|p| p.teams.iter().find(|t| &t.team == team));
+                    match g {
+                        Some(t) => print!(" {:>6.2}", t.gap_pct),
                         None => print!(" {:>6}", "-"),
                     }
                 }
                 println!();
+            }
+            for r in s.races.iter().filter(|r| !r.counted) {
+                println!("not counted {}: {}", r.event_key, r.reason.as_deref().unwrap_or(""));
+            }
+            print_table("All counted races", &s.all_races);
+            print_table("Common races only", &s.common_races);
+            if let Some(path) = json {
+                write_json(&path, &s)?;
             }
         }
     }

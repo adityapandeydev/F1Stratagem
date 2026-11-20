@@ -20,25 +20,35 @@ repository's `data/`.
 
 ## Team race pace
 
-The standard recipe (`pace::team_race_pace`) measures each team's race pace from
-one race's own laps:
+Each team's race pace is measured from one race's own laps by a least-squares
+fit: lap time = driver + compound offset + tyre-wear rate per compound x tyre age
++ a time for every lap number shared by all cars. The lap-number terms take up
+fuel burn, rubbering-in and changing conditions; tyre age resets at stops, so wear
+is separable without assuming a fuel rate. Laps more than three robust standard
+deviations from the fit are dropped once and the fit repeated. Each driver is
+compared at a common reference (most-run compound, median tyre age and lap, free
+air); only differences between cars are reported, anchored to the race's median
+kept lap, and only between cars the laps connect. A team's figure is its quicker
+driver: the car's best demonstrated pace.
 
-- Laps: dry, intermediate and wet tyres with a recorded tyre age, green throughout, after lap 1, no pit in-
-  or out-laps, more than 2 s behind the car ahead at the line (the last other car to cross the line before it, so lapping and being lapped count; a car finishing an in-lap is not traffic).
-- Fit: lap time = driver + compound offset + tyre-wear rate per compound x tyre
-  age + a time for every lap number shared by all cars. The lap-number terms take
-  up fuel burn, rubbering-in and changing weather lap by lap; tyre age resets at
-  stops, so wear is separable without assuming a fuel rate. When every car ran a
-  single stint, wear is not separable and the fit leaves it out.
-- Only differences between cars are reported, anchored to the race's median kept
-  lap. Cars are compared through the laps they share; a car the laps do not
-  connect to the main group is left out. Laps more than three
-  robust standard deviations from the fit are dropped once and the fit repeated.
-- Each driver's pace is the fitted lap on the most-run compound at the median tyre
-  age and lap; a team's pace is its quicker driver's. Gaps are given in percent of
-  the quickest team's lap, or in seconds.
-- A season figure is the mean of a team's per-race gaps over the races it was
-  measured in; a race counts when at least half of its teams are measured.
+Two recipes are kept side by side (`pace::Recipe`):
+
+| | v1 | v2 |
+|---|---|---|
+| Laps | green, after lap 1, no pit laps, known tyre (dry, intermediate, wet) with a recorded age | same |
+| Clear air | more than 2 s behind the car physically ahead at the finish line | more than 2 s clear at both sector lines and the finish line; laps whose traffic is unknown are left out |
+| Lap minimum | 5 laps per driver before trimming | rechecked after trimming |
+| Single-stint races | wear dropped silently when it cannot be measured | the race is marked not tyre-corrected and does not count in a season |
+
+v2 also reports, per race: each driver's gap, laps, stints and laps shared with
+other cars; an 80% interval for every gap from resampling whole stints (gaps to
+the measurement's quickest team); and each team's chance of being the quickest.
+
+A season gives, per team, the mean and the median of its per-race gaps, in
+percent and seconds, as measured and rebased so the best team is zero, over every
+race that counts and over the common races where every team was measured. A race
+counts when at least half of its teams are measured (and, in v2, it is
+tyre-corrected).
 
 ## Modules
 
@@ -47,8 +57,8 @@ one race's own laps:
 | `table` | Column access over Parquet files (arrow-rs) |
 | `archive` | Session lookup from `reference/sessions.parquet`, per-session tables |
 | `laps` | Laps in seconds, green/slick/pit tests, gap to the car ahead from lap completion times |
-| `pace` | Team race pace from a per-race lap-time regression (compound, tyre age, lap trend or a time per lap number, traffic), quicker car, teammate mean or per-lap quickest car |
-| `season` | One recipe over every race of a season, mean gap per team |
+| `pace` | Team race pace from a per-race lap-time regression: recipes v1 and v2, stint-resampled intervals, per-driver evidence |
+| `season` | A recipe over every race of a season: per-race results, mean and median summaries over all and common races |
 | `calibrate` | Runs every team-pace recipe on an event and ranks them by agreement with a reference table |
 
 ## Commands
@@ -61,11 +71,13 @@ analysis calibrate --event 2024-20 --reference table.csv [--top 25] [--detail 3]
 in percent, or in seconds when the file starts with `unit,s`.
 
 ```powershell
-analysis season --season 2024
+analysis race --event 2024-20 [--recipe v1|v2] [--resamples 200] [--json race.json]
+analysis season --season 2024 [--recipe v1|v2] [--resamples 100] [--json season.json]
 ```
 
-Runs the standard recipe on every race of the season and prints each race's gaps
-and the mean per team. Flags change one part of the recipe: `--compounds
-all|slick|inter`, `--min-gap S` (0 keeps all laps), `--trim K` (0 = no trim),
-`--trend linear|lapxcomp|perlap`, `--team-wear`, `--traffic`,
-`--skip-after-neutral N`, `--agg best|mean|lapbest`.
+`race` prints one race's teams and drivers; `season` prints each race's team gaps
+and the season summaries. `--json` writes the full result. Optional flags change
+one part of the chosen recipe for comparisons: `--compounds all|slick|inter`,
+`--min-gap S` (0 keeps all laps), `--traffic finish|lines`, `--trim K` (0 = no
+trim), `--trend linear|lapxcomp|perlap|timeblocks`, `--team-wear`,
+`--traffic-term`, `--skip-after-neutral N`, `--agg best|mean|lapbest`.

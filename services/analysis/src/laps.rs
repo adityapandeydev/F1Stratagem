@@ -17,6 +17,9 @@ pub struct Lap {
     pub lap_time: Option<f64>,
     /// Session time when the lap was completed.
     pub time: Option<f64>,
+    /// Session times when the car crossed the first and second sector lines.
+    pub sector1_time: Option<f64>,
+    pub sector2_time: Option<f64>,
     pub stint: Option<u32>,
     pub pit_in: bool,
     pub pit_out: bool,
@@ -58,6 +61,8 @@ pub fn read(path: &Path) -> Result<Vec<Lap>> {
     let lap_number = t.f64s("LapNumber")?;
     let lap_time = seconds("LapTime")?;
     let time = seconds("Time")?;
+    let sector1_time = seconds("Sector1SessionTime")?;
+    let sector2_time = seconds("Sector2SessionTime")?;
     let stint = t.f64s("Stint")?;
     let pit_in = t.i64s("PitInTime")?;
     let pit_out = t.i64s("PitOutTime")?;
@@ -77,6 +82,8 @@ pub fn read(path: &Path) -> Result<Vec<Lap>> {
                 lap_number: lap_number[i]? as u32,
                 lap_time: lap_time[i],
                 time: time[i],
+                sector1_time: sector1_time[i],
+                sector2_time: sector2_time[i],
                 stint: stint[i].map(|s| s as u32),
                 pit_in: pit_in[i].is_some(),
                 pit_out: pit_out[i].is_some(),
@@ -113,6 +120,54 @@ pub fn gaps_ahead(laps: &[Lap]) -> Vec<Option<f64>> {
         .collect()
 }
 
+/// Traffic status at one timing line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Gap {
+    /// This car's crossing time is missing: traffic unknown.
+    Unknown,
+    /// No other car crossed this line before it.
+    NoCarAhead,
+    /// Seconds behind the last other car to cross the line.
+    Behind(f64),
+}
+
+impl Gap {
+    pub fn clear_of(self, min_s: f64) -> Option<bool> {
+        match self {
+            Gap::Unknown => None,
+            Gap::NoCarAhead => Some(true),
+            Gap::Behind(g) => Some(g > min_s),
+        }
+    }
+}
+
+/// Gaps to the car physically ahead at the three timing lines of each lap (first
+/// sector line, second sector line, finish line), each from the last other car to
+/// cross that line before this one, whatever its position or lap count. Crossings
+/// of the finish line at the end of an in-lap are in the pit lane and are not
+/// traffic.
+pub fn gaps_at_timing_lines(laps: &[Lap]) -> Vec<[Gap; 3]> {
+    let line = |crossing: &dyn Fn(&Lap) -> Option<f64>, skip: &dyn Fn(&Lap) -> bool| -> Vec<Gap> {
+        let mut all: Vec<(f64, &str)> =
+            laps.iter().filter(|l| !skip(l)).filter_map(|l| crossing(l).map(|t| (t, l.driver.as_str()))).collect();
+        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+        laps.iter()
+            .map(|lap| {
+                let Some(t) = crossing(lap) else { return Gap::Unknown };
+                let before = all.partition_point(|(c, _)| *c < t);
+                match all[..before].iter().rev().find(|(_, d)| *d != lap.driver) {
+                    Some((c, _)) => Gap::Behind(t - c),
+                    None => Gap::NoCarAhead,
+                }
+            })
+            .collect()
+    };
+    let s1 = line(&|l| l.sector1_time, &|_| false);
+    let s2 = line(&|l| l.sector2_time, &|_| false);
+    let finish = line(&|l| l.time, &|l| l.pit_in);
+    (0..laps.len()).map(|i| [s1[i], s2[i], finish[i]]).collect()
+}
+
 /// The team each driver drove for in this session (first lap seen).
 pub fn driver_teams(laps: &[Lap]) -> HashMap<String, String> {
     let mut teams = HashMap::new();
@@ -133,6 +188,8 @@ mod tests {
             lap_number: n,
             lap_time: Some(90.0),
             time: Some(time),
+            sector1_time: None,
+            sector2_time: None,
             stint: None,
             pit_in: false,
             pit_out: false,
@@ -162,6 +219,25 @@ mod tests {
         pitting.pit_in = true;
         let laps = vec![crossing("AHEAD", 10, 495.0, 2), pitting, crossing("ME", 10, 500.5, 4)];
         assert!((gaps_ahead(&laps)[2].unwrap() - 5.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn timing_lines_see_traffic_the_finish_line_misses() {
+        // B is 0.6 s behind A at the first sector line, passes, and finishes 3 s ahead.
+        let mut a = crossing("A", 5, 1003.0, 2);
+        a.sector1_time = Some(930.0);
+        a.sector2_time = Some(960.0);
+        let mut b = crossing("B", 5, 1000.0, 1);
+        b.sector1_time = Some(930.6);
+        b.sector2_time = Some(959.0);
+        let mut c = crossing("C", 5, 1050.0, 3);
+        c.sector1_time = None;
+        c.sector2_time = Some(1010.0);
+        let gaps = gaps_at_timing_lines(&[a, b, c]);
+        assert!(matches!(gaps[1][0], Gap::Behind(g) if (g - 0.6).abs() < 1e-9));
+        assert_eq!(gaps[1][2], Gap::NoCarAhead);
+        assert_eq!(gaps[2][0], Gap::Unknown);
+        assert_eq!(gaps[1][0].clear_of(2.0), Some(false));
     }
 
     #[test]
