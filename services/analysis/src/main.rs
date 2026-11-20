@@ -353,7 +353,7 @@ fn main() -> Result<()> {
         Command::CarSeason { season, json, show_skills, window } => {
             let runs = window_runs(&archive, season, window)?;
             let s = car_pace::car_season(season, &runs, window);
-            println!("car-only race pace {season}: driver skills from {}-{} (leave-this-race-out), skill drift {} %/season, established = {}+ teammate races", s.window[0], s.window[1], s.skill_drift, s.min_teammate_races);
+            println!("car-only race pace {season}: each race measured with earlier races only ({}-{} window), shrunk skills, skill drift {} %/season, established = {}+ teammate races", s.window[0], s.window[1], s.skill_drift, s.min_teammate_races);
             let teams: Vec<String> = s.all_races.teams.iter().map(|t| t.team.clone()).collect();
             print!("{:<18}", "race gap %");
             for r in &s.races {
@@ -385,30 +385,23 @@ fn main() -> Result<()> {
             print_table("All counted races", &s.all_races);
             print_table("Common races only", &s.common_races);
             if show_skills {
-                let (seasons, drift, rows) = car_pace::skills_table(season, &runs, window);
+                let (drift, rows) = car_pace::skills_table(season, &runs, window);
                 println!();
                 println!(
-                    "INTERNAL dry driver skill per season (% vs the average {season} driver; negative = faster); skill drift {drift} %/season"
+                    "INTERNAL driver race-pace skill, end of {season} (% vs the season's average driver; negative = faster); skill drift {drift} %/season"
                 );
-                print!("{:<5}", "drv");
-                for s in &seasons {
-                    print!(" {s:>7}");
-                }
-                println!(" {:>7} {:>13} {:>6} {:>5}", "80% +-", "wet+ (80% +-)", "races", "estab");
+                println!("{:<5} {:>8} {:>8} {:>7} {:>7} {:>8} {:>6}", "drv", "measured", "shrunk", "kept", "80% +-", "wet adj", "races");
                 for r in rows {
-                    print!("{:<5}", r.driver);
-                    for v in &r.dry {
-                        match v {
-                            Some(v) => print!(" {v:>7.3}"),
-                            None => print!(" {:>7}", "-"),
-                        }
-                    }
-                    let range = r.range80.map_or("-".to_string(), |v| format!("{v:.3}"));
-                    let wet = match (r.wet_delta, r.wet_range80) {
-                        (Some(w), Some(h)) => format!("{w:.3} ({h:.3})"),
-                        _ => "-".to_string(),
-                    };
-                    println!(" {range:>7} {wet:>13} {:>6} {:>5}", r.teammate_races, if r.established { "yes" } else { "no" });
+                    let wet = r.wet_adjustment.map_or("-".to_string(), |w| format!("{w:.3}"));
+                    println!(
+                        "{:<5} {:>8.3} {:>8.3} {:>6.0}% {:>7.3} {wet:>8} {:>6}",
+                        r.driver,
+                        r.raw,
+                        r.shrunk,
+                        r.factor * 100.0,
+                        r.range80,
+                        r.teammate_races
+                    );
                 }
             }
             if let Some(path) = json {
