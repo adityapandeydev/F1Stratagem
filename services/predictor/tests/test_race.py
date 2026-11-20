@@ -998,3 +998,42 @@ def test_gamble_model_learns_more_stops_for_high_wear_teams():
     assert c[1, 2] > 2 * c[0, 2] and c[0, 1] > 2 * c[1, 1]       # high wear: more; gentle: fewer
     assert np.all(c[:, 0] == 0)                                    # no one-stop races seen: no chance there
     assert list(race_sim.grid_band([1, 3, 4, 10, 11, 16, 0])) == [0, 0, 1, 1, 2, 3, 3]
+
+
+def test_gamble_rows_of_a_season_do_not_depend_on_which_seasons_ran_before(monkeypatch):
+    from predictor import race_sim
+    from predictor.race import SimulatedRace
+    import types
+    sessions = pd.DataFrame({"session_id": ["r1"], "session_type": ["R"], "season": [2019], "event_key": ["2019-01"],
+                             "scheduled_start_utc": [pd.Timestamp("2019-03-17", tz="UTC")]})
+    view = types.SimpleNamespace(sessions=sessions, results=lambda s: pd.DataFrame({"DriverNumber": ["1"], "GridPosition": [1.0]}),
+                                 entrants=lambda s: pd.DataFrame({"driver_number": ["1"], "lineage_id": ["t"]}),
+                                 laps=lambda s: pd.DataFrame())
+    model = SimulatedRace.__new__(SimulatedRace)
+    model.gambles, model._gamble_rows, model._team_devs = True, {}, {}
+    model._archive = types.SimpleNamespace(view=lambda cutoff: view)
+    model._era_team_devs_before = lambda view, race: []
+    seen = []
+    monkeypatch.setattr(race_sim, "gamble_rows", lambda laps, grid, wear: seen.append(dict(wear)) or None)
+    class Team:
+        def __init__(self, value): self.value = value
+        def predict(self, lineages, races): return [0], np.array([self.value]), np.array([0.0])
+    model._team_models = {2020: Team(1.0), 2021: Team(10.0)}
+    model._fit_gambles(2020); model._fit_gambles(2021)
+    sequential = seen[-1]
+    seen.clear(); model._gamble_rows = {}
+    model._fit_gambles(2021)
+    assert sequential == seen[-1] == {"1": 10.0}      # 2021 uses its own team model, run alone or after 2020
+
+
+def test_randomised_pit_is_uniform_under_a_calibrated_forecast():
+    from predictor import calibration
+    rng = np.random.default_rng(1)
+    probs = rng.dirichlet(np.ones(10), size=4000)
+    actual = np.array([rng.choice(10, p=p) + 1 for p in probs])
+    pit = calibration.randomised_pit(probs, actual, rng)
+    assert abs(pit.mean() - 0.5) < 0.02 and abs(pit.var() - 1 / 12) < 0.005
+    s = calibration.summary(pit, np.repeat(np.arange(200), 20), rng, resamples=200).set_index("statistic")
+    assert s.low["variance"] < 1 / 12 < s.high["variance"]
+    sure = np.eye(10)[actual - 1]                       # all mass on the actual position: PIT spread over its slot
+    assert 0 <= calibration.randomised_pit(sure, actual, rng).min() and calibration.randomised_pit(sure, actual, rng).max() <= 1

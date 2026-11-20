@@ -27,6 +27,21 @@ def _claim(folder):
         return False
 
 
+def _calibrate(args):
+    from . import calibration
+    run = Path(args.run)
+    if not run.is_absolute():
+        run = SERVICE_ROOT / run
+    forecasts = pd.read_parquet(run / "forecasts.parquet")
+    with pd.option_context("display.width", 200, "display.precision", 4):
+        for model in args.models:
+            overall, _ = calibration.diagnose(forecasts, model)
+            print(f"{model}: randomised PIT, 90% intervals resampling whole races")
+            print(overall.to_string(index=False))
+            print()
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="predictor", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -45,7 +60,18 @@ def main(argv=None):
     evaluate.add_argument("--screen-base", choices=sorted(n for n in model_registry() if n.startswith("pace")),
                           help="quick screen: take this model's fitted settings, fit only what each other "
                                "model adds (never a basis for adoption)")
+    evaluate.add_argument("--seed-batch", type=int,
+                          help="another set of common random numbers (shared by every model), to check that "
+                               "a difference is not Monte Carlo variation")
+    calibrate = commands.add_parser("calibrate", help="randomised PIT calibration of a run's saved forecasts")
+    calibrate.add_argument("--run", required=True, help="run folder (data/runs/...) with forecasts.parquet")
+    calibrate.add_argument("--models", nargs="+", required=True)
     args = parser.parse_args(argv)
+    if args.command == "calibrate":
+        return _calibrate(args)
+    if args.seed_batch is not None:
+        from . import baselines
+        baselines.SEED_BATCH = args.seed_batch
     if args.screen_base and args.no_fit_cache:
         parser.error("--screen-base reads the base model's fits from the fit cache")
     fit_cache = None if args.no_fit_cache else FitCache(SERVICE_ROOT / "data" / "fits")

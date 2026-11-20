@@ -110,11 +110,17 @@ RANKERS = {"uniform": rank_uniform, "championship": rank_championship, "persiste
            "practice": rank_practice, "qualifying": rank_qualifying}
 
 
+SEED_BATCH = None      # set by `predictor evaluate --seed-batch`: another set of common random numbers
+
+
 def seed_for(example):
     """Random seed of an example, the same for every model: paired comparisons then
     share their random draws (common random numbers), so a difference between two
-    models is not inflated by their sampling noise."""
-    return zlib.crc32(f"{example.event_key}|{example.session_type}|{example.cutoff_label}".encode())
+    models is not inflated by their sampling noise. With SEED_BATCH, a different
+    set of seeds (still shared by every model), to check a difference is not
+    Monte Carlo variation; None gives the original seeds."""
+    batch = "" if SEED_BATCH is None else f"|batch{SEED_BATCH}"
+    return zlib.crc32(f"{example.event_key}|{example.session_type}|{example.cutoff_label}{batch}".encode())
 
 
 class RetirementModel:

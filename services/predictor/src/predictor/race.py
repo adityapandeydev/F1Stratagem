@@ -465,7 +465,9 @@ class SimulatedRace(RaceModel):
         team_model = self._team_models.get(season) if self.gambles != "grid" else None
         frames = []
         for race in races.itertuples():
-            if race.session_id not in self._gamble_rows:
+            # keyed by the target season too: a row's team wear comes from that season's team wear model
+            key = (season, race.session_id)
+            if key not in self._gamble_rows:
                 results = view.results(race.session_id)
                 grid = ({} if "GridPosition" not in results else
                         {d: float(g) for d, g in zip(results.DriverNumber.astype(str),
@@ -479,8 +481,8 @@ class SimulatedRace(RaceModel):
                     if teams is not None:
                         index, mean, _ = teams
                         wear = {d: float(mean[i]) for d, i in zip(numbers, index)}
-                self._gamble_rows[race.session_id] = race_sim.gamble_rows(view.laps(race.session_id), grid, wear)
-            frames.append(self._gamble_rows[race.session_id])
+                self._gamble_rows[key] = race_sim.gamble_rows(view.laps(race.session_id), grid, wear)
+            frames.append(self._gamble_rows[key])
         frames = [f for f in frames if f is not None]
         return race_sim.GambleModel().fit(pd.concat(frames, ignore_index=True) if frames else None)
 

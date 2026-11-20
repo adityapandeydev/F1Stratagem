@@ -56,7 +56,7 @@ def with_clean_air(model, min_gap):
     return model
 
 
-CORRECTED_VERSION = 3
+CORRECTED_VERSION = 4   # 4: start gaps across lap counts (race_sim.start_state)
 
 
 def start_gaps(laps):
