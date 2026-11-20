@@ -18,38 +18,16 @@ cargo test --release
 The archive is found at `--data-root`, else `F1_DATA_ROOT`, else the
 repository's `data/`.
 
-## Team race pace
+## Methodology
 
-Each team's race pace is measured from one race's own laps (`pace::Recipe::standard`).
+Two views of race pace, each documented in full:
 
-- **Laps:** green throughout, after lap 1, no pit in- or out-laps, a known tyre
-  (dry, intermediate or wet) with a recorded tyre age, and clear air: more than
-  2 s behind the car physically ahead at both sector lines and the finish line
-  (the last other car to cross each line, so lapping and being lapped count).
-  Laps whose traffic cannot be determined are left out.
-- **Fit:** lap time = driver + compound offset + tyre-wear rate per compound x tyre
-  age + a time for every lap number shared by all cars. The lap-number terms take
-  up fuel burn, rubbering-in and changing conditions; tyre age resets at stops, so
-  wear is separable without assuming a fuel rate. Laps more than three robust
-  standard deviations from the fit are dropped once and the fit repeated; a driver
-  needs 5 laps, checked again after that.
-- **Comparison:** each driver at a common reference (most-run compound, median tyre
-  age and lap, free air). Only differences between cars are reported, anchored to
-  the race's median kept lap, and only between cars the laps connect. If the cars
-  can only be compared without the wear term (every car ran a single stint), the
-  race is marked not tyre-corrected and does not count in a season.
-- **Team figure:** the quicker driver, the car's best demonstrated pace. Gaps in
-  percent of the quickest team's lap and in seconds.
-
-Each race also reports every driver's gap with laps, stints and laps shared with
-other cars; an 80% interval for every gap from resampling whole stints (gaps to
-the measurement's quickest team); and each team's share of resamples in which it
-was quickest. These describe how firm a gap is and never change it.
-
-A season gives, per team, the mean and the median of its per-race gaps, in
-percent and seconds, as measured and rebased so the best team is zero, over every
-race that counts and over the common races where every team was measured. A race
-counts when it is tyre-corrected and at least half of its teams are measured.
+- [Team race pace](../../design/analysis/team-race-pace.md): each car with its
+  quicker driver, measured from one race's own laps on equal tyres and fuel, in
+  clear air.
+- [Car-only race pace](../../design/analysis/car-only-race-pace.md): the same
+  measurement with each driver's contribution removed, using teammate
+  comparisons across seasons; each race measured with earlier races only.
 
 ## Modules
 
@@ -60,6 +38,7 @@ counts when it is tyre-corrected and at least half of its teams are measured.
 | `laps` | Laps in seconds, green/slick/pit tests, gap to the car ahead from lap completion times |
 | `pace` | Team race pace from a per-race lap-time regression, stint-resampled intervals, per-driver evidence |
 | `season` | A recipe over every race of a season: per-race results, mean and median summaries over all and common races |
+| `car_pace` | Car-only race pace: driver skills per season from teammate comparisons, shrunk towards the average, removed race by race |
 | `calibrate` | Runs every team-pace recipe on an event and ranks them by agreement with a reference table |
 
 ## Commands
@@ -82,3 +61,14 @@ one part of the standard recipe for comparisons: `--compounds all|slick|inter`,
 `--min-gap S` (0 keeps all laps), `--trim K` (0 = no
 trim), `--trend linear|lapxcomp|perlap|timeblocks`, `--team-wear`,
 `--traffic-term`, `--skip-after-neutral N`, `--agg best|mean|lapbest`.
+
+```powershell
+analysis car-race --event 2024-20 [--window 6]
+analysis car-season --season 2024 [--window 6] [--json car-season.json]
+```
+
+`car-race` prints one race's car-only figures for dry and wet laps; `car-season`
+prints each race's car-only gaps and the season summaries. `--window` sets the
+seasons driver skills come from (the season and those before it). The internal
+driver skill table is printed with `--show-skills`; it is not part of the
+published outputs.
