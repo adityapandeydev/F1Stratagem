@@ -495,8 +495,11 @@ pub struct RacePace {
     /// were compared without it (every car ran a single stint) and the race does not
     /// count in a season.
     pub tyre_corrected: bool,
-    /// Median kept lap time: the base of the percentages.
+    /// Median kept lap time: the anchor of the fitted times.
     pub base_lap_s: f64,
+    /// The quickest team's fitted lap: every percentage gap of this race is taken
+    /// against it (gap % = gap s / this x 100).
+    pub percent_base_s: f64,
     pub laps: LapCounts,
     /// Teams that took part in the race.
     pub teams_in_race: usize,
@@ -640,6 +643,7 @@ pub fn race_pace(race: &[Lap], recipe: &Recipe, resamples: usize, seed: u64) -> 
     Some(RacePace {
         tyre_corrected: measured.tyre_corrected,
         base_lap_s: base,
+        percent_base_s: quickest,
         laps: counts,
         teams_in_race,
         resamples,

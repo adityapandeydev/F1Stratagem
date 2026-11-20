@@ -92,7 +92,8 @@ Otherwise the driver's dry skill is used in the wet as well.
 ## Measured with what was known at the time
 
 A race's car-only figure is computed only from races before it: earlier
-seasons and earlier races of the same season. It is never
+seasons, earlier races of the same season, and the sprint race of the same
+weekend, which has already been run. It is never
 recomputed with later results.
 
 This matters because drivers improve. If later races were used, a driver's

@@ -157,11 +157,23 @@ fn session_runs(archive: &Archive, event_key: &str, session_id: &str, sprint: bo
     Ok(runs)
 }
 
+/// Standard deviation (percent) of a gap whose race has no interval at all.
+const FALLBACK_SD_PCT: f64 = 0.2;
+
 fn observations(runs: &[&RaceRun]) -> Vec<DriverObs> {
     let mut out = Vec::new();
     for run in runs {
-        for d in &run.pace.drivers {
-            let sd = d.interval_pct.map_or(f64::NAN, |[lo, hi]| (hi - lo) / (2.0 * Z80));
+        let sds: Vec<f64> = run
+            .pace
+            .drivers
+            .iter()
+            .map(|d| d.interval_pct.map_or(f64::NAN, |[lo, hi]| ((hi - lo) / (2.0 * Z80)).max(MIN_SD_PCT)))
+            .collect();
+        // A gap without an interval gets the median precision of the same race's
+        // other gaps, so nothing from another race (earlier or later) enters it.
+        let mut known: Vec<f64> = sds.iter().copied().filter(|s| s.is_finite()).collect();
+        let fallback = if known.is_empty() { FALLBACK_SD_PCT } else { pace::median(&mut known) };
+        for (d, sd) in run.pace.drivers.iter().zip(sds) {
             out.push(DriverObs {
                 race: run.race_id(),
                 season: season_of(&run.event_key),
@@ -169,19 +181,17 @@ fn observations(runs: &[&RaceRun]) -> Vec<DriverObs> {
                 driver: d.driver.clone(),
                 team: d.team.clone(),
                 gap_pct: d.gap_pct,
-                sd_pct: if sd.is_finite() { sd.max(MIN_SD_PCT) } else { f64::NAN },
+                sd_pct: if sd.is_finite() { sd } else { fallback },
             });
         }
     }
-    // A gap without an interval gets the median precision of the others.
-    let mut sds: Vec<f64> = out.iter().map(|o| o.sd_pct).filter(|s| s.is_finite()).collect();
-    let fallback = if sds.is_empty() { 0.2 } else { pace::median(&mut sds) };
-    for o in &mut out {
-        if !o.sd_pct.is_finite() {
-            o.sd_pct = fallback;
-        }
-    }
     out
+}
+
+/// Whether an observation was known before the Grand Prix `event` of `season`:
+/// earlier seasons, earlier events of the season, and the same weekend's sprint.
+fn known_before(o: &DriverObs, season: i64, event: &str) -> bool {
+    o.season < season || (o.season == season && (o.race.as_str() < event || o.race == format!("{event}-S")))
 }
 
 /// Driver skills (percent, relative to the average driver; lower is faster) per
@@ -616,8 +626,9 @@ pub const ROOKIE_NOTE: &str = "rookie in the car: not enough comparative data to
 
 /// Car-only pace of one race and condition from its drivers' gaps and the skills
 /// fitted on earlier races, shrunk towards the average of the race's established
-/// drivers. `base_lap_s` converts percent to seconds.
-pub fn car_run(condition: Condition, race_obs: &[&DriverObs], skills: &Skills, base_lap_s: f64) -> CarRun {
+/// drivers. `percent_base_s` is the lap time the percentages are taken against,
+/// used to convert them to seconds.
+pub fn car_run(condition: Condition, race_obs: &[&DriverObs], skills: &Skills, percent_base_s: f64) -> CarRun {
     let mut by_team: BTreeMap<&str, Vec<&DriverObs>> = BTreeMap::new();
     for o in race_obs {
         by_team.entry(o.team.as_str()).or_default().push(o);
@@ -655,7 +666,7 @@ pub fn car_run(condition: Condition, race_obs: &[&DriverObs], skills: &Skills, b
                 let half = Z80 * (var + best_var).sqrt();
                 [gap - half, gap + half]
             });
-            CarTeam { team, gap_pct: gap, gap_s: gap / 100.0 * base_lap_s, interval_pct: interval, drivers, note }
+            CarTeam { team, gap_pct: gap, gap_s: gap / 100.0 * percent_base_s, interval_pct: interval, drivers, note }
         })
         .collect();
     teams.sort_by(|a, b| a.gap_pct.total_cmp(&b.gap_pct));
@@ -716,16 +727,16 @@ pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>) -> CarSeason 
     }
     let mut races = Vec::new();
     for event in events {
-        // What was known before this race: earlier seasons and earlier races of this one.
-        let earlier: Vec<&DriverObs> =
-            all_obs.iter().filter(|o| o.season < season || (o.season == season && o.race < event)).collect();
+        // What was known before this race: earlier seasons, earlier races of this one
+        // and this weekend's sprint.
+        let earlier: Vec<&DriverObs> = all_obs.iter().filter(|o| known_before(o, season, &event)).collect();
         let skills = fit_skills(&earlier, drift);
         let event_runs: Vec<&&RaceRun> = target.iter().filter(|r| r.event_key == event).collect();
         let mut car_runs = Vec::new();
         for run in &event_runs {
             let obs: Vec<&DriverObs> =
                 all_obs.iter().filter(|o| o.race == event && o.condition == run.condition).collect();
-            car_runs.push(car_run(run.condition, &obs, &skills, run.pace.base_lap_s));
+            car_runs.push(car_run(run.condition, &obs, &skills, run.pace.percent_base_s));
         }
         let headline_run = event_runs.iter().max_by_key(|r| r.pace.laps.kept);
         let headline = headline_run.map(|r| r.condition);
@@ -936,6 +947,139 @@ mod tests {
             assert!(k.factor > 0.0 && k.factor < 1.0, "{d} {k:?}");
             assert!((k.dry - k.mean).signum() == (k.raw - k.mean).signum() || (k.raw - k.mean).abs() < 1e-9);
         }
+    }
+
+    /// A stage-one race result built from synthetic driver gaps.
+    fn run_of(race: &str, gaps: &[(&str, &str, f64, Option<f64>)]) -> RaceRun {
+        use crate::pace::{DriverPace, LapCounts, TeamPace};
+        let base = 90.0;
+        let drivers: Vec<DriverPace> = gaps
+            .iter()
+            .map(|(d, t, g, sd)| DriverPace {
+                driver: d.to_string(),
+                team: t.to_string(),
+                gap_pct: *g,
+                gap_s: g / 100.0 * base,
+                interval_pct: sd.map(|sd| [g - Z80 * sd, g + Z80 * sd]),
+                interval_s: None,
+                laps: 30,
+                stints: 2,
+                overlap_laps: 30,
+            })
+            .collect();
+        let mut teams: BTreeMap<&str, f64> = BTreeMap::new();
+        for (_, t, g, _) in gaps {
+            let e = teams.entry(t).or_insert(f64::INFINITY);
+            *e = e.min(*g);
+        }
+        let teams = teams
+            .into_iter()
+            .map(|(t, g)| TeamPace {
+                team: t.to_string(),
+                driver: String::new(),
+                gap_pct: g,
+                gap_s: g / 100.0 * base,
+                interval_pct: None,
+                interval_s: None,
+                p_quickest: None,
+            })
+            .collect::<Vec<_>>();
+        RaceRun {
+            event_key: race.to_string(),
+            sprint: false,
+            condition: Condition::Dry,
+            pace: RacePace {
+                tyre_corrected: true,
+                base_lap_s: base + 1.0,
+                percent_base_s: base,
+                laps: LapCounts::default(),
+                teams_in_race: teams.len(),
+                resamples: 0,
+                resamples_used: 0,
+                teams,
+                drivers,
+            },
+        }
+    }
+
+    fn runs_of(all: &[DriverObs]) -> BTreeMap<i64, Vec<RaceRun>> {
+        let mut by_race: BTreeMap<String, Vec<(&str, &str, f64, Option<f64>)>> = BTreeMap::new();
+        for o in all {
+            by_race.entry(o.race.clone()).or_default().push((&o.driver, &o.team, o.gap_pct, Some(o.sd_pct)));
+        }
+        let mut runs: BTreeMap<i64, Vec<RaceRun>> = BTreeMap::new();
+        for (race, gaps) in by_race {
+            runs.entry(season_of(&race)).or_default().push(run_of(&race, &gaps));
+        }
+        runs
+    }
+
+    #[test]
+    fn later_races_never_change_earlier_results() {
+        let mut all = grid([0.1, 0.1, 0.1]);
+        for (i, o) in all.iter_mut().enumerate() {
+            o.gap_pct += 0.05 * ((i as f64) * 1.3).sin();
+        }
+        let before = car_season(2023, &runs_of(&all));
+        // Append a later race whose gaps have no intervals and odd values.
+        let mut runs = runs_of(&all);
+        runs.get_mut(&2023).unwrap().push(run_of(
+            "2023-10",
+            &[("A", "Red", 0.0, None), ("D", "Red", 2.5, None), ("C", "Blue", 0.9, None), ("F", "Blue", 0.1, None)],
+        ));
+        let after = car_season(2023, &runs);
+        for race in &before.races {
+            let later = after.races.iter().find(|r| r.event_key == race.event_key).unwrap();
+            assert_eq!(serde_json::to_string(race).unwrap(), serde_json::to_string(later).unwrap(), "{}", race.event_key);
+        }
+    }
+
+    #[test]
+    fn a_missing_interval_takes_its_precision_from_its_own_race_only() {
+        // Race A has one gap without an interval; adding race B with very different
+        // precision must not change any of race A's observations.
+        let a = run_of("2023-01", &[("A", "Red", 0.0, Some(0.1)), ("B", "Red", 0.3, None), ("C", "Blue", 0.5, Some(0.3))]);
+        let b = run_of("2023-02", &[("A", "Red", 0.0, Some(2.0)), ("B", "Red", 0.3, Some(3.0)), ("C", "Blue", 0.5, Some(4.0))]);
+        let alone = observations(&[&a]);
+        let with_later = observations(&[&a, &b]);
+        for (x, y) in alone.iter().zip(&with_later) {
+            assert_eq!((x.race.as_str(), x.sd_pct), (y.race.as_str(), y.sd_pct));
+        }
+        assert!((alone[1].sd_pct - 0.2).abs() < 1e-9, "median of 0.1 and 0.3: {}", alone[1].sd_pct);
+    }
+
+    #[test]
+    fn the_weekend_sprint_is_known_before_its_grand_prix() {
+        let mut o = obs("2024-20-S", "A", "Red", 0.0);
+        assert!(known_before(&o, 2024, "2024-20"));
+        assert!(!known_before(&o, 2024, "2024-19"));
+        o.race = "2024-21-S".into();
+        assert!(!known_before(&o, 2024, "2024-20"));
+        o.race = "2024-20".into();
+        assert!(!known_before(&o, 2024, "2024-20"));
+        o.race = "2024-19".into();
+        assert!(known_before(&o, 2024, "2024-20"));
+    }
+
+    #[test]
+    fn seconds_use_the_percentages_own_base() {
+        // Percentages are taken against the quickest team's lap (90 s here), not the
+        // median kept lap (91 s): with skills that remove nothing, a 1.0% gap must
+        // convert back to its original 0.9 s.
+        let run = run_of("2024-05", &[("A", "Red", 0.0, Some(0.1)), ("B", "Blue", 1.0, Some(0.1))]);
+        let obs = observations(&[&run]);
+        let refs: Vec<&DriverObs> = obs.iter().collect();
+        let mut skills = Skills { cov: DMatrix::zeros(2, 2), ..Skills::default() };
+        for (i, d) in ["A", "B"].into_iter().enumerate() {
+            skills.linked.insert(d.into());
+            skills.teammate_races.insert(d.into(), MIN_TEAMMATE_RACES);
+            skills.dry.insert((d.into(), 2024), 0.0);
+            skills.dry_col.insert((d.into(), 2024), i);
+        }
+        let car = car_run(Condition::Dry, &refs, &skills, run.pace.percent_base_s);
+        let blue = car.teams.iter().find(|t| t.team == "Blue").unwrap();
+        let original = run.pace.teams.iter().find(|t| t.team == "Blue").unwrap();
+        assert!((blue.gap_pct - 1.0).abs() < 1e-9 && (blue.gap_s - original.gap_s).abs() < 1e-9, "{blue:?}");
     }
 
     #[test]
