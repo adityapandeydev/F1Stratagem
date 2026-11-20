@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 
 use analysis::archive::Archive;
 use analysis::calibrate;
+use analysis::car_pace;
 use analysis::pace::{self, Agg, Compounds, LapTrend, RacePace, Recipe};
 use analysis::season::{self, SeasonTable};
 
@@ -69,6 +70,38 @@ enum Command {
         #[arg(long)]
         json: Option<PathBuf>,
     },
+    /// Car-only race pace of every race of a season: driver skills removed.
+    CarSeason {
+        #[arg(long)]
+        season: i64,
+        /// Also write the full result as JSON to this file.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Also print the internal driver skill table of the window (not published).
+        #[arg(long)]
+        show_skills: bool,
+        /// Seasons of the driver-skill window (the season and those before it).
+        #[arg(long, default_value_t = car_pace::WINDOW_SEASONS)]
+        window: i64,
+    },
+    /// Car-only race pace of one race: driver skills removed.
+    CarRace {
+        /// Event key, e.g. 2024-20.
+        #[arg(long)]
+        event: String,
+        /// Seasons of the driver-skill window (the season and those before it).
+        #[arg(long, default_value_t = car_pace::WINDOW_SEASONS)]
+        window: i64,
+    },
+}
+
+/// Seasons whose races a car-only season needs (its driver-skill window).
+fn window_runs(archive: &Archive, season: i64, window: i64) -> Result<std::collections::BTreeMap<i64, Vec<car_pace::RaceRun>>> {
+    let mut runs = std::collections::BTreeMap::new();
+    for s in (season - window + 1)..=season {
+        runs.insert(s, car_pace::season_runs(archive, s)?);
+    }
+    Ok(runs)
 }
 
 /// The standard recipe, with optional changes to one of its parts for comparisons.
@@ -315,6 +348,80 @@ fn main() -> Result<()> {
             print_table("Common races only", &s.common_races);
             if let Some(path) = json {
                 write_json(&path, &s)?;
+            }
+        }
+        Command::CarSeason { season, json, show_skills, window } => {
+            let runs = window_runs(&archive, season, window)?;
+            let s = car_pace::car_season(season, &runs, window);
+            println!("car-only race pace {season}: driver skills from {}-{} (leave-this-race-out), established = {}+ teammate races", s.window[0], s.window[1], s.min_teammate_races);
+            let teams: Vec<String> = s.all_races.teams.iter().map(|t| t.team.clone()).collect();
+            print!("{:<18}", "race gap %");
+            for r in &s.races {
+                print!(" {:>6}", r.event_key.rsplit('-').next().unwrap_or(""));
+            }
+            println!();
+            for team in &teams {
+                print!("{team:<18}");
+                for r in &s.races {
+                    let run = r.runs.iter().find(|c| Some(c.condition) == r.headline).filter(|_| r.counted);
+                    match run.and_then(|c| c.teams.iter().find(|t| &t.team == team)) {
+                        Some(t) => print!(" {:>6}", format!("{:.2}{}", t.gap_pct, if t.note.is_some() { "*" } else { "" })),
+                        None => print!(" {:>6}", "-"),
+                    }
+                }
+                println!();
+            }
+            println!("* rookie in the car: measured from the established teammate only");
+            for r in &s.races {
+                if let Some(reason) = &r.reason {
+                    println!("not counted {}: {reason}", r.event_key);
+                }
+                for c in &r.runs {
+                    if !c.not_measured.is_empty() {
+                        println!("{} {:?}: no established driver for {}", r.event_key, c.condition, c.not_measured.join(", "));
+                    }
+                }
+            }
+            print_table("All counted races", &s.all_races);
+            print_table("Common races only", &s.common_races);
+            if show_skills {
+                let window: Vec<&car_pace::RaceRun> = runs.values().flatten().collect();
+                println!();
+                println!("INTERNAL driver skill, {}-{} (% vs average driver; negative = faster)", s.window[0], s.window[1]);
+                println!("{:<5} {:>8} {:>8} {:>6} {:>12}", "drv", "dry", "wet", "races", "established");
+                for (d, dry, wet, n, est) in car_pace::skills_table(&window) {
+                    println!("{d:<5} {dry:>8.3} {wet:>8.3} {n:>6} {est:>12}");
+                }
+            }
+            if let Some(path) = json {
+                write_json(&path, &s)?;
+            }
+        }
+        Command::CarRace { event, window } => {
+            let season: i64 = event.split('-').next().unwrap_or("").parse()?;
+            let runs = window_runs(&archive, season, window)?;
+            let s = car_pace::car_season(season, &runs, window);
+            let Some(race) = s.races.iter().find(|r| r.event_key == event) else {
+                anyhow::bail!("{event} has no measured race")
+            };
+            for run in &race.runs {
+                let headline = if Some(run.condition) == race.headline { " (headline)" } else { "" };
+                println!("{event} {:?} laps{headline}", run.condition);
+                println!("{:<18} {:>8} {:>8} {:>15}  drivers", "team", "gap %", "gap s", "80% %");
+                for t in &run.teams {
+                    println!(
+                        "{:<18} {:>8.3} {:>8.3} {:>15}  {}{}",
+                        t.team,
+                        t.gap_pct,
+                        t.gap_s,
+                        interval(t.interval_pct),
+                        t.drivers.join(", "),
+                        if t.note.is_some() { "  *rookie: teammate only" } else { "" }
+                    );
+                }
+                if !run.not_measured.is_empty() {
+                    println!("no established driver: {}", run.not_measured.join(", "));
+                }
             }
         }
     }

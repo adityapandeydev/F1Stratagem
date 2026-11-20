@@ -5,6 +5,7 @@
 
 pub mod archive;
 pub mod calibrate;
+pub mod car_pace;
 pub mod laps;
 pub mod pace;
 pub mod season;
