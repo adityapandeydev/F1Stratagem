@@ -284,6 +284,11 @@ def model_registry():
             "pace3wrqf": lambda: _pace_model(3, weekend=True, races=True, knockout=True, failures=True),
             "pace3wrqw": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True),
             "pace3wrqwt": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True),
+            # race pace read with lap effects (no fixed fuel rate), then also keeping the connected group
+            "pace3wrqwtre": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True,
+                                                race_read={"lap_effects": True}),
+            "pace3wrqwtrep": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
+                                                 robust=True, race_read={"lap_effects": True, "partial": True}),
             # race pace from clean-air laps only (cleanair.py): 1.0 s and 1.5 s to the car ahead
             "pace3wrqwta1": lambda: _clean_air(_pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                            robust=True), 1.0),
@@ -329,6 +334,19 @@ def model_registry():
                                                 robust=True, wet_evolution=True, wet_forecast=True),
             # race forecasts (race.py) on the champion's pace model; fits shared with it
             "race1a": lambda: _race_model("pace3wrqwt", "race:v1a"),
+            # the race champions on race pace read with lap effects (every component switched)
+            "race1ae": lambda: _race_model("pace3wrqwtre", "race:v1ae"),
+            "race2ae": lambda: _race_model("pace3wrqwtre", "race:v2ae", simulated=True),
+            "race3ffne": lambda: _race_model("pace3wrqwtre", "race:v3ffne", simulated=True, forecast_battles=True,
+                                             neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                             strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                             team_wear=True, following=True, windows=True),
+            "race3fwe": lambda: _race_model("pace3wrqwtre", "race:v3fwe", simulated=True, forecast_battles=True,
+                                            neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                            team_wear=True, lap_effect_wear=True),
+            "race_mix3ffne1ae": lambda: ForecastMixture(["race3ffne", "race1ae"], [0.5, 0.5], "race:mix3ffne1ae"),
+            "race_mix3fwe2ae": lambda: ForecastMixture(["race3fwe", "race2ae"], [0.5, 0.5], "race:mix3fwe2ae"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
             "race1aa1": lambda: _race_model("pace3wrqwta1", "race:v1aa1"),
             "race1aa15": lambda: _race_model("pace3wrqwta15", "race:v1aa15"),
