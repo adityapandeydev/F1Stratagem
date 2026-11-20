@@ -2,10 +2,13 @@
 //!
 //! Built on the standard team race pace and never changing it. Two stages:
 //!
-//! 1. Every driver's gap in every race, from the standard recipe run separately on
-//!    dry-tyre and on wet-tyre laps (so wet skill stays apart from dry skill), with
-//!    the precision of each gap from its stint-resampled interval.
-//! 2. Across a window of seasons: gap = car (this team, this race, this condition)
+//! 1. Every driver's gap in every Grand Prix and sprint race, from the standard
+//!    recipe run separately on dry-tyre and on wet-tyre laps (so wet skill stays
+//!    apart from dry skill), with the precision of each gap from its
+//!    stint-resampled interval. Sprints add teammate comparisons; car-only figures
+//!    are given for Grands Prix.
+//! 2. Across every season since the first archived one: gap = car (this team,
+//!    this race, this condition)
 //!    + driver skill (this season) + noise. The car term is removed by comparing
 //!    teammates within each team and race. Driver skills are linked across teams by
 //!    drivers who changed teams and across seasons by letting each driver's skill
@@ -16,18 +19,20 @@
 //!
 //! A driver gets a separate wet adjustment only with enough wet teammate races
 //! against at least two different teammates, and when the adjustment is clearly
-//! larger than its uncertainty; otherwise his dry skill is used in the wet too.
+//! larger than its uncertainty; otherwise the dry skill is used in the wet too.
 //!
 //! Each race is measured with what was known before it: skills come only from
-//! earlier races of the window, so a race's car-only figure never changes once
+//! earlier races, so a race's car-only figure never changes once
 //! computed, and a season figure is the mean of its races' figures. Skills are
 //! shrunk towards the average driver of the race by how much of the spread between
 //! drivers is real rather than measurement noise (estimated from the data; drivers
 //! with less evidence are shrunk more). A team's car pace in a race is the
-//! precision-weighted mean of its drivers' gaps minus their shrunk skills. A driver without enough teammate comparisons in the window, or not
-//! linked to the rest of the grid, is not established: the race uses only the
-//! established teammate and is marked; with no established driver the team has no
-//! car-only figure for that race.
+//! precision-weighted mean of its drivers' gaps minus their shrunk skills.
+//!
+//! A driver without enough teammate comparisons, or not linked to the rest of the
+//! grid, is not established: the race uses only the established teammate and is
+//! marked; with no established driver the team has no car-only figure for that
+//! race.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -39,9 +44,10 @@ use crate::archive::Archive;
 use crate::pace::{self, Compounds, RaceFilter, RacePace, Recipe};
 use crate::season::{SeasonTable, SeasonTeam, Summary};
 
-/// Default seasons in the window: the race's season and the ones before it.
-pub const WINDOW_SEASONS: i64 = 6;
-/// Races with a teammate comparison a driver needs in the window to be established.
+/// First season of the archive's timing data: driver skills use every season from
+/// here up to the race measured, the longest history linking teams.
+pub const FIRST_SEASON: i64 = 2018;
+/// Races with a teammate comparison a driver needs to be established.
 pub const MIN_TEAMMATE_RACES: usize = 8;
 /// Wet races with a teammate comparison a driver needs for a separate wet skill.
 pub const MIN_WET_TEAMMATE_RACES: usize = 5;
@@ -116,15 +122,14 @@ fn condition_recipe(condition: Condition) -> Recipe {
     recipe
 }
 
-/// Every race of a season measured by the standard recipe on dry-tyre and on
-/// wet-tyre laps separately; a run counts under the same rule as the main season
-/// (tyre-corrected, at least half of the teams measured). With `with_sprints`,
-/// sprint races are measured too, as extra teammate comparisons for driver skills.
-pub fn season_runs(archive: &Archive, season: i64, with_sprints: bool) -> Result<Vec<RaceRun>> {
+/// Every Grand Prix and sprint race of a season measured by the standard recipe on
+/// dry-tyre and on wet-tyre laps separately; a run counts under the same rule as
+/// the main season (tyre-corrected, at least half of the teams measured). Sprints
+/// are extra teammate comparisons for driver skills.
+pub fn season_runs(archive: &Archive, season: i64) -> Result<Vec<RaceRun>> {
     let mut runs = Vec::new();
-    let kinds: &[(&str, bool)] = if with_sprints { &[("R", false), ("S", true)] } else { &[("R", false)] };
     for event_key in archive.season_events(season)? {
-        for &(session_type, sprint) in kinds {
+        for (session_type, sprint) in [("R", false), ("S", true)] {
             let Some(race) = archive.session_of_type(&event_key, session_type)? else { continue };
             runs.extend(session_runs(archive, &event_key, &race.session_id, sprint)?);
         }
@@ -671,7 +676,7 @@ pub struct CarRace {
 #[derive(Debug, Clone, Serialize)]
 pub struct CarSeason {
     pub season: i64,
-    /// First and last season of the window driver skills come from.
+    /// First and last season driver skills come from.
     pub window: [i64; 2],
     pub min_teammate_races: usize,
     /// Allowed change of a driver's skill per season (percent), chosen by
@@ -682,7 +687,7 @@ pub struct CarSeason {
     pub races: Vec<CarRace>,
 }
 
-/// The skill drift for a season, chosen on the window's seasons before it.
+/// The skill drift for a season, chosen on the seasons before it.
 fn season_drift(all_obs: &[DriverObs], season: i64) -> f64 {
     let before: Vec<&DriverObs> = all_obs.iter().filter(|o| o.season < season).collect();
     if teammate_groups(&before).is_empty() {
@@ -692,14 +697,14 @@ fn season_drift(all_obs: &[DriverObs], season: i64) -> f64 {
     }
 }
 
-fn window_runs(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_seasons: i64) -> Vec<&RaceRun> {
-    runs.iter().filter(|(s, _)| **s > season - window_seasons && **s <= season).flat_map(|(_, r)| r).collect()
+fn window_runs(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>) -> Vec<&RaceRun> {
+    runs.iter().filter(|(s, _)| **s >= FIRST_SEASON && **s <= season).flat_map(|(_, r)| r).collect()
 }
 
-/// Car-only pace of every race of `season`, from the runs of every season of its
-/// window of `window_seasons` seasons (`runs[season]` for each).
-pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_seasons: i64) -> CarSeason {
-    let window = window_runs(season, runs, window_seasons);
+/// Car-only pace of every Grand Prix of `season`, from the runs of every season
+/// from [`FIRST_SEASON`] (`runs[season]` for each).
+pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>) -> CarSeason {
+    let window = window_runs(season, runs);
     let all_obs = observations(&window);
     let drift = season_drift(&all_obs, season);
     let target: Vec<&RaceRun> = runs.get(&season).map(|r| r.iter().filter(|r| !r.sprint).collect()).unwrap_or_default();
@@ -746,7 +751,7 @@ pub fn car_season(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_season
         .collect();
     CarSeason {
         season,
-        window: [season - window_seasons + 1, season],
+        window: [FIRST_SEASON, season],
         min_teammate_races: MIN_TEAMMATE_RACES,
         skill_drift: drift,
         all_races: summarise(&counted),
@@ -800,8 +805,8 @@ pub struct SkillRow {
     pub teammate_races: usize,
 }
 
-pub fn skills_table(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>, window_seasons: i64) -> (f64, Vec<SkillRow>) {
-    let obs = observations(&window_runs(season, runs, window_seasons));
+pub fn skills_table(season: i64, runs: &BTreeMap<i64, Vec<RaceRun>>) -> (f64, Vec<SkillRow>) {
+    let obs = observations(&window_runs(season, runs));
     let drift = season_drift(&obs, season);
     let refs: Vec<&DriverObs> = obs.iter().collect();
     let skills = fit_skills(&refs, drift);

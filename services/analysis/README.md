@@ -27,7 +27,8 @@ Two views of race pace, each documented in full:
   clear air.
 - [Car-only race pace](../../design/analysis/car-only-race-pace.md): the same
   measurement with each driver's contribution removed, using teammate
-  comparisons across seasons; each race measured with earlier races only.
+  comparisons in Grands Prix and sprints since 2018; each race measured with
+  earlier races only.
 
 ## Modules
 
@@ -63,12 +64,12 @@ trim), `--trend linear|lapxcomp|perlap|timeblocks`, `--team-wear`,
 `--traffic-term`, `--skip-after-neutral N`, `--agg best|mean|lapbest`.
 
 ```powershell
-analysis car-race --event 2024-20 [--window 6]
-analysis car-season --season 2024 [--window 6] [--json car-season.json]
+analysis car-race --event 2024-20
+analysis car-season --season 2024 [--json car-season.json]
 ```
 
 `car-race` prints one race's car-only figures for dry and wet laps; `car-season`
-prints each race's car-only gaps and the season summaries. `--window` sets the
-seasons driver skills come from (the season and those before it). The internal
-driver skill table is printed with `--show-skills`; it is not part of the
-published outputs.
+prints each race's car-only gaps and the season summaries. Driver skills come
+from every Grand Prix and sprint race since 2018 up to the race measured. The
+internal driver skill table is printed with `--show-skills`; it is not part of
+the published outputs.

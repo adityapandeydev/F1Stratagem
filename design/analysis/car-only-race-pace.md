@@ -42,11 +42,12 @@ removed.
 
 ## Step 1: every driver's gap in every race
 
-The team race pace method is run on every race with dry-tyre laps and
-wet-tyre laps measured separately, so a driver's pace in the wet is kept apart
-from the same driver's pace in the dry. Each driver's gap comes with its precision from the
-stint rebuilds of that method. More precise gaps count for more in the next
-step.
+The team race pace method is run on every Grand Prix and every sprint race, with
+dry-tyre laps and wet-tyre laps measured separately, so a driver's pace in the
+wet is kept apart from the same driver's pace in the dry. Sprint races are extra
+teammate comparisons in the same cars; car-only figures are published for the
+Grand Prix. Each driver's gap comes with its precision from the stint rebuilds of
+that method. More precise gaps count for more in the next step.
 
 ## Step 2: driver skills from teammate comparisons
 
@@ -66,9 +67,11 @@ change to large changes, and the one that best predicts teammate gaps in races
 held out of the fit is used. A driver who improves over the years is followed
 without letting a single season distort everything linked to that driver.
 
-**The window** is the season being measured and the five before it. Several
-seasons are needed because driver pairings often stay unchanged for years, and
-only moves between teams link those teams to the rest of the grid.
+**Every season counts.** Skills use every season of our records, from 2018 up
+to the race being measured. Driver pairings often stay unchanged for years, and
+only moves between teams link those teams to the rest of the grid, so the longest
+history gives the strongest links. Because skills may change from season to
+season, old seasons connect teams without imposing old form on today's drivers.
 
 **The average driver is zero.** Skills are stated against the average driver of
 the grid. Moving that zero moves every car by the same amount, so it never
@@ -89,7 +92,7 @@ Otherwise the driver's dry skill is used in the wet as well.
 ## Measured with what was known at the time
 
 A race's car-only figure is computed only from races before it: earlier
-seasons in the window and earlier races of the same season. It is never
+seasons and earlier races of the same season. It is never
 recomputed with later results.
 
 This matters because drivers improve. If later races were used, a driver's
@@ -136,7 +139,7 @@ of the skills.
 
 A driver's skill is used only when the driver is established:
 
-- at least eight races with a measured teammate within the window, and
+- at least eight races with a measured teammate, and
 - linked to the rest of the grid through teammates.
 
 When one driver of a team is not established, the race uses only the
@@ -178,8 +181,8 @@ Separating car from driver is an estimate, and it has limits we state openly:
   ranges and the shrinking reflect.
 - **Early in a season the evidence is thinner.** The first races of a season
   rely mostly on earlier seasons, and ranges are wider.
-- **Our records start in 2018.** Windows for the first seasons are shorter and
-  some teams can only be linked in part of a season.
+- **Our records start in 2018.** The first seasons have less history behind
+  them, and some teams can only be linked in part of a season.
 - **Race pace only.** Qualifying is not part of a driver's skill here.
 
 ## Reproducing a figure
