@@ -800,6 +800,24 @@ def compare(scores, reference, metric="rps", lower_is_better=True, resamples=200
 
 SEASON_STAGES = ((1, 3), (4, 8), (9, 14), (15, 99))   # rounds; the last stage is checked on its own
 LATE_STAGE = "15+"
+SEED_BATCHES = 3             # a gain under DEGRADATION_MARGIN counts only on the mean over this many seed batches
+
+
+def batch_mean(scores_list):
+    """Scores averaged per (event, model) over seed batches (each a run's
+    scores.csv frame); only events and models present in every batch. The protocol
+    judges a small gain on these per-race means (common random numbers within each
+    batch), so one lucky batch cannot promote a model."""
+    if not scores_list:
+        return pd.DataFrame()
+    keys = ["event_key", "model"]
+    common = set.intersection(*[set(map(tuple, s[keys].itertuples(index=False))) for s in scores_list])
+    frames = [s[[tuple(k) in common for k in s[keys].itertuples(index=False)]] for s in scores_list]
+    stacked = pd.concat(frames, ignore_index=True)
+    numeric = [c for c in stacked.columns if c not in keys + ["season"] and pd.api.types.is_numeric_dtype(stacked[c])]
+    out = stacked.groupby(keys + ["season"], as_index=False)[numeric].mean()
+    out["batches"] = len(scores_list)
+    return out
 
 
 def stage_comparison(scores, reference):

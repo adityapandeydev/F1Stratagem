@@ -216,7 +216,8 @@ class RaceModel:
         self.settings[(season, cutoff)] = {**best[1], "rps": best[0], "races": len(prepared)}
         self._draws = {}             # tied to this season's pace settings
 
-    def predict(self, view, example, draws=DRAWS):
+    def predict(self, view, example, draws=None):
+        draws = DRAWS if draws is None else draws          # read at call time: `evaluate --draws` sets it
         if example.session_type != "R":
             return None
         self.pace._ensure_hyper(view, example.season)

@@ -1037,3 +1037,20 @@ def test_randomised_pit_is_uniform_under_a_calibrated_forecast():
     assert s.low["variance"] < 1 / 12 < s.high["variance"]
     sure = np.eye(10)[actual - 1]                       # all mass on the actual position: PIT spread over its slot
     assert 0 <= calibration.randomised_pit(sure, actual, rng).min() and calibration.randomised_pit(sure, actual, rng).max() <= 1
+
+
+def test_batch_mean_averages_per_race_over_seed_batches_on_common_events():
+    from predictor import evaluation
+    a = pd.DataFrame({"event_key": ["2019-01", "2019-01", "2019-02"], "model": ["x", "y", "x"], "season": 2019,
+                      "rps": [0.10, 0.20, 0.30]})
+    b = pd.DataFrame({"event_key": ["2019-01", "2019-01"], "model": ["x", "y"], "season": 2019, "rps": [0.14, 0.22]})
+    m = evaluation.batch_mean([a, b]).set_index(["event_key", "model"])
+    assert list(m.index) == [("2019-01", "x"), ("2019-01", "y")]          # 2019-02 only in one batch
+    assert np.isclose(m.rps[("2019-01", "x")], 0.12) and np.isclose(m.rps[("2019-01", "y")], 0.21)
+    assert (m.batches == 2).all()
+
+
+def test_race_forecast_draws_follow_the_module_setting_at_call_time():
+    import inspect
+    from predictor import race
+    assert inspect.signature(race.RaceModel.predict).parameters["draws"].default is None

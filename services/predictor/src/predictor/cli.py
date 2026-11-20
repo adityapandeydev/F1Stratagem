@@ -27,6 +27,29 @@ def _claim(folder):
         return False
 
 
+def _compare_batches(args):
+    runs = [Path(r) if Path(r).is_absolute() else SERVICE_ROOT / r for r in args.runs]
+    scores = evaluation.batch_mean([pd.read_csv(r / "scores.csv") for r in runs])
+    print(f"{len(runs)} seed batches, {scores.event_key.nunique()} common events; per-race scores averaged over the batches")
+    with pd.option_context("display.width", 200, "display.max_columns", 30, "display.precision", 3):
+        for metric in ("rps", "outcome_log_loss", "winner_log_loss"):
+            if metric in scores:
+                c = evaluation.compare(scores, args.reference, metric=metric)
+                print(f"\n[{metric}] vs {args.reference} (negative = better):")
+                print(c.drop(columns=["reference", "metric"]).to_string(index=False))
+        stages = evaluation.stage_comparison(scores, args.reference)
+        if not stages.empty and "model" in stages:
+            print(f"\nBy stage ({evaluation.LATE_STAGE} must not be worse beyond noise):")
+            print(stages[["stage", "model", "events", "mean_difference", "block_90_low", "block_90_high",
+                          "verdict"]].to_string(index=False))
+        p = scores.pivot_table(index="event_key", columns="model", values="rps")
+        if args.reference in p:
+            d = p.sub(p[args.reference], axis=0).drop(columns=[args.reference])
+            print("\nRPS difference by season:")
+            print(d.groupby(d.index.str[:4]).mean().round(6).to_string())
+    return 0
+
+
 def _calibrate(args):
     from . import calibration
     run = Path(args.run)
@@ -63,12 +86,23 @@ def main(argv=None):
     evaluate.add_argument("--seed-batch", type=int,
                           help="another set of common random numbers (shared by every model), to check that "
                                "a difference is not Monte Carlo variation")
+    evaluate.add_argument("--draws", type=int, help="simulated races per race forecast (default race.DRAWS)")
+    evaluate.add_argument("--fit-draws", type=int, help="simulated races per race when fitting settings (default race.FIT_DRAWS)")
+    batches = commands.add_parser("compare-batches", help="compare models on the mean of several seed batches' runs")
+    batches.add_argument("--runs", nargs="+", required=True, help="run folders (data/runs/...), one per seed batch")
+    batches.add_argument("--reference", required=True)
     calibrate = commands.add_parser("calibrate", help="randomised PIT calibration of a run's saved forecasts")
     calibrate.add_argument("--run", required=True, help="run folder (data/runs/...) with forecasts.parquet")
     calibrate.add_argument("--models", nargs="+", required=True)
     args = parser.parse_args(argv)
     if args.command == "calibrate":
         return _calibrate(args)
+    if args.command == "compare-batches":
+        return _compare_batches(args)
+    if args.draws is not None or args.fit_draws is not None:
+        from . import race
+        race.DRAWS = args.draws or race.DRAWS
+        race.FIT_DRAWS = args.fit_draws or race.FIT_DRAWS
     if args.seed_batch is not None:
         from . import baselines
         baselines.SEED_BATCH = args.seed_batch
