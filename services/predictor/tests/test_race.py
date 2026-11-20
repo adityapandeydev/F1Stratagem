@@ -1054,3 +1054,60 @@ def test_race_forecast_draws_follow_the_module_setting_at_call_time():
     import inspect
     from predictor import race
     assert inspect.signature(race.RaceModel.predict).parameters["draws"].default is None
+
+
+def _pace_race(stops, paces, track, laps=40):
+    """Laps of a dry race: car i at pace paces[i] (% of a lap), stopping at stops[i]
+    onto a fresh set, 0.05% wear per lap of age, the track's lap effects `track(n)`
+    (% of a lap) and a little noise."""
+    rng = np.random.default_rng(3)
+    t, rows = pd.Timedelta, []
+    for i, (stop, pace) in enumerate(zip(stops, paces)):
+        for n in range(1, laps + 1):
+            stint = 1 if n <= stop else 2
+            age = n if stint == 1 else n - stop
+            log = 100 * np.log(90.0) + pace + 0.05 * age + track(n) + rng.normal(0, 0.02)
+            rows.append({"DriverNumber": str(i + 1), "LapNumber": n, "LapTime": t(seconds=float(np.exp(log / 100))),
+                         "TrackStatus": "1", "PitInTime": t(seconds=1) if n == stop else pd.NaT,
+                         "PitOutTime": t(seconds=1) if n == stop + 1 else pd.NaT,
+                         "Compound": "MEDIUM" if stint == 1 else "HARD", "TyreLife": float(age), "Stint": float(stint)})
+    return pd.DataFrame(rows)
+
+
+def test_race_pace_defaults_are_unchanged_by_the_new_options():
+    import importlib.util, pathlib, os
+    from predictor import laps as now
+    before_path = pathlib.Path(os.environ.get("RACE_PACE_BEFORE", "")) if os.environ.get("RACE_PACE_BEFORE") else None
+    race = _pace_race([12, 14, 16, 18, 20, 22, 24, 26], [0.0, 0.1, 0.3, 0.35, 0.5, 0.8, 0.9, 1.2],
+                      lambda n: -0.065 * n + (0.4 if n % 6 == 0 else 0.0))
+    a = now.race_pace(race)
+    b = now.race_pace(race, lap_effects=False, partial=False, min_laps=now.MIN_LAPS)
+    pd.testing.assert_frame_equal(a, b)
+    if before_path is not None and before_path.exists():      # against the code before the options (CI: optional)
+        spec = importlib.util.spec_from_file_location("laps_before", before_path)
+        old = importlib.util.module_from_spec(spec); spec.loader.exec_module(old)
+        pd.testing.assert_frame_equal(a, old.race_pace(race))
+
+
+def test_lap_effects_recover_driver_pace_when_the_fuel_rate_is_wrong():
+    from predictor import laps
+    paces = [0.0, 0.1, 0.3, 0.35, 0.5, 0.8, 0.9, 1.2]
+    # fuel and track: 0.12% a lap faster (not the fixed 0.065) plus slow laps every sixth lap
+    race = _pace_race([12, 14, 16, 18, 20, 22, 24, 26], paces, lambda n: -0.12 * n + (0.4 if n % 6 == 0 else 0.0))
+    fit = laps.race_pace(race, lap_effects=True).set_index("driver_number").pace
+    truth = pd.Series(paces, index=[str(i + 1) for i in range(8)])
+    err = (fit - fit.mean()) - (truth - truth.mean())
+    assert err.abs().max() < 0.02, err
+
+
+def test_partial_keeps_the_drivers_the_laps_connect():
+    from predictor import laps
+    paces = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    race = _pace_race([10, 12, 14, 16, 18, 20], paces, lambda n: -0.065 * n)
+    # car 6 runs only laps the others do not, on a compound nobody else uses: it shares no lap effect or tyre
+    car6 = race.DriverNumber == "6"
+    race.loc[car6, "LapNumber"] += 100
+    race.loc[car6, "Compound"] = "SOFT"
+    assert laps.race_pace(race, lap_effects=True).empty                         # not all separable: dropped
+    kept = laps.race_pace(race, lap_effects=True, partial=True)
+    assert sorted(kept.driver_number) == ["1", "2", "3", "4", "5"]

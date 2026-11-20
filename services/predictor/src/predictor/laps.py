@@ -107,11 +107,45 @@ def clean_race_laps(laps, drying=False):
                         compound=frame.Compound.astype(str).str.upper())
 
 
-def race_pace(laps, drying=False):
+def _comparable_group(x, n, drivers, frame, keep):
+    """The largest set of drivers whose pace differences the design `x` identifies
+    (pairs whose contrast lies in its row space; ties: more laps); [] when none has
+    two drivers."""
+    projection = np.linalg.pinv(x) @ x
+    parent = list(range(n))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i in range(n):
+        for j in range(i + 1, n):
+            c = np.zeros(x.shape[1])
+            c[i], c[j] = 1.0, -1.0
+            if np.allclose(c @ projection, c, atol=1e-8):
+                parent[root(j)] = root(i)
+    groups = {}
+    for i in range(n):
+        groups.setdefault(root(i), []).append(drivers[i])
+    laps_of = frame[keep].driver_number.value_counts()
+    best = max(groups.values(), key=lambda g: (len(g), int(laps_of.reindex(g).fillna(0).sum())))
+    return best if len(best) >= 2 else []
+
+
+def race_pace(laps, drying=False, lap_effects=False, partial=False, min_laps=MIN_LAPS):
     """Corrected pace per driver (see the module docstring). DataFrame:
     driver_number, pace, se, laps; empty when the race is not used. `.attrs` holds
     the fitted corrections, the noise scale and lap counts. With `drying`, the pace
-    of a wet or mixed race (empty for a dry one)."""
+    of a wet or mixed race (empty for a dry one).
+
+    Options (all off by default: the fit above): `lap_effects`, a dry race gets an
+    effect per lap number shared by the field in place of the fixed FUEL rate (fuel
+    burn, rubbering-in and conditions lap by lap; drivers are then compared on the
+    laps they share, and only drivers against the field must be estimable);
+    `partial`, a race whose drivers are not all separable keeps its largest group of
+    drivers that are (`_comparable_group`) instead of being dropped; `min_laps`, the
+    clean laps a driver needs."""
     empty = pd.DataFrame(columns=EMPTY)
     if wet_race(laps) != drying:
         return empty
@@ -122,14 +156,15 @@ def race_pace(laps, drying=False):
     # until every driver in the fit keeps MIN_LAPS laps
     while True:
         counts = frame.driver_number.value_counts()
-        frame = frame[frame.driver_number.isin(counts[counts >= MIN_LAPS].index)]
+        frame = frame[frame.driver_number.isin(counts[counts >= min_laps].index)]
         drivers = sorted(frame.driver_number.unique())
         if len(drivers) < 2:
             return empty
-        y = 100 * np.log(frame.seconds.to_numpy()) - FUEL * frame.LapNumber.to_numpy(dtype=float)
+        fuel = 0.0 if lap_effects and not drying else FUEL      # lap effects take fuel burn
+        y = 100 * np.log(frame.seconds.to_numpy()) - fuel * frame.LapNumber.to_numpy(dtype=float)
         keep = np.ones(len(frame), dtype=bool)
         for _ in range(TRIM_ROUNDS):
-            x, names = _design(frame[keep], drivers, drying=drying)
+            x, names = _design(frame[keep], drivers, drying=drying, lap_effects=lap_effects)
             beta, *_ = np.linalg.lstsq(x, y[keep], rcond=None)
             residual = y - _design(frame, drivers, names)[0] @ beta
             scale = 1.4826 * float(np.median(np.abs(residual[keep] - np.median(residual[keep]))))
@@ -138,14 +173,21 @@ def race_pace(laps, drying=False):
                 break
             keep = trimmed
         kept = pd.Series(keep).groupby(frame.driver_number.to_numpy()).sum()
-        if (kept >= MIN_LAPS).all():
+        if (kept >= min_laps).all():
+            x, names = _design(frame[keep], drivers, drying=drying, lap_effects=lap_effects)
+            if partial:
+                group = _comparable_group(x, len(drivers), drivers, frame, keep)
+                if 2 <= len(group) < len(drivers):          # refit on the drivers the laps connect
+                    frame = frame[frame.driver_number.isin(group)]
+                    continue
             break
-        frame = frame[frame.driver_number.isin(kept[kept >= MIN_LAPS].index)]
-    x, names = _design(frame[keep], drivers, drying=drying)     # the final fit, on the final lap set
+        frame = frame[frame.driver_number.isin(kept[kept >= min_laps].index)]
+    x, names = _design(frame[keep], drivers, drying=drying, lap_effects=lap_effects)     # the final fit
     n = len(drivers)
     rank = np.linalg.matrix_rank(x)
     centre = np.eye(n) - np.ones((n, n)) / n                    # relative to the field mean
-    if drying:
+    pinv_cov = drying or lap_effects or partial
+    if pinv_cov:
         # a compound the whole field ran at the same time cannot be told from those laps'
         # effects, nor the field's level from the lap effects: only each driver against
         # the field must be estimable (in the row space of the design)
@@ -159,7 +201,7 @@ def race_pace(laps, drying=False):
     residual = y[keep] - x @ beta
     sigma = float(np.sqrt(residual @ residual / max(len(residual) - rank, 1)))
     # a generalised inverse: drivers against the field are estimable, so their covariance is exact
-    cov = sigma ** 2 * (np.linalg.pinv(x.T @ x) if drying else np.linalg.inv(x.T @ x))
+    cov = sigma ** 2 * (np.linalg.pinv(x.T @ x) if pinv_cov else np.linalg.inv(x.T @ x))
     result = pd.DataFrame({"driver_number": drivers, "pace": beta[:n],
                            "se": np.sqrt(np.diag(centre @ cov[:n, :n] @ centre.T)),
                            "laps": [int((keep & (frame.driver_number == d).to_numpy()).sum()) for d in drivers]})
@@ -188,13 +230,14 @@ def tyre_class(compound):
     return compound if compound in WET else "dry"
 
 
-def _design(frame, drivers, names=None, drying=False):
+def _design(frame, drivers, names=None, drying=False, lap_effects=False):
     """Columns: one per driver (pace), compound offsets against the first compound,
     wear per compound with enough laps and ages, one shared wear for the rest. With
     `drying`, compound offsets only within a tyre class, an effect per lap number but
     the first, and a class gap per lap where two classes run (each class but the lap's
     most used). With `names`, the same columns as a previous call (for residuals of
-    trimmed laps)."""
+    trimmed laps). With `lap_effects` (a dry race), an effect per lap number but the
+    first, without class gaps."""
     number = frame.driver_number.to_numpy()
     compound = frame.compound.to_numpy()
     age = frame.TyreLife.to_numpy(dtype=float)
@@ -210,8 +253,9 @@ def _design(frame, drivers, names=None, drying=False):
             offsets = [c for c in present if c != min(p for p in present if tyre_class(p) == tyre_class(c))]
         names = [f"driver:{d}" for d in drivers] + [f"compound:{c}" for c in offsets] \
             + [f"wear:{c}" for c in own] + (["wear:shared"] if len(own) < len(present) else [])
-        if drying:
+        if drying or lap_effects:
             names += [f"lap:{int(n)}" for n in sorted(set(lap))[1:]]
+        if drying:
             for n in sorted(set(lap)):
                 counts = pd.Series(classes[lap == n]).value_counts()
                 names += [f"gap:{c}@{int(n)}" for c in sorted(counts.index[1:])]

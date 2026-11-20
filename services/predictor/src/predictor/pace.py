@@ -399,12 +399,12 @@ def _pace_group(pace, entrants, slow_cutoff=None):
              pace.pace.to_numpy(dtype=float)[keep])]
 
 
-def race_observations(laps, entrants, with_covariance=False, drying=False):
+def race_observations(laps, entrants, with_covariance=False, drying=False, read=None):
     """One group from a race: each driver's corrected race pace (`laps.race_pace`:
     tyres, tyre age and fuel taken out lap by lap); none for a wet race unless
     `drying` (then none for a dry one). With `with_covariance`, also [the estimation
     covariance of the group's values]."""
-    pace = race_pace(laps, drying)
+    pace = race_pace(laps, drying, **(read or {}))      # `read`: race_pace options (lap_effects, partial, min_laps)
     groups = _pace_group(pace, entrants)
     if not with_covariance:
         return groups
@@ -616,7 +616,8 @@ class PaceModel:
             if session.session_id not in self._observations:
                 groups, covariances = race_observations(view.laps(session.session_id),
                                                         view.entrants(session.session_id), with_covariance=True,
-                                                        drying=session.session_type != "R")
+                                                        drying=session.session_type != "R",
+                                                        read=getattr(self, "race_read", None))
                 self._observations[session.session_id] = groups
                 self._covariances[session.session_id] = covariances
             return self._observations[session.session_id]

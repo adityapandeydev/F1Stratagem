@@ -79,7 +79,7 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
                 skills=(), season_skills=(), races=False, driver_race=False, push=False, long_runs=False,
                 race_estimates=False, knockout=False, failures=False, wet_noise=False, robust=False,
                 wet_forecast=False, wet_ability=False, wet_races=False, wet_evolution=False,
-                wet_segments=False, driver_affinity=False):
+                wet_segments=False, driver_affinity=False, race_read=None):
     from .pace import ALL_SESSIONS, QUALIFYING_ONLY, WITH_RACES, PaceModel
     if stage == 1:
         return PaceModel(QUALIFYING_ONLY, "pace:v1")
@@ -99,6 +99,11 @@ def _pace_model(stage, objective="all", weekend=False, shared=False, affinity=Fa
                      knockout=knockout, failures=failures, wet_noise=wet_noise, robust=robust,
                      wet_forecast=wet_forecast, wet_ability=wet_ability, wet_races=wet_races,
                      wet_evolution=wet_evolution, wet_segments=wet_segments, driver_affinity=driver_affinity)
+    if race_read:
+        # how race laps are read (`laps.race_pace` options); its own fits: the name carries it
+        model.race_read = dict(race_read)
+        model.name += "-r" + "".join({"lap_effects": "e", "partial": "p"}.get(k, "") for k, v in sorted(race_read.items())
+                                     if v is True) + (f"m{race_read['min_laps']}" if "min_laps" in race_read else "")
     # the wet forecast mode changes no fit: a model with it shares the fits of the one without
     if forecast == "c":
         model.fit_name = model.name
