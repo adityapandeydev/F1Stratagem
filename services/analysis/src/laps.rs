@@ -36,7 +36,7 @@ impl Lap {
     }
 
     pub fn is_slick(&self) -> bool {
-        matches!(self.compound.as_deref(), Some("SOFT" | "MEDIUM" | "HARD" | "HYPERSOFT" | "ULTRASOFT" | "SUPERSOFT"))
+        matches!(self.compound.as_deref(), Some("SOFT" | "MEDIUM" | "HARD" | "HYPERSOFT" | "ULTRASOFT" | "SUPERSOFT" | "SUPERHARD"))
     }
 
     pub fn is_wet_tyre(&self) -> bool {
@@ -92,22 +92,23 @@ pub fn read(path: &Path) -> Result<Vec<Lap>> {
         .collect())
 }
 
-/// Gap in seconds to the car one place ahead at the end of the same lap, from the
-/// lap completion times. `None` for the leader or when either time is missing.
+/// Gap in seconds to the car physically ahead on track when the lap was completed:
+/// the last other car to cross the line before this one, whatever its race position
+/// or lap count, so lapping and being lapped count as traffic. A car finishing an
+/// in-lap is in the pit lane and is not traffic. `None` when no car crossed before
+/// (or the time is missing).
 pub fn gaps_ahead(laps: &[Lap]) -> Vec<Option<f64>> {
-    let mut crossing: HashMap<(u32, u32), f64> = HashMap::new();
-    for lap in laps {
-        if let (Some(p), Some(t)) = (lap.position, lap.time) {
-            crossing.insert((lap.lap_number, p), t);
-        }
-    }
+    let mut crossings: Vec<(f64, &str)> = laps
+        .iter()
+        .filter(|l| !l.pit_in)
+        .filter_map(|l| l.time.map(|t| (t, l.driver.as_str())))
+        .collect();
+    crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
     laps.iter()
         .map(|lap| {
-            let (p, t) = (lap.position?, lap.time?);
-            if p <= 1 {
-                return None;
-            }
-            crossing.get(&(lap.lap_number, p - 1)).map(|ahead| t - ahead)
+            let t = lap.time?;
+            let before = crossings.partition_point(|(c, _)| *c < t);
+            crossings[..before].iter().rev().find(|(_, d)| *d != lap.driver).map(|(c, _)| t - c)
         })
         .collect()
 }
@@ -119,4 +120,54 @@ pub fn driver_teams(laps: &[Lap]) -> HashMap<String, String> {
         teams.entry(lap.driver.clone()).or_insert_with(|| lap.team.clone());
     }
     teams
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crossing(driver: &str, n: u32, time: f64, position: u32) -> Lap {
+        Lap {
+            driver: driver.into(),
+            team: String::new(),
+            lap_number: n,
+            lap_time: Some(90.0),
+            time: Some(time),
+            stint: None,
+            pit_in: false,
+            pit_out: false,
+            compound: Some("MEDIUM".into()),
+            tyre_life: Some(1.0),
+            fresh_tyre: None,
+            track_status: Some("1".into()),
+            position: Some(position),
+            deleted: false,
+            accurate: true,
+        }
+    }
+
+    #[test]
+    fn a_lapped_car_ahead_on_track_is_traffic() {
+        // The leader (P1, lap 30) crosses 0.8 s behind a backmarker (P18, lap 29).
+        let laps = vec![crossing("BACK", 29, 1000.0, 18), crossing("LEAD", 30, 1000.8, 1), crossing("P2", 30, 1010.0, 2)];
+        let gaps = gaps_ahead(&laps);
+        assert_eq!(gaps[0], None);
+        assert!((gaps[1].unwrap() - 0.8).abs() < 1e-9);
+        assert!((gaps[2].unwrap() - 9.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_car_in_the_pit_lane_is_not_traffic() {
+        let mut pitting = crossing("PIT", 10, 500.0, 3);
+        pitting.pit_in = true;
+        let laps = vec![crossing("AHEAD", 10, 495.0, 2), pitting, crossing("ME", 10, 500.5, 4)];
+        assert!((gaps_ahead(&laps)[2].unwrap() - 5.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn superhard_is_a_dry_tyre() {
+        let mut lap = crossing("A", 1, 0.0, 1);
+        lap.compound = Some("SUPERHARD".into());
+        assert!(lap.is_slick());
+    }
 }

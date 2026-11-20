@@ -23,8 +23,8 @@ repository's `data/`.
 The standard recipe (`pace::team_race_pace`) measures each team's race pace from
 one race's own laps:
 
-- Laps: dry, intermediate and wet tyres, green throughout, after lap 1, no pit in-
-  or out-laps, more than 2 s behind the car ahead at the line.
+- Laps: dry, intermediate and wet tyres with a recorded tyre age, green throughout, after lap 1, no pit in-
+  or out-laps, more than 2 s behind the car ahead at the line (the last other car to cross the line before it, so lapping and being lapped count; a car finishing an in-lap is not traffic).
 - Fit: lap time = driver + compound offset + tyre-wear rate per compound x tyre
   age + a time for every lap number shared by all cars. The lap-number terms take
   up fuel burn, rubbering-in and changing weather lap by lap; tyre age resets at

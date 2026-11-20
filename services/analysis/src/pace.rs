@@ -176,13 +176,15 @@ fn observations(race: &[Lap], filter: &RaceFilter, agg: Agg, min_laps: usize) ->
     let teams = laps::driver_teams(race);
     let mut obs: Vec<Obs> = race_laps(race, filter)
         .into_iter()
+        // Tyre age is a fit input: a lap without it cannot be placed on the wear curve.
+        .filter(|(lap, _, _)| lap.tyre_life.is_some())
         .map(|(lap, time, gap)| {
             let team = teams.get(&lap.driver).cloned().unwrap_or_default();
             Obs {
                 entity: if agg == Agg::LapBest { team.clone() } else { lap.driver.clone() },
                 team,
                 compound: lap.compound.clone().unwrap_or_default(),
-                age: lap.tyre_life.unwrap_or(0.0),
+                age: lap.tyre_life.expect("filtered above"),
                 lap: lap.lap_number,
                 time,
                 gap,
