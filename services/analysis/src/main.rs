@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 use analysis::archive::Archive;
 use analysis::calibrate;
-use analysis::pace::{self, Agg, Compounds, LapTrend, RacePace, Recipe, Traffic};
+use analysis::pace::{self, Agg, Compounds, LapTrend, RacePace, Recipe};
 use analysis::season::{self, SeasonTable};
 
 #[derive(Parser)]
@@ -71,21 +71,16 @@ enum Command {
     },
 }
 
-/// A recipe (v1 or v2) and optional changes to one of its parts, for comparisons.
+/// The standard recipe, with optional changes to one of its parts for comparisons.
 #[derive(clap::Args)]
 struct RecipeArgs {
-    /// v1 (first adopted recipe) or v2 (stricter evidence rules).
-    #[arg(long, default_value = "v2")]
-    recipe: String,
     /// all (dry, intermediate, wet), slick or inter (intermediate and wet)
     #[arg(long)]
     compounds: Option<String>,
-    /// Leave out laps this close or closer to the car ahead (seconds; 0 keeps all).
+    /// Leave out laps this close or closer to the car ahead at any timing line
+    /// (seconds; 0 keeps all laps).
     #[arg(long)]
     min_gap: Option<f64>,
-    /// finish or lines (both sector lines and the finish line)
-    #[arg(long)]
-    traffic: Option<String>,
     /// Leave out laps this many or fewer after a neutralisation.
     #[arg(long)]
     skip_after_neutral: Option<u32>,
@@ -108,7 +103,7 @@ struct RecipeArgs {
 
 impl RecipeArgs {
     fn recipe(&self) -> Result<Recipe> {
-        let mut r = Recipe::by_name(&self.recipe).ok_or_else(|| anyhow::anyhow!("unknown recipe {}", self.recipe))?;
+        let mut r = Recipe::standard();
         if let Some(c) = &self.compounds {
             r.filter.compounds = match c.as_str() {
                 "all" => Compounds::All,
@@ -119,13 +114,6 @@ impl RecipeArgs {
         }
         if let Some(g) = self.min_gap {
             r.filter.min_gap_s = (g > 0.0).then_some(g);
-        }
-        if let Some(t) = &self.traffic {
-            r.filter.traffic = match t.as_str() {
-                "finish" => Traffic::FinishLine,
-                "lines" => Traffic::TimingLines,
-                other => anyhow::bail!("unknown traffic {other}"),
-            };
         }
         if let Some(n) = self.skip_after_neutral {
             r.filter.skip_after_neutral = n;
@@ -167,8 +155,7 @@ fn interval(i: Option<[f64; 2]>) -> String {
 
 fn print_race(p: &RacePace) {
     println!(
-        "recipe {}  tyre-corrected {}  base lap {:.3} s  laps: {} candidates, {} unknown traffic, {} kept  resamples {} ({} used)",
-        p.recipe,
+        "tyre-corrected {}  base lap {:.3} s  laps: {} candidates, {} unknown traffic, {} kept  resamples {} ({} used)",
         p.tyre_corrected,
         p.base_lap_s,
         p.laps.candidates,

@@ -56,7 +56,6 @@ pub struct SeasonTable {
 #[derive(Debug, Clone, Serialize)]
 pub struct SeasonPace {
     pub season: i64,
-    pub recipe: String,
     /// Percentiles of the stint resamples behind each race's intervals.
     pub interval: [f64; 2],
     /// Every race that counts; a team's figures use the races it was measured in.
@@ -74,7 +73,7 @@ pub fn season_pace(archive: &Archive, season: i64, recipe: &Recipe, resamples: u
         let pace = pace::race_pace(&laps, recipe, resamples, pace::seed_for(&race.session_id));
         let reason = match &pace {
             None => Some("no laps could be measured".to_string()),
-            Some(p) if recipe.require_tyre_corrected && !p.tyre_corrected => {
+            Some(p) if !p.tyre_corrected => {
                 Some("cars could only be compared without the tyre-wear term".to_string())
             }
             Some(p) if 2 * p.teams.len() < p.teams_in_race => Some("fewer than half of the teams measured".to_string()),
@@ -95,7 +94,6 @@ pub fn season_pace(archive: &Archive, season: i64, recipe: &Recipe, resamples: u
         .collect();
     Ok(SeasonPace {
         season,
-        recipe: recipe.name.to_string(),
         interval: [pace::INTERVAL.0, pace::INTERVAL.1],
         all_races: table(&counted),
         common_races: table(&common),

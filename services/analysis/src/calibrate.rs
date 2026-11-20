@@ -149,7 +149,7 @@ pub fn candidates(archive: &Archive, event_key: &str, min_laps: usize) -> Result
                                 if traffic_term && min_gap_s.is_some() {
                                     continue;
                                 }
-                                let model = RaceModel { team_wear, lap_trend, trim_sigma, traffic_term, recheck_min_laps: false };
+                                let model = RaceModel { team_wear, lap_trend, trim_sigma, traffic_term };
                                 let mname = format!(
                                     "fit{}{tname}{}{}",
                                     if team_wear { "+teamwear" } else { "" },

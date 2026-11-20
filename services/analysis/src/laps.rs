@@ -99,27 +99,6 @@ pub fn read(path: &Path) -> Result<Vec<Lap>> {
         .collect())
 }
 
-/// Gap in seconds to the car physically ahead on track when the lap was completed:
-/// the last other car to cross the line before this one, whatever its race position
-/// or lap count, so lapping and being lapped count as traffic. A car finishing an
-/// in-lap is in the pit lane and is not traffic. `None` when no car crossed before
-/// (or the time is missing).
-pub fn gaps_ahead(laps: &[Lap]) -> Vec<Option<f64>> {
-    let mut crossings: Vec<(f64, &str)> = laps
-        .iter()
-        .filter(|l| !l.pit_in)
-        .filter_map(|l| l.time.map(|t| (t, l.driver.as_str())))
-        .collect();
-    crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
-    laps.iter()
-        .map(|lap| {
-            let t = lap.time?;
-            let before = crossings.partition_point(|(c, _)| *c < t);
-            crossings[..before].iter().rev().find(|(_, d)| *d != lap.driver).map(|(c, _)| t - c)
-        })
-        .collect()
-}
-
 /// Traffic status at one timing line.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Gap {
@@ -207,10 +186,10 @@ mod tests {
     fn a_lapped_car_ahead_on_track_is_traffic() {
         // The leader (P1, lap 30) crosses 0.8 s behind a backmarker (P18, lap 29).
         let laps = vec![crossing("BACK", 29, 1000.0, 18), crossing("LEAD", 30, 1000.8, 1), crossing("P2", 30, 1010.0, 2)];
-        let gaps = gaps_ahead(&laps);
-        assert_eq!(gaps[0], None);
-        assert!((gaps[1].unwrap() - 0.8).abs() < 1e-9);
-        assert!((gaps[2].unwrap() - 9.2).abs() < 1e-9);
+        let gaps: Vec<Gap> = gaps_at_timing_lines(&laps).iter().map(|g| g[2]).collect();
+        assert_eq!(gaps[0], Gap::NoCarAhead);
+        assert!(matches!(gaps[1], Gap::Behind(g) if (g - 0.8).abs() < 1e-9));
+        assert!(matches!(gaps[2], Gap::Behind(g) if (g - 9.2).abs() < 1e-9));
     }
 
     #[test]
@@ -218,7 +197,7 @@ mod tests {
         let mut pitting = crossing("PIT", 10, 500.0, 3);
         pitting.pit_in = true;
         let laps = vec![crossing("AHEAD", 10, 495.0, 2), pitting, crossing("ME", 10, 500.5, 4)];
-        assert!((gaps_ahead(&laps)[2].unwrap() - 5.5).abs() < 1e-9);
+        assert!(matches!(gaps_at_timing_lines(&laps)[2][2], Gap::Behind(g) if (g - 5.5).abs() < 1e-9));
     }
 
     #[test]

@@ -2,18 +2,12 @@
 //!
 //! A least-squares fit of the kept laps separates each driver-car from tyre
 //! compound, tyre age, fuel and track evolution, all measured within the race: no
-//! priors, no weighting across races. Two recipes exist side by side:
-//!
-//! - [`Recipe::v1`], the first adopted recipe, kept unchanged so results can be
-//!   reproduced and compared;
-//! - [`Recipe::v2`], v1 with stricter evidence rules: clear air checked at all three
-//!   timing lines, laps with unknown traffic left out, the five-lap minimum
-//!   rechecked after trimming, and a race whose cars can only be compared without the
-//!   tyre-wear term marked as not tyre-corrected instead of silently using that fit.
+//! priors, no weighting across races. A team's figure is its quicker driver: the
+//! car's best demonstrated pace. The standard recipe is [`Recipe::standard`].
 //!
 //! [`race_pace`] gives the full result of one race: every driver and team with
 //! their gaps, an interval from resampling whole stints, and the evidence behind
-//! each number.
+//! each number. The intervals are extra information: they never change a gap.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -46,24 +40,14 @@ pub enum Compounds {
     Inters,
 }
 
-/// Where clear air is checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Traffic {
-    /// At the finish line only.
-    FinishLine,
-    /// At both sector lines and the finish line.
-    TimingLines,
-}
-
 /// Which race laps count.
 #[derive(Debug, Clone, Copy)]
 pub struct RaceFilter {
     pub compounds: Compounds,
-    /// Laps completed this close or closer to the car ahead are left out.
+    /// Clear air: a lap is left out when the car crossed any of the three timing
+    /// lines (both sector lines, the finish line) this close or closer behind the car
+    /// physically ahead, or when its traffic cannot be determined. `None` keeps all.
     pub min_gap_s: Option<f64>,
-    pub traffic: Traffic,
-    /// Keep laps whose traffic cannot be determined (a crossing time is missing).
-    pub keep_unknown_traffic: bool,
     /// Laps up to and including this number are left out (the start).
     pub skip_laps: u32,
     /// Keep only laps the timing feed marks accurate.
@@ -78,8 +62,6 @@ impl Default for RaceFilter {
         Self {
             compounds: Compounds::All,
             min_gap_s: None,
-            traffic: Traffic::FinishLine,
-            keep_unknown_traffic: true,
             skip_laps: 1,
             accurate_only: true,
             skip_after_neutral: 0,
@@ -112,93 +94,41 @@ pub struct RaceModel {
     pub trim_sigma: Option<f64>,
     /// Gap to the car ahead as a term (seconds lost when within 2 s), instead of filtering.
     pub traffic_term: bool,
-    /// Recheck the lap minimum after trimming and refit without drivers below it.
-    pub recheck_min_laps: bool,
 }
 
 /// Laps a driver (or team) needs to be measured.
 pub const MIN_LAPS: usize = 5;
 
 impl RaceFilter {
-    /// v1 laps: any known tyre (dry, intermediate, wet), green, after lap 1, no pit
-    /// laps, more than 2 s behind the car ahead at the finish line.
+    /// Standard laps: any known tyre (dry, intermediate, wet), green, after lap 1, no
+    /// pit laps, more than 2 s clear at all three timing lines.
     pub fn standard() -> Self {
         Self { compounds: Compounds::All, min_gap_s: Some(2.0), ..Self::default() }
-    }
-
-    /// v2 laps: as v1, but clear by more than 2 s at all three timing lines, and laps
-    /// whose traffic is unknown are left out.
-    pub fn standard_v2() -> Self {
-        Self { traffic: Traffic::TimingLines, keep_unknown_traffic: false, ..Self::standard() }
     }
 }
 
 impl RaceModel {
-    /// v1 fit: a time per lap number shared by all cars, one tyre-wear rate per
-    /// compound, one 3-sigma trim and refit.
+    /// Standard fit: a time per lap number shared by all cars, one tyre-wear rate per
+    /// compound, one 3-sigma trim and refit (the lap minimum rechecked after it).
     pub fn standard() -> Self {
-        Self {
-            team_wear: false,
-            lap_trend: LapTrend::PerLap,
-            trim_sigma: Some(3.0),
-            traffic_term: false,
-            recheck_min_laps: false,
-        }
-    }
-
-    /// v2 fit: as v1, with the lap minimum rechecked after trimming.
-    pub fn standard_v2() -> Self {
-        Self { recheck_min_laps: true, ..Self::standard() }
+        Self { team_wear: false, lap_trend: LapTrend::PerLap, trim_sigma: Some(3.0), traffic_term: false }
     }
 }
 
 /// A complete team race pace recipe.
 #[derive(Debug, Clone, Copy)]
 pub struct Recipe {
-    pub name: &'static str,
     pub filter: RaceFilter,
     pub model: RaceModel,
     pub agg: Agg,
     pub min_laps: usize,
-    /// A race measured only without the tyre-wear term does not count in a season.
-    pub require_tyre_corrected: bool,
 }
 
 impl Recipe {
-    pub fn v1() -> Self {
-        Self {
-            name: "v1",
-            filter: RaceFilter::standard(),
-            model: RaceModel::standard(),
-            agg: Agg::Best,
-            min_laps: MIN_LAPS,
-            require_tyre_corrected: false,
-        }
+    /// The adopted team race pace recipe: standard laps and fit, quicker driver.
+    pub fn standard() -> Self {
+        Self { filter: RaceFilter::standard(), model: RaceModel::standard(), agg: Agg::Best, min_laps: MIN_LAPS }
     }
-
-    pub fn v2() -> Self {
-        Self {
-            name: "v2",
-            filter: RaceFilter::standard_v2(),
-            model: RaceModel::standard_v2(),
-            agg: Agg::Best,
-            min_laps: MIN_LAPS,
-            require_tyre_corrected: true,
-        }
-    }
-
-    pub fn by_name(name: &str) -> Option<Self> {
-        match name {
-            "v1" => Some(Self::v1()),
-            "v2" => Some(Self::v2()),
-            _ => None,
-        }
-    }
-}
-
-/// v1 team race pace of one race (the quicker driver of each team).
-pub fn team_race_pace(race: &[Lap]) -> TeamTimes {
-    race_model_team_times(race, &RaceFilter::standard(), &RaceModel::standard(), Agg::Best, MIN_LAPS)
 }
 
 pub fn gaps_pct(times: &TeamTimes) -> BTreeMap<String, f64> {
@@ -242,14 +172,14 @@ pub struct LapCounts {
     pub kept: usize,
 }
 
-/// The race laps a filter keeps, with each lap's gap to the car ahead at the line.
+/// The race laps a filter keeps, with each lap's gap to the car physically ahead at
+/// the finish line.
 pub fn race_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> Vec<(&'a Lap, f64, Option<f64>)> {
     select_laps(race, filter).0
 }
 
 fn select_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> (Vec<(&'a Lap, f64, Option<f64>)>, LapCounts) {
-    let finish_gaps = laps::gaps_ahead(race);
-    let line_gaps = (filter.traffic == Traffic::TimingLines).then(|| laps::gaps_at_timing_lines(race));
+    let line_gaps = laps::gaps_at_timing_lines(race);
     let neutral: BTreeSet<u32> = race.iter().filter(|l| is_neutralised(l)).map(|l| l.lap_number).collect();
     let after_neutral = |n: u32| {
         filter.skip_after_neutral > 0
@@ -275,23 +205,22 @@ fn select_laps<'a>(race: &'a [Lap], filter: &RaceFilter) -> (Vec<(&'a Lap, f64, 
             continue;
         }
         counts.candidates += 1;
-        let clear = match (filter.min_gap_s, &line_gaps) {
-            (None, _) => true,
-            (Some(min), None) => finish_gaps[i].is_none_or(|g| g > min),
-            (Some(min), Some(lines)) => {
-                let status: Vec<Option<bool>> = lines[i].iter().map(|g| g.clear_of(min)).collect();
-                if status.contains(&Some(false)) {
-                    false
-                } else if status.contains(&None) {
+        let clear = match filter.min_gap_s {
+            None => true,
+            Some(min) => {
+                let status: Vec<Option<bool>> = line_gaps[i].iter().map(|g| g.clear_of(min)).collect();
+                if status.contains(&None) && !status.contains(&Some(false)) {
                     counts.unknown_traffic += 1;
-                    filter.keep_unknown_traffic
-                } else {
-                    true
                 }
+                status.iter().all(|s| *s == Some(true))
             }
         };
         if clear {
-            kept.push((lap, t, finish_gaps[i]));
+            let finish = match line_gaps[i][2] {
+                laps::Gap::Behind(g) => Some(g),
+                _ => None,
+            };
+            kept.push((lap, t, finish));
         }
     }
     counts.kept = kept.len();
@@ -369,17 +298,15 @@ fn retain_min_laps(obs: &mut Vec<Obs>, min_laps: usize) -> bool {
 /// returned time is the race's median kept lap plus the entity's fitted difference
 /// to the most comparable entity.
 ///
-/// Tyre wear is measured from cars running different tyre ages on the same lap.
-/// When every car ran a single dry stint (stops a lap or two apart) wear cannot be
-/// told apart from the lap terms; the fit is then repeated without the wear term and
-/// the version that compares more cars is kept (see [`race_pace`] for how v2 marks it).
+/// Tyre wear is measured from cars running different tyre ages on the same lap. This
+/// gives only the cars the wear-corrected fit can compare; [`race_pace`] also reports
+/// races whose cars can only be compared without the wear term, marked as such.
 pub fn race_model_team_times(race: &[Lap], filter: &RaceFilter, model: &RaceModel, agg: Agg, min_laps: usize) -> TeamTimes {
     let (obs, _) = observations(race, filter, agg, min_laps);
     if obs.is_empty() {
         return TeamTimes::new();
     }
-    let measured = measure(obs, model, min_laps);
-    team_times(&measured.fit.cars, agg)
+    team_times(&fit_cars(obs, model, true, min_laps).cars, agg)
 }
 
 /// A fitted driver (or team for [`Agg::LapBest`]).
@@ -456,9 +383,7 @@ fn fit_cars(mut obs: Vec<Obs>, model: &RaceModel, wear: bool, min_laps: usize) -
             let keep: Vec<bool> = residuals.iter().map(|r| r.abs() <= k * sigma).collect();
             if !keep.iter().all(|&k| k) {
                 obs = obs.into_iter().zip(keep).filter_map(|(o, k)| k.then_some(o)).collect();
-                if model.recheck_min_laps {
-                    retain_min_laps(&mut obs, min_laps);
-                }
+                retain_min_laps(&mut obs, min_laps);
                 if obs.is_empty() {
                     return empty();
                 }
@@ -566,8 +491,9 @@ pub struct TeamPace {
 /// The full race pace result of one race.
 #[derive(Debug, Clone, Serialize)]
 pub struct RacePace {
-    pub recipe: String,
-    /// The fit could compare the cars with the tyre-wear term.
+    /// The fit could compare the cars with the tyre-wear term. When false the cars
+    /// were compared without it (every car ran a single stint) and the race does not
+    /// count in a season.
     pub tyre_corrected: bool,
     /// Median kept lap time: the base of the percentages.
     pub base_lap_s: f64,
@@ -712,7 +638,6 @@ pub fn race_pace(race: &[Lap], recipe: &Recipe, resamples: usize, seed: u64) -> 
     driver_rows.sort_by(|a, b| a.gap_s.total_cmp(&b.gap_s));
 
     Some(RacePace {
-        recipe: recipe.name.to_string(),
         tyre_corrected: measured.tyre_corrected,
         base_lap_s: base,
         laps: counts,
@@ -952,6 +877,17 @@ mod tests {
         }
     }
 
+    /// The standard recipe without the clear-air rule: synthetic laps carry no
+    /// crossing times.
+    fn untimed() -> Recipe {
+        Recipe { filter: RaceFilter { min_gap_s: None, ..RaceFilter::standard() }, ..Recipe::standard() }
+    }
+
+    /// Team gaps in seconds under [`untimed`].
+    fn gaps(race: &[Lap]) -> BTreeMap<String, f64> {
+        race_pace(race, &untimed(), 0, 1).map(|p| p.teams.into_iter().map(|t| (t.team, t.gap_s)).collect()).unwrap_or_default()
+    }
+
     /// Cars with known pace, two compounds, different stop laps, tyre wear and a
     /// track whose speed changes irregularly from lap to lap.
     fn synthetic_race() -> Vec<Lap> {
@@ -973,7 +909,7 @@ mod tests {
 
     #[test]
     fn recovers_known_car_gaps() {
-        let gaps = gaps_s(&team_race_pace(&synthetic_race()));
+        let gaps = gaps(&synthetic_race());
         assert!(gaps["Alpha"].abs() < 1e-6);
         assert!((gaps["Beta"] - 0.5).abs() < 1e-6, "Beta {}", gaps["Beta"]);
         assert!((gaps["Gamma"] - 1.2).abs() < 1e-6, "Gamma {}", gaps["Gamma"]);
@@ -992,11 +928,12 @@ mod tests {
                 race.push(lap(driver, team, n, time, compound, age));
             }
         }
-        let times = team_race_pace(&race);
-        let s = gaps_s(&times);
-        assert!((s["Beta"] - 0.9).abs() < 1e-6 && (s["Gamma"] - 1.8).abs() < 1e-6, "{s:?}");
-        let pct = gaps_pct(&times);
-        assert!((pct["Gamma"] - 1.8 / 90.0 * 100.0).abs() < 0.1, "{pct:?}");
+        let pace = race_pace(&race, &untimed(), 0, 1).expect("measured");
+        let gamma = pace.teams.iter().find(|t| t.team == "Gamma").unwrap();
+        assert!((gamma.gap_s - 1.8).abs() < 1e-6, "{gamma:?}");
+        assert!((gamma.gap_pct - 1.8 / 90.0 * 100.0).abs() < 0.1, "{gamma:?}");
+        let beta = pace.teams.iter().find(|t| t.team == "Beta").unwrap();
+        assert!((beta.gap_s - 0.9).abs() < 1e-6, "{beta:?}");
     }
 
     #[test]
@@ -1015,14 +952,9 @@ mod tests {
                 race.push(lap(driver, team, n, 90.0 + pace + 0.03 * n as f64, "MEDIUM", n as f64));
             }
         }
-        let s = gaps_s(&team_race_pace(&race));
+        let s = gaps(&race);
         assert_eq!(s.len(), 3, "{s:?}");
         assert!((s["Late2"] - 0.4).abs() < 1e-6 && (s["Late3"] - 0.9).abs() < 1e-6, "{s:?}");
-    }
-
-    /// v2 without the traffic rule: synthetic laps carry no crossing times.
-    fn v2_untimed() -> Recipe {
-        Recipe { filter: RaceFilter { min_gap_s: None, ..RaceFilter::standard_v2() }, ..Recipe::v2() }
     }
 
     /// Every car runs one dry stint from a different stop lap, with real tyre wear.
@@ -1038,22 +970,17 @@ mod tests {
     }
 
     #[test]
-    fn v2_marks_races_compared_without_the_wear_term() {
+    fn races_compared_without_the_wear_term_are_marked() {
         // Wear cannot be separated from the lap terms with one stint per car: the cars
         // are still compared, but the race is reported as not tyre-corrected.
-        let pace = race_pace(&single_stint_race(), &v2_untimed(), 0, 1).expect("measured");
+        let pace = race_pace(&single_stint_race(), &untimed(), 0, 1).expect("measured");
         assert!(!pace.tyre_corrected);
         assert_eq!(pace.teams.len(), 3);
     }
 
     #[test]
-    fn v1_still_falls_back_silently() {
-        assert_eq!(gaps_s(&team_race_pace(&single_stint_race())).len(), 3);
-    }
-
-    #[test]
     fn multi_stint_races_are_tyre_corrected_with_intervals() {
-        let pace = race_pace(&synthetic_race(), &v2_untimed(), 50, 7).expect("measured");
+        let pace = race_pace(&synthetic_race(), &untimed(), 50, 7).expect("measured");
         assert!(pace.tyre_corrected);
         let gamma = pace.teams.iter().find(|t| t.team == "Gamma").unwrap();
         assert!((gamma.gap_s - 1.2).abs() < 1e-6);
@@ -1075,10 +1002,9 @@ mod tests {
         for l in race.iter_mut().filter(|l| l.driver == "C1" && l.lap_number == 6) {
             l.lap_time = l.lap_time.map(|t| t + 0.8);
         }
-        let v1 = race_model_team_times(&race, &RaceFilter::standard(), &RaceModel::standard(), Agg::Best, MIN_LAPS);
-        let v2 = race_model_team_times(&race, &v2_untimed().filter, &RaceModel::standard_v2(), Agg::Best, MIN_LAPS);
-        assert!(v1.contains_key("Gamma"));
-        assert!(!v2.contains_key("Gamma"));
+        let s = gaps(&race);
+        assert!(s.contains_key("Beta"));
+        assert!(!s.contains_key("Gamma"));
     }
 
     #[test]
@@ -1097,14 +1023,14 @@ mod tests {
                 race.push(l);
             }
         }
-        let model = RaceModel { lap_trend: LapTrend::TimeBlocks, trim_sigma: None, ..RaceModel::standard_v2() };
+        let model = RaceModel { lap_trend: LapTrend::TimeBlocks, trim_sigma: None, ..RaceModel::standard() };
         let s = gaps_s(&race_model_team_times(&race, &RaceFilter::default(), &model, Agg::Best, MIN_LAPS));
         assert!((s["Gamma"] - 1.0).abs() < 0.2 && (s["Beta"] - 2.0).abs() < 0.2, "{s:?}");
     }
 
     #[test]
     fn teammate_mean_averages_drivers() {
-        let times = race_model_team_times(&synthetic_race(), &RaceFilter::standard(), &RaceModel::standard(), Agg::Mean, MIN_LAPS);
+        let times = race_model_team_times(&synthetic_race(), &untimed().filter, &RaceModel::standard(), Agg::Mean, MIN_LAPS);
         let gaps = gaps_s(&times);
         assert!((gaps["Beta"] - 0.5).abs() < 1e-6, "Beta {}", gaps["Beta"]);
         assert!((gaps["Gamma"] - 1.05).abs() < 1e-6, "Gamma {}", gaps["Gamma"]);
@@ -1114,7 +1040,7 @@ mod tests {
     fn neutralised_and_close_laps_are_left_out() {
         let mut race = synthetic_race();
         race[10].track_status = Some("14".into());
-        let filter = RaceFilter { skip_after_neutral: 2, ..RaceFilter::standard() };
+        let filter = RaceFilter { skip_after_neutral: 2, ..untimed().filter };
         let kept: Vec<u32> = race_laps(&race, &filter).iter().filter(|(l, _, _)| l.driver == "A1").map(|(l, _, _)| l.lap_number).collect();
         assert!(!kept.contains(&1) && !kept.contains(&11) && !kept.contains(&12) && !kept.contains(&13));
         assert!(kept.contains(&14));
