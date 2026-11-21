@@ -1128,16 +1128,51 @@ def test_gate_b_models_read_race_pace_with_the_connected_group_only():
 def test_stint_scale_uses_earlier_seasons_only_and_measures_the_understatement():
     from predictor import stintnoise
     rng = np.random.default_rng(0)
-    se = rng.uniform(0.1, 0.3, 4000)
+    var = rng.uniform(0.01, 0.09, 4000)
     season = np.repeat([2018, 2019, 2020, 2021], 1000)
     c = np.where(season == 2018, 4.0, 9.0)                       # later seasons understated more
-    rows = pd.DataFrame({"season": season, "k": 5, "se": se, "err": rng.normal(0, np.sqrt(c) * se)})
+    rows = pd.DataFrame({"season": season, "k": 5, "var": var, "se": np.sqrt(var),
+                         "err": rng.normal(0, np.sqrt(c * var))})
     scales = stintnoise.scale_by_season(rows, [2018, 2019, 2021])
     assert 2018 not in scales                                    # nothing earlier
     assert abs(scales[2019] - 4.0) < 0.5                         # 2018 only: never sees the 9s
     assert 5.0 < scales[2021] < 8.5                              # 2018-2020
     h = stintnoise.honesty(rows, {2019: 9.0})
     assert abs(h.z_scaled.iloc[0] - 1.0) < 0.1 and h.z_raw.iloc[0] > 2.5
+
+
+def _stint_race(rng, stint_sd, cars=10, laps=40, noise=0.3):
+    """A dry race: cars stop once (laps 15-25), MEDIUM then HARD, iid lap noise and a
+    random offset per stint of sd `stint_sd` (% of a lap)."""
+    t, rows = pd.Timedelta, []
+    for i in range(cars):
+        stop = int(rng.integers(15, 26))
+        offsets = rng.normal(0, stint_sd, 2)
+        pace = 0.1 * i
+        for n in range(1, laps + 1):
+            stint = 1 if n <= stop else 2
+            age = n if stint == 1 else n - stop
+            log = 100 * np.log(90.0) + pace + 0.05 * age - 0.065 * n + offsets[stint - 1] + rng.normal(0, noise)
+            rows.append({"DriverNumber": str(i + 1), "LapNumber": n, "LapTime": t(seconds=float(np.exp(log / 100))),
+                         "TrackStatus": "1", "PitInTime": t(seconds=1) if n == stop else pd.NaT,
+                         "PitOutTime": t(seconds=1) if n == stop + 1 else pd.NaT,
+                         "Compound": "MEDIUM" if stint == 1 else "HARD", "TyreLife": float(age), "Stint": float(stint)})
+    return pd.DataFrame(rows)
+
+
+def test_stint_scale_is_one_for_independent_laps_and_above_one_with_stint_errors():
+    # review case: a cut compared against a reference containing it gave 0.50 for
+    # independent laps; split drivers in one fit (disjoint parts, joint covariance) give 1
+    from predictor import stintnoise
+    rng = np.random.default_rng(11)
+    iid = pd.DataFrame([r for _ in range(40) for r in stintnoise.race_rows(_stint_race(rng, 0.0), rng, drivers=3,
+                                                                          cuts=(5, 10, 14))])
+    assert len(iid) > 200
+    assert 0.8 < stintnoise.scale(iid) < 1.25
+    stint = pd.DataFrame([r for _ in range(40) for r in stintnoise.race_rows(_stint_race(rng, 0.25), rng, drivers=3,
+                                                                            cuts=(5, 10, 14))])
+    assert stintnoise.scale(stint) > 1.8
+    assert (stint.err.abs() > 0).all() and (stint.rest_laps >= stintnoise.MIN_REST_LAPS).all()
 
 
 def test_stint_scale_table_is_walk_forward_and_sets_the_season_fit_start():
@@ -1164,3 +1199,23 @@ def test_stint_scale_table_is_walk_forward_and_sets_the_season_fit_start():
     m.sessions = lambda view: V.sessions
     m._fit_season(V, 2021, m._default_start())
     assert seen["scale"] == pace.STINT_SCALE[2021] and m.hyper.estimate_scale == pace.STINT_SCALE[2021]
+
+
+def test_calibration_handles_races_of_different_field_sizes():
+    from predictor import calibration
+    forecasts = pd.DataFrame({
+        "model": "m", "excluded": False, "event_key": ["2019-01", "2019-01", "2019-02", "2019-02", "2019-02"],
+        "actual": [1, 2, 1, 3, 2],
+        "probs": [np.array([0.7, 0.3]), np.array([0.3, 0.7]),
+                  np.array([0.5, 0.3, 0.2]), np.array([0.2, 0.3, 0.5]), np.array([0.3, 0.4, 0.3])]})
+    overall, _ = calibration.diagnose(forecasts, "m", resamples=50)
+    assert np.isfinite(overall.value).all()
+    # one field size: the same PIT values as a single call
+    rng_a, rng_b = np.random.default_rng(3), np.random.default_rng(3)
+    same = forecasts.iloc[2:]
+    a = calibration.forecast_pit(same.probs.to_numpy(), same.actual.to_numpy(), rng_a)
+    b = calibration.randomised_pit(np.stack(same.probs.to_numpy()), same.actual.to_numpy(), rng_b)
+    assert np.allclose(a, b)
+    # mixed sizes: each row's PIT within its own CDF step
+    pit = calibration.forecast_pit(forecasts.probs.to_numpy(), forecasts.actual.to_numpy(), np.random.default_rng(0))
+    assert 0.0 <= pit[0] <= 0.7 and 0.3 <= pit[1] <= 1.0 and 0.5 <= pit[3] <= 1.0

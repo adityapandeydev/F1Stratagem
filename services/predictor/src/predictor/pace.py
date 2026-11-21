@@ -85,12 +85,14 @@ from .program import REFERENCE_TYPES, WET_SUFFIX, Recorder, base_type
 from .rules import REGULATION_CHANGES, low_fuel_segments
 
 # How much a race pace's estimation variance understates its real error, by the season
-# forecast: the mean squared error over the summed squared reported se of drivers cut to
-# 5-20 contiguous laps of one stint (stintnoise.py, seed 7), on dry races of earlier
-# seasons only. The estimate assumes independent laps; a stint shares its fuel and tyre
-# phase, management and traffic, so the real error is about twice the reported one.
-STINT_SCALE = {2019: 4.785, 2020: 4.406, 2021: 4.521, 2022: 4.589, 2023: 4.535, 2024: 4.373}
-STINT_SCALE_LATER = 4.454       # 2018-2024 pooled: seasons from 2025
+# forecast: maximum likelihood of err ~ N(0, c var) over split drivers (stintnoise.py,
+# seed 7: k = 5-20 contiguous laps of one stint against the driver's other stints, in one
+# fit, var from its joint covariance), on dry races of earlier seasons only. The estimate
+# assumes independent laps; a stint shares its fuel and tyre phase, management and
+# traffic. Measured 2026-11-22 after review: the first table (4.4-4.8) compared the cut
+# with a full-race pace that contained it, which understated the factor.
+STINT_SCALE = {2019: 5.868, 2020: 7.639, 2021: 7.186, 2022: 7.118, 2023: 7.212, 2024: 7.328}
+STINT_SCALE_LATER = 7.544       # 2018-2024 pooled: seasons from 2025
 
 
 def stint_scale(season):

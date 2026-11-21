@@ -29,6 +29,20 @@ def randomised_pit(probs, actual, rng):
     return below + rng.uniform(size=len(y)) * (at - below)
 
 
+def forecast_pit(probs, actual, rng):
+    """`randomised_pit` of rows whose probability vectors may differ in length (one
+    entry per forecast position: fields of different sizes); PIT values in row order.
+    Rows of one length are computed together, so one field size gives the same values
+    as a single call."""
+    actual = np.asarray(actual)
+    lengths = np.array([len(p) for p in probs])
+    pit = np.empty(len(actual), dtype=float)
+    for length in np.unique(lengths):
+        rows = np.flatnonzero(lengths == length)
+        pit[rows] = randomised_pit(np.stack([probs[i] for i in rows]), actual[rows], rng)
+    return pit
+
+
 def _stats(pit):
     hist = np.histogram(pit, bins=10, range=(0, 1))[0] / max(len(pit), 1) * 10
     return np.concatenate([[pit.mean(), pit.var(), np.mean(pit < 0.05), np.mean(pit > 0.95)], hist])
@@ -57,7 +71,7 @@ def diagnose(forecasts, model, groups=None, seed=0, resamples=RESAMPLES):
     variance and both tails with race-resampled 90% intervals of the variance."""
     rng = np.random.default_rng(seed)
     f = forecasts[(forecasts.model == model) & ~forecasts.excluded & (forecasts.actual > 0)]
-    pit = randomised_pit(np.stack(f.probs.to_numpy()), f.actual.to_numpy(), rng)
+    pit = forecast_pit(f.probs.to_numpy(), f.actual.to_numpy(), rng)
     overall = summary(pit, f.event_key.to_numpy(), rng, resamples)
     rows = []
     for name, labels in (groups or {}).items():
