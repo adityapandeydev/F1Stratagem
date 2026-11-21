@@ -194,7 +194,13 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrp", "after_session": "pace3wrqwtrp",
 # +0.000004] (noise), outcome and winner better beyond noise, 15+ -0.000006, 2024
 # -0.000015: kept as a tie. Gate A (lap effects) was not adopted: 2024 +0.000104
 # before the weekend, +0.00023 after qualifying (limit +0.0001).
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2ap", "after_session": "race_mix3ffnp1ap"}
+# Gate C (2026-11-21, 3 seed batches): race pace with its measured uncertainty
+# (estimation covariance x pace.STINT_SCALE) and 5 clean laps enough. After qualifying
+# race:mix3ffnps51aps5 -0.000194 [-0.000333, -0.000049], winner log loss better beyond
+# noise, 15+ -0.000256 (better), 2024 -0.00037: promoted. Before the weekend
+# race:mix3fwps52aps5 +0.000071 (noise), outcome and winner log loss worse beyond noise:
+# not adopted. On qualifying it was not adopted at either cutoff (15+ worse).
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2ap", "after_session": "race_mix3ffnps51aps5"}
 
 
 class ChampionRouter:
@@ -383,6 +389,21 @@ def model_registry():
             "pace3wrqwtrps5": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                   robust=True, race_estimates=True, stint_scale=True,
                                                   race_read={"partial": True, "min_laps": 5}),
+            # C on races: the champions' components on the 5-lap stint-scale pace
+            "race1aps5": lambda: _race_model("pace3wrqwtrps5", "race:v1aps5"),
+            "race2aps5": lambda: _race_model("pace3wrqwtrps5", "race:v2aps5", simulated=True),
+            "race3ffnps5": lambda: _race_model("pace3wrqwtrps5", "race:v3ffnps5", simulated=True, forecast_battles=True,
+                                               neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                               strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                               team_wear=True, following=True, windows=True),
+            "race3fwps5": lambda: _race_model("pace3wrqwtrps5", "race:v3fwps5", simulated=True, forecast_battles=True,
+                                              neutralisations=True, weekend_lap=True, detailed_retirements=True,
+                                              strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
+                                              team_wear=True, lap_effect_wear=True),
+            "race_mix3ffnps51aps5": lambda: ForecastMixture(["race3ffnps5", "race1aps5"], [0.5, 0.5],
+                                                            "race:mix3ffnps51aps5"),
+            "race_mix3fwps52aps5": lambda: ForecastMixture(["race3fwps5", "race2aps5"], [0.5, 0.5],
+                                                           "race:mix3fwps52aps5"),
             "pace3wrqwtcrp": lambda: _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True,
                                                  robust=True, wet_forecast=True, race_read={"partial": True}),
             "race1ap": lambda: _race_model("pace3wrqwtrp", "race:v1ap"),
