@@ -133,6 +133,19 @@ def _race_model(pace, name, simulated=False, **options):
     return RaceModel(model_registry()[pace](), name, **options)
 
 
+def _published_grid(key):
+    """Registry model `key` (a race model or a mixture of them) reading the published
+    starting grid once it is out (race.published_grid_at); "g" ends its name and its
+    components' names."""
+    model = model_registry()[key]()
+    for part in getattr(model, "components", [model]):
+        part.published_grid = True
+        if part is not model:
+            part.name += "g"
+    model.name += "g"
+    return model
+
+
 # The champion at each forecast moment (per-horizon promotion, design/prediction-engine.md).
 # Before the weekend: no session of the event has run. Once any has, the last-cutoff
 # champion serves; after FP1 and after FP2 that routing is provisional until those
@@ -448,6 +461,8 @@ def model_registry():
                                             neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                             strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                             team_wear=True, lap_effect_wear=True),
+            # stage 4: the champion after qualifying reading the published starting grid
+            "race_mix3ffnps51aps5g": lambda: _published_grid("race_mix3ffnps51aps5"),
             "race_mix3ffnp1ap": lambda: ForecastMixture(["race3ffnp", "race1ap"], [0.5, 0.5], "race:mix3ffnp1ap"),
             "race_mix3fwp2ap": lambda: ForecastMixture(["race3fwp", "race2ap"], [0.5, 0.5], "race:mix3fwp2ap"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
@@ -606,8 +621,20 @@ def model_registry():
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):
-    """The named cutoff, or with 'last' the latest cutoff before the target session."""
+    """The named cutoff, or with 'last' the latest cutoff before the target session.
+    'after_grid' (races): when the latest FIA starting grid before the race was
+    published (grid penalties applied), not before the last session's cutoff; at that
+    cutoff where no grid is on file (2019 grids are images)."""
     before = [c for c in archive.cutoffs(event_key) if c.time < target_start]
+    if cutoff_label == "after_grid":
+        from .archive import Cutoff
+        from .race import grid_published
+        if not before:
+            return None
+        last = before[-1]
+        published = grid_published(archive, event_key, target_start)
+        time = max(last.time, published) if published is not None else last.time
+        return Cutoff(event_key, "after_grid", time, last.anchor_session)
     if cutoff_label == "last":
         return before[-1] if before else None
     return next((c for c in before if c.label == cutoff_label), None)

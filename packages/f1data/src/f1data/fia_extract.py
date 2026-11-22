@@ -16,6 +16,10 @@ document number, publication time, page):
                     (role "practice"), with name, nationality and team as printed.
                     Car numbers carry footnote markers in the text layer (car 19 with
                     footnote 1 reads "191"), so drivers are identified by name.
+  starting_grids    "Provisional / Final Starting Grid" of a race (sprint grids are
+                    left out): one row per grid slot, in grid order, with the grid
+                    penalties already applied; 2019 grids (and a few later ones) are
+                    images without a text layer and are reported, not guessed.
 
 The PDFs are text-based (not scans). Layout-dependent parsers check what they
 read (row counts, value ranges) and report problems instead of guessing; a
@@ -492,6 +496,30 @@ def parse_entry_list(pdf):
     return rows
 
 
+# ---------------------------------------------------------------- starting grids
+
+# "<slot> <car> <NAME..." with the slot counting up from 1; two slots share a text
+# line in the two-column layout, so pairs are searched anywhere in the text.
+GRID_PAIR = re.compile(r"(?:^|\s)(\d{1,2}) (\d{1,2}) (?=[A-Z])")
+MIN_GRID_SLOTS = 15
+
+
+def parse_starting_grid(pdf):
+    """Rows (grid_position, raw_number) of a starting grid, in grid order. The cover
+    page is skipped; a pair counts only as the next slot (1, 2, ...) with a car not
+    yet placed, so lap times, document numbers and penalty notes are not read."""
+    pages = pdf.pages[1:] or pdf.pages
+    text = "\n".join(page.extract_text() or "" for page in pages)
+    rows, seen = [], set()
+    for slot, car in GRID_PAIR.findall(text):
+        if int(slot) == len(rows) + 1 and car not in seen:
+            rows.append({"grid_position": int(slot), "raw_number": car})
+            seen.add(car)
+    if len(rows) < MIN_GRID_SLOTS:
+        raise ExtractionProblem(f"starting grid: only {len(rows)} slots read (no text layer?)")
+    return rows
+
+
 # ---------------------------------------------------------------- driver
 
 def kind_of(entry):
@@ -507,6 +535,8 @@ def kind_of(entry):
         return "tyre_nominations"
     if entry["category"] == "entry_list" or title.endswith("entry list"):
         return "entry_lists"
+    if entry["category"] == "starting_grid" and "sprint" not in title and "infringement" not in title:
+        return "starting_grids"
     return None
 
 
@@ -528,7 +558,7 @@ def extract(root, seasons=None, kinds=None):
     """Parse every document of the known kinds (or only `kinds`) into tables/."""
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))["files"]
     tables = {"pu_usage": [], "rnc_usage": [], "car_updates": [], "car_updates_none": [], "tyre_nominations": [],
-              "entry_lists": []}
+              "entry_lists": [], "starting_grids": []}
     problems, counts, applied = [], {}, 0
     corrections = load_corrections()
     for key, entry in sorted(manifest.items()):
@@ -572,6 +602,11 @@ def extract(root, seasons=None, kinds=None):
             if kind == "entry_lists":
                 with pdfplumber.open(root / key) as pdf:
                     tables["entry_lists"] += [{**source, **row} for row in parse_entry_list(pdf)]
+            if kind == "starting_grids":
+                grid_kind = "final" if "final" in entry["title"].lower() else "provisional"
+                with pdfplumber.open(root / key) as pdf:
+                    tables["starting_grids"] += [{**source, "grid_kind": grid_kind, **row}
+                                                 for row in parse_starting_grid(pdf)]
             counts[kind] = counts.get(kind, 0) + 1
         except (ExtractionProblem, ValueError, KeyError) as error:
             problems.append({"file": key, "kind": kind, "error": str(error)})

@@ -13,7 +13,9 @@ come from the historical rate (`baselines.RetirementModel`), as for the baseline
   cutoff (qualifying; the sprint in 2021-2022), its order is the grid. Before that
   the grid is simulated from the same pace draws through the qualifying knockout
   (`pace.knockout_positions`), so a driver fast in qualifying is fast in the race
-  in the same draw. Grid penalties are not modelled yet.
+  in the same draw. With `published_grid` (stage 4), the latest FIA starting grid
+  published by the cutoff (grid penalties applied; `published_grid_at`) replaces
+  the qualifying order once it is out; grid penalties are not forecast before it.
 - **kappa, sigma.** kappa is what a grid slot is worth in pace units (% of a lap):
   0 lets the race pace alone decide, a large kappa freezes the grid. sigma is race
   noise beyond the pace model's (starts, strategy, incidents). Both are fitted per
@@ -29,6 +31,8 @@ dry races) from the races finished before the cutoff, shrunk towards the typical
 rate by PASS_PRIOR_RACES races' worth of it; a circuit without history gets the
 typical rate. gamma is fitted with kappa and sigma (0 is stage 1a).
 """
+import functools
+
 import numpy as np
 import pandas as pd
 
@@ -48,6 +52,50 @@ GAMMAS = (0.0, 0.5, 1.0, 1.5, 2.0)
 PASS_PRIOR_RACES = 1.0      # weight of the typical pass rate in a circuit's, in races
 
 
+def _slots(order, driver_numbers):
+    """Grid slots 1..n of `driver_numbers` by their value in `order` (missing: behind)."""
+    values = np.array([order.get(str(n), np.nan) for n in driver_numbers], dtype=float)
+    values[np.isnan(values)] = np.inf
+    slots = np.empty(len(values))
+    slots[np.argsort(values, kind="stable")] = np.arange(1, len(values) + 1)
+    return slots
+
+
+@functools.lru_cache(maxsize=4)
+def starting_grids(root):
+    """The reference table of FIA race starting grids under data root `root` (empty if
+    it has not been built): event_key, grid_position, driver_number, published_utc."""
+    path = root / "reference" / "starting_grids.parquet"
+    if not path.is_file():
+        return pd.DataFrame(columns=["event_key", "grid_position", "driver_number", "published_utc", "doc_number"])
+    grids = pd.read_parquet(path)
+    grids["published_utc"] = pd.to_datetime(grids.published_utc, utc=True)
+    grids["driver_number"] = grids.driver_number.astype(str)
+    return grids
+
+
+def grid_published(archive, event_key, before):
+    """Publication time of the latest starting grid of `event_key`'s race published
+    before `before`, or None."""
+    grids = starting_grids(archive.root)
+    times = grids.published_utc[(grids.event_key == event_key) & (grids.published_utc < before)]
+    return times.max() if len(times) else None
+
+
+def published_grid_at(view, example):
+    """Grid slots of the example's entrants from the latest FIA starting grid of its
+    race published by the view's cutoff (provisional or final: grid penalties
+    applied; a car not on it, such as a pit-lane starter, starts behind); None if
+    none is out."""
+    grids = starting_grids(view.archive.root)
+    out = grids[(grids.event_key == example.event_key) & (grids.published_utc <= view.cutoff)]
+    if out.empty:
+        return None
+    latest = out[(out.published_utc == out.published_utc.max())]
+    latest = latest[latest.doc_number == latest.doc_number.max()]
+    return _slots(dict(zip(latest.driver_number, latest.grid_position)), example.driver_numbers)
+
+
 def grid_at(view, example):
     """Grid slots (1 = pole) of the example's entrants from the session that sets the
     race grid, if it is classified at the cutoff; None otherwise. An entrant missing
@@ -59,11 +107,7 @@ def grid_at(view, example):
         return None
     results = view.results(sessions[sessions.session_type == source].session_id.iloc[0])
     order = dict(zip(results.DriverNumber.astype(str), pd.to_numeric(results.Position, errors="coerce")))
-    values = np.array([order.get(str(n), np.nan) for n in example.driver_numbers], dtype=float)
-    values[np.isnan(values)] = np.inf
-    slots = np.empty(len(values))
-    slots[np.argsort(values, kind="stable")] = np.arange(1, len(values) + 1)
-    return slots
+    return _slots(order, example.driver_numbers)
 
 
 class RaceModel:
@@ -74,6 +118,7 @@ class RaceModel:
         self.name = name
         self.overtaking = overtaking
         self.detailed_retirements = detailed_retirements
+        self.published_grid = False  # True: the published starting grid replaces the qualifying order once out
         self._passes = {}           # race session -> race_passes(...)
         self.retirements = DetailedRetirements() if detailed_retirements else RetirementModel()
         self.settings = {}          # (season, cutoff label) -> {"kappa", "sigma", "rps", ...}
@@ -114,7 +159,9 @@ class RaceModel:
         if dof > 0:          # the robust model's race noise: one Student-t scale per race
             noise /= np.sqrt(np.random.default_rng([seed, 5]).chisquare(dof, (count, 1)) / dof)
         race = race + noise
-        grid = grid_at(view, example)
+        grid = published_grid_at(view, example) if self.published_grid else None
+        if grid is None:
+            grid = grid_at(view, example)
         if grid is None:
             grid = knockout_positions(qualifying, pace.hyper.noise["Q"], np.random.default_rng([seed, 6]), dof=dof,
                                       scale_rng=np.random.default_rng([seed, 7]))

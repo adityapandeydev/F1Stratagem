@@ -1229,3 +1229,38 @@ def test_calibration_handles_races_of_different_field_sizes():
     # mixed sizes: each row's PIT within its own CDF step
     pit = calibration.forecast_pit(forecasts.probs.to_numpy(), forecasts.actual.to_numpy(), np.random.default_rng(0))
     assert 0.0 <= pit[0] <= 0.7 and 0.3 <= pit[1] <= 1.0 and 0.5 <= pit[3] <= 1.0
+
+
+def _grid_archive(tmp_path, rows):
+    (tmp_path / "reference").mkdir()
+    pd.DataFrame(rows, columns=["event_key", "grid_position", "driver_number", "published_utc", "doc_number"]).assign(
+        published_utc=lambda g: pd.to_datetime(g.published_utc, utc=True)).to_parquet(
+        tmp_path / "reference" / "starting_grids.parquet")
+    return types.SimpleNamespace(root=tmp_path)
+
+
+def test_the_published_grid_replaces_qualifying_order_once_out(tmp_path):
+    from predictor.race import grid_published, published_grid_at
+    archive = _grid_archive(tmp_path, [
+        ("2023-01", 1, "16", "2023-03-04 22:00", 27), ("2023-01", 2, "1", "2023-03-04 22:00", 27),
+        ("2023-01", 3, "44", "2023-03-04 22:00", 27),
+        # final grid: car 16 starts from the pit lane (not on the grid)
+        ("2023-01", 1, "1", "2023-03-05 13:00", 40), ("2023-01", 2, "44", "2023-03-05 13:00", 40)])
+    example = types.SimpleNamespace(event_key="2023-01", driver_numbers=[16, 44, 1, 63])
+    view = lambda t: types.SimpleNamespace(archive=archive, cutoff=pd.Timestamp(t, tz="UTC"))
+    assert published_grid_at(view("2023-03-04 21:00"), example) is None
+    assert published_grid_at(view("2023-03-04 23:00"), example).tolist() == [1, 3, 2, 4]
+    assert published_grid_at(view("2023-03-05 14:00"), example).tolist() == [3, 2, 1, 4]
+    assert grid_published(archive, "2023-01", pd.Timestamp("2023-03-05 15:00", tz="UTC")) ==         pd.Timestamp("2023-03-05 13:00", tz="UTC")
+    assert grid_published(archive, "2023-01", pd.Timestamp("2023-03-05 12:00", tz="UTC")) ==         pd.Timestamp("2023-03-04 22:00", tz="UTC")
+    assert grid_published(archive, "2023-02", pd.Timestamp("2023-03-05 15:00", tz="UTC")) is None
+
+
+def test_grid_models_change_only_the_grid_they_read():
+    from predictor import evaluation
+    reg = evaluation.model_registry()
+    model = reg["race_mix3ffnps51aps5g"]()
+    assert model.name == "race:mix3ffnps51aps5g"
+    assert [c.name for c in model.components] == ["race:v3ffnps5g", "race:v1aps5g"]
+    assert all(c.published_grid for c in model.components)
+    assert not any(c.published_grid for c in reg["race_mix3ffnps51aps5"]().components)

@@ -332,6 +332,42 @@ def entry_lists(root, events, driver_table, entrants, sessions):
     return lists[columns].sort_values(["published_utc", "doc_number"]).reset_index(drop=True)
 
 
+def starting_grids(root, sessions, entrants):
+    """FIA race starting grids (provisional and final, grid penalties applied)
+    resolved to event keys: one row per grid slot with the car's driver number and
+    the document's publication time. A grid is kept only if every car number in it
+    is an entrant of that event's race (checked, never repaired); the rest are
+    listed in the manifest."""
+    columns = ["event_key", "season", "grid_kind", "grid_position", "driver_number", "published_utc", "doc_number",
+               "file"]
+    path = root / "external" / "fia" / "tables" / "starting_grids.parquet"
+    if not path.is_file():
+        return pd.DataFrame(columns=columns), []
+    grids = pd.read_parquet(path)
+    grids["season"] = grids.season.astype(int)
+    published = pd.to_datetime(grids.published_utc, utc=True)
+    races = sessions[sessions.session_type == "R"]
+    windows = races.set_index("event_key").scheduled_start_utc
+    # the race the grid was published for: the first race start after it, within 3 days
+    grids["event_key"] = [next((key for key, start in windows.items()
+                                if pd.Timedelta(0) < start - when <= pd.Timedelta(days=3)), None) for when in published]
+    grids["published_utc"] = published
+    grids["driver_number"] = grids.raw_number.astype(str)
+    race_entrants = (entrants[entrants.session_id.isin(set(races.session_id))]
+                     .assign(driver_number=lambda e: e.driver_number.astype(str))
+                     .groupby("event_key").driver_number.apply(set).to_dict())
+    rejected, keep = [], []
+    for file, grid in grids.groupby("file", sort=False):
+        event = grid.event_key.iloc[0]
+        unknown = set(grid.driver_number) - race_entrants.get(event, set()) if event else set(grid.driver_number)
+        if event is None or unknown:
+            rejected.append({"file": file, "event_key": event, "unknown_numbers": sorted(unknown)})
+        else:
+            keep.append(grid)
+    kept = pd.concat(keep) if keep else pd.DataFrame(columns=columns)
+    return kept[columns].sort_values(["published_utc", "grid_position"]).reset_index(drop=True), rejected
+
+
 def build(root):
     """Rebuild every reference table from the archive. Returns the manifest."""
     out = root / "reference"
@@ -358,10 +394,11 @@ def build(root):
                                       "Location_lat": "latitude", "Location_long": "longitude"}))
     history = qualifying_history(root, races, lineage)
     entries = entry_lists(root, events, driver_table, entrants, sessions)
+    grids, rejected_grids = starting_grids(root, sessions, entrants)
     files = {}
     for name, frame in (("events", events), ("sessions", sessions), ("entrants", entrants),
                         ("drivers", driver_table), ("teams", team_table), ("circuits", circuit_table),
-                        ("qualifying_history", history), ("entry_lists", entries)):
+                        ("qualifying_history", history), ("entry_lists", entries), ("starting_grids", grids)):
         files[name] = write_table(frame, out / f"{name}.parquet", {})
     gaps = unresolved(entrants)
     manifest = {
@@ -379,6 +416,7 @@ def build(root):
         "entry_lists": {"rows": len(entries), "events": int(entries.event_key.nunique()),
                         "unresolved_names": sorted(set(entries.driver_name[entries.driver_id.isna()])),
                         "unmatched_events": int(entries.event_key.isna().sum())},
+        "starting_grids": {"rows": len(grids), "events": int(grids.event_key.nunique()), "rejected": rejected_grids},
         "note": "Unresolved entrants keep empty IDs.",
     }
     atomic_json(out / "manifest.json", manifest)

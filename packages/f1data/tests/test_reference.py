@@ -96,3 +96,20 @@ def test_entry_list_rows_and_roles_are_parsed():
     rows = parse_entry_list(SimpleNamespace(pages=[SimpleNamespace(extract_text=lambda: text)]))
     assert sum(r["role"] == "race" for r in rows) == 20
     assert rows[-1]["role"] == "practice" and rows[-1]["driver_name"] == "Logan Sargeant"
+
+
+def test_starting_grid_slots_are_read_in_order_from_the_two_column_layout():
+    from types import SimpleNamespace
+    import pytest
+    from f1data.fia_extract import ExtractionProblem, parse_starting_grid
+    cover = SimpleNamespace(extract_text=lambda: "From The Stewards Document 27\nTime 22:20")
+    lines = ["Doc 27 Time 22:20", "1 1 Max VERSTAPPEN 1:29.708"]
+    for slot in range(2, 21):
+        lines.append(f"Team {slot} {slot + 20} Driver NAME{slot} 1:30.{slot:03d}")
+    lines += ["* PENALTIES", "Car 16 - 3 place grid penalty - Causing a collision - Stewards' document no. 37"]
+    grid = SimpleNamespace(extract_text=lambda: "\n".join(lines))
+    rows = parse_starting_grid(SimpleNamespace(pages=[cover, grid]))
+    assert [r["grid_position"] for r in rows] == list(range(1, 21))
+    assert rows[0]["raw_number"] == "1" and rows[1]["raw_number"] == "22"
+    with pytest.raises(ExtractionProblem):
+        parse_starting_grid(SimpleNamespace(pages=[cover, SimpleNamespace(extract_text=lambda: "")]))
