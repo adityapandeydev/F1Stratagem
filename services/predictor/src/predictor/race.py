@@ -15,10 +15,12 @@ come from the historical rate (`baselines.RetirementModel`), as for the baseline
   (`pace.knockout_positions`), so a driver fast in qualifying is fast in the race
   in the same draw. With `published_grid` (stage 4), the latest FIA starting grid
   published by the cutoff (grid penalties applied; `published_grid_at`) replaces
-  the qualifying order once it is out. With `known_penalties`, until then the grid
-  penalties the stewards have published by the cutoff for this race are applied to
-  the qualifying order, or to each simulated grid (`apply_grid_penalties`); grid
-  penalties not yet decided are not forecast.
+  the qualifying order once it is out: pit-lane starters behind it, and the cars it
+  lists as withdrawn classified behind everyone in every draw (`withdraw`). With
+  `known_penalties`, until then the grid penalties the stewards have published by
+  the cutoff to be served in this race (not its sprint) are applied to the
+  qualifying order, or to each simulated grid, by the FIA's allocation procedure
+  (`gridrules`); grid penalties not yet decided are not forecast.
 - **kappa, sigma.** kappa is what a grid slot is worth in pace units (% of a lap):
   0 lets the race pace alone decide, a large kappa freezes the grid. sigma is race
   noise beyond the pace model's (starts, strategy, incidents). Both are fitted per
@@ -41,8 +43,11 @@ import pandas as pd
 
 from .baselines import RetirementModel, seed_for
 from .forecast import Forecast
+from .gridrules import GridPenalty, apply_grid_penalties, procedure
 from .laps import race_passes
 from .pace import knockout_positions
+from .rules import points_positions
+from .targets import OUTCOMES, RETIREMENTS
 from . import race_sim, track
 from .retirements import DetailedRetirements, history_incidents
 
@@ -67,13 +72,17 @@ def _slots(order, driver_numbers):
 @functools.lru_cache(maxsize=4)
 def starting_grids(root):
     """The reference table of FIA race starting grids under data root `root` (empty if
-    it has not been built): event_key, grid_position, driver_number, published_utc."""
+    it has not been built): event_key, grid_position, status (grid, pit_lane,
+    withdrawn), driver_number, published_utc, doc_number."""
     path = root / "reference" / "starting_grids.parquet"
     if not path.is_file():
-        return pd.DataFrame(columns=["event_key", "grid_position", "driver_number", "published_utc", "doc_number"])
+        return pd.DataFrame(columns=["event_key", "grid_position", "status", "driver_number", "published_utc",
+                                     "doc_number"])
     grids = pd.read_parquet(path)
     grids["published_utc"] = pd.to_datetime(grids.published_utc, utc=True)
     grids["driver_number"] = grids.driver_number.astype(str)
+    if "status" not in grids:
+        grids["status"] = "grid"
     return grids
 
 
@@ -86,64 +95,75 @@ def grid_published(archive, event_key, before):
 
 
 def published_grid_at(view, example):
-    """Grid slots of the example's entrants from the latest FIA starting grid of its
-    race published by the view's cutoff (provisional or final: grid penalties
-    applied; a car not on it, such as a pit-lane starter, starts behind); None if
-    none is out."""
+    """(grid slots, withdrawn) of the example's entrants from the latest FIA starting
+    grid of its race published by the view's cutoff (provisional or final: grid
+    penalties applied), or None if none is out. Pit-lane starters take the slots
+    after the grid's, in the order listed; withdrawn: a boolean per entrant, the cars
+    the document lists as withdrawn (they get the last slots and take no part). An
+    entrant the document does not mention starts behind those it lists."""
     grids = starting_grids(view.archive.root)
     out = grids[(grids.event_key == example.event_key) & (grids.published_utc <= view.cutoff)]
     if out.empty:
         return None
     latest = out[(out.published_utc == out.published_utc.max())]
     latest = latest[latest.doc_number == latest.doc_number.max()]
-    return _slots(dict(zip(latest.driver_number, latest.grid_position)), example.driver_numbers)
+    starting = latest[latest.status != "withdrawn"]
+    gone = set(latest.driver_number[latest.status == "withdrawn"])
+    withdrawn = np.array([str(n) in gone for n in example.driver_numbers])
+    order = {str(d): 1e5 for d in example.driver_numbers}          # not mentioned: behind those listed
+    order.update({d: float(p) for d, p in zip(starting.driver_number, starting.grid_position)})
+    order.update({d: 1e6 for d in gone})                             # withdrawn: the last slots
+    return _slots(order, example.driver_numbers), withdrawn
 
 
 @functools.lru_cache(maxsize=4)
 def grid_penalty_table(root):
     """The reference table of stewards' grid penalties under data root `root` (empty
-    if not built): event_key (the race served), driver_number, places, back_of_grid,
-    published_utc."""
+    if not built): event_key and served (the session it is served in: "S" sprint, "R"
+    race), driver_number, places, back_of_grid, pit_lane, published_utc."""
     path = root / "reference" / "grid_penalties.parquet"
     if not path.is_file():
-        return pd.DataFrame(columns=["event_key", "driver_number", "places", "back_of_grid", "published_utc"])
+        return pd.DataFrame(columns=["event_key", "served", "driver_number", "places", "back_of_grid", "pit_lane",
+                                     "published_utc", "doc_number"])
     table = pd.read_parquet(path)
     table["published_utc"] = pd.to_datetime(table.published_utc, utc=True)
     table["driver_number"] = table.driver_number.astype(str)
+    if "served" not in table:
+        table["served"] = "R"
+    if "pit_lane" not in table:
+        table["pit_lane"] = False
     return table
 
 
-def known_penalties(view, event_key):
-    """{driver number: (places dropped, back of the grid)} from the grid penalties for
-    `event_key`'s race published by the view's cutoff (drops add up)."""
+def known_penalties(view, event_key, served="R"):
+    """{driver number: GridPenalty} from the grid penalties served in `event_key`'s
+    race (`served` "R"; "S" its sprint) published by the view's cutoff: drops add up,
+    `first` orders the drivers by their earliest decision (offence order)."""
     table = grid_penalty_table(view.archive.root)
-    rows = table[(table.event_key == event_key) & (table.published_utc <= view.cutoff)]
+    rows = table[(table.event_key == event_key) & (table.served == served) & (table.published_utc <= view.cutoff)]
     penalties = {}
-    for row in rows.itertuples():
-        places, back = penalties.get(row.driver_number, (0, False))
-        places += 0 if pd.isna(row.places) else int(row.places)
-        penalties[row.driver_number] = (places, back or bool(row.back_of_grid))
+    for rank, row in enumerate(rows.sort_values(["published_utc", "doc_number"]).itertuples()):
+        old = penalties.get(row.driver_number, GridPenalty(first=rank))
+        penalties[row.driver_number] = GridPenalty(
+            old.places + (0 if pd.isna(row.places) else int(row.places)), old.back or bool(row.back_of_grid),
+            old.pit_lane or bool(row.pit_lane), old.first)
     return penalties
 
 
-def apply_grid_penalties(slots, driver_numbers, penalties):
-    """Grid slots (draws x entrants, 1 = pole) after `penalties` ({driver: (places,
-    back of the grid)}): a dropped car goes behind the car qualified `places` slots
-    behind it, cars sent to the back line up behind everyone else in qualifying
-    order. Reproduces 85% of the 2020-2024 provisional grids exactly from qualifying
-    and the decisions published before them (51% without the penalties)."""
-    slots = np.atleast_2d(slots).astype(float)
-    key = slots.copy()
-    for i, number in enumerate(driver_numbers):
-        places, back = penalties.get(str(number), (0, False))
-        if back:
-            key[:, i] = 1000 + slots[:, i]
-        elif places:
-            key[:, i] = slots[:, i] + places + 0.5
+def withdraw(final, outcomes, withdrawn, example):
+    """(final positions, outcomes) with the `withdrawn` entrants moved behind everyone,
+    the others moved up, and the finishers' outcomes (win, points) read again from
+    their new positions; a withdrawn entrant's outcome is left as drawn (unscored)."""
+    draws, n = final.shape
+    key = final + withdrawn[None, :] * (n + 1)
     order = np.argsort(key, axis=1, kind="stable")
-    out = np.empty_like(slots)
-    out[np.arange(len(slots))[:, None], order] = np.arange(1, slots.shape[1] + 1)
-    return out
+    moved = np.empty_like(final)
+    moved[np.arange(draws)[:, None], order] = np.arange(1, n + 1)
+    finished = ~np.isin(outcomes, [OUTCOMES.index(o) for o in RETIREMENTS if o in OUTCOMES])
+    paying = points_positions(example.season, example.session_type)
+    again = np.where(moved == 1, OUTCOMES.index("win"),
+                     np.where(moved <= paying, OUTCOMES.index("other_points"), OUTCOMES.index("outside_points")))
+    return moved, np.where(finished & ~withdrawn[None, :], again, outcomes)
 
 
 def grid_at(view, example):
@@ -210,9 +230,9 @@ class RaceModel:
         if dof > 0:          # the robust model's race noise: one Student-t scale per race
             noise /= np.sqrt(np.random.default_rng([seed, 5]).chisquare(dof, (count, 1)) / dof)
         race = race + noise
-        grid = published_grid_at(view, example) if self.published_grid else None
-        if grid is not None:
-            return race, np.atleast_2d(grid).astype(float)
+        published = published_grid_at(view, example) if self.published_grid else None
+        if published is not None:
+            return race, np.atleast_2d(published[0]).astype(float)
         grid = grid_at(view, example)
         if grid is None:
             grid = knockout_positions(qualifying, pace.hyper.noise["Q"], np.random.default_rng([seed, 6]), dof=dof,
@@ -220,8 +240,17 @@ class RaceModel:
         if self.known_penalties:
             penalties = known_penalties(view, example.event_key)
             if penalties:
-                grid = apply_grid_penalties(grid, example.driver_numbers, penalties)
+                grid = apply_grid_penalties(grid, example.driver_numbers, penalties,
+                                            procedure(example.season, example.cutoff_time))
         return race, np.atleast_2d(grid).astype(float)
+
+    def start_context(self, view, example):
+        """`context` plus "withdrawn": the entrants a published starting grid lists as
+        withdrawn (None when there are none or the model does not read the grid)."""
+        context = self.context(view, example)
+        published = published_grid_at(view, example) if self.published_grid else None
+        withdrawn = published[1] if published is not None and published[1].any() else None
+        return {**context, "withdrawn": withdrawn}
 
     def difficulty(self, view, example):
         """(typical pass rate / this circuit's pass rate) from the dry races finished
@@ -281,9 +310,14 @@ class RaceModel:
         positions[np.arange(len(score))[:, None], order] = np.arange(1, score.shape[1] + 1)
         return positions
 
-    def forecast(self, example, positions, seed, metadata):
+    def forecast(self, example, positions, seed, metadata, withdrawn=None):
+        """Forecast from finishing orders before retirements; `withdrawn` (a boolean
+        per entrant) are known not to start: classified behind everyone in every draw
+        (not scored, but the places they would take go to the others)."""
         rng = np.random.default_rng([seed, 9])
         final, outcomes = self.retirements.apply(positions, example, rng)
+        if withdrawn is not None and withdrawn.any():
+            final, outcomes = withdraw(final, outcomes, withdrawn, example)
         return Forecast.from_draws(
             positions=final, outcomes=outcomes, season=example.season, session_type=example.session_type,
             event_key=example.event_key, cutoff_label=example.cutoff_label, cutoff_time=example.cutoff_time.isoformat(),
@@ -304,14 +338,15 @@ class RaceModel:
             if key not in self._draws:
                 view = self._view_for(example)
                 self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)),
-                                    self.context(view, example))
+                                    self.start_context(view, example))
             prepared.append((example, *self._draws[key]))
         best = None
         for setting in self.candidates():
             total = 0.0
             for example, race, grid, context in prepared:
                 seed = seed_for(example)
-                forecast = self.forecast(example, self.order(race, grid, setting, context, seed), seed, {})
+                forecast = self.forecast(example, self.order(race, grid, setting, context, seed), seed, {},
+                                         context.get("withdrawn"))
                 total += score(forecast, example)["rps"]
             rps = total / len(prepared)
             if best is None or rps < best[0]:
@@ -333,11 +368,14 @@ class RaceModel:
         chosen = self.settings[key]
         seed = seed_for(example)
         race, grid = self.draws(view, example, draws, seed)
-        context = self.context(view, example)
+        context = self.start_context(view, example)
         positions = self.order(race, grid, chosen, context, seed)
         known_grid = grid.shape[0] == 1
+        withdrawn = context.pop("withdrawn", None)
         return self.forecast(example, positions, seed, {
             "grid": "known" if known_grid else "simulated",
+            **({"withdrawn": [str(n) for n, w in zip(example.driver_numbers, withdrawn) if w]}
+               if withdrawn is not None else {}),
             "context": {k: (v["factor"] if k == "neutral" else
                             {x: (y.tolist() if isinstance(y, np.ndarray) else y) for x, y in v.items() if x != "residuals"}
                             if k == "strategy" else v)
@@ -345,7 +383,7 @@ class RaceModel:
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
             **({"retire_factors": dict(zip(("incident", "mechanical"), map(list, self.retirements.chances(example))))}
-               if self.detailed_retirements else {})})
+               if self.detailed_retirements else {})}, withdrawn)
 
 
 def scheduled_laps(earlier, layout):
@@ -754,7 +792,7 @@ class SimulatedRace(RaceModel):
             key = (example.event_key, example.cutoff_label, season)
             if key not in self._draws:
                 view = self._view_for(example)
-                self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)), self.context(view, example))
+                self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)), self.start_context(view, example))
             race = self._draws[key][0]
             column = {str(n): i for i, n in enumerate(example.driver_numbers)}
             pairs = frame.iloc[rows]

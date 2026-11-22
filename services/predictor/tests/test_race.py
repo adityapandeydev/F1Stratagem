@@ -1233,7 +1233,8 @@ def test_calibration_handles_races_of_different_field_sizes():
 
 def _grid_archive(tmp_path, rows):
     (tmp_path / "reference").mkdir()
-    pd.DataFrame(rows, columns=["event_key", "grid_position", "driver_number", "published_utc", "doc_number"]).assign(
+    pd.DataFrame(rows, columns=["event_key", "grid_position", "status", "driver_number", "published_utc",
+                                "doc_number"]).assign(
         published_utc=lambda g: pd.to_datetime(g.published_utc, utc=True)).to_parquet(
         tmp_path / "reference" / "starting_grids.parquet")
     return types.SimpleNamespace(root=tmp_path)
@@ -1242,18 +1243,36 @@ def _grid_archive(tmp_path, rows):
 def test_the_published_grid_replaces_qualifying_order_once_out(tmp_path):
     from predictor.race import grid_published, published_grid_at
     archive = _grid_archive(tmp_path, [
-        ("2023-01", 1, "16", "2023-03-04 22:00", 27), ("2023-01", 2, "1", "2023-03-04 22:00", 27),
-        ("2023-01", 3, "44", "2023-03-04 22:00", 27),
-        # final grid: car 16 starts from the pit lane (not on the grid)
-        ("2023-01", 1, "1", "2023-03-05 13:00", 40), ("2023-01", 2, "44", "2023-03-05 13:00", 40)])
-    example = types.SimpleNamespace(event_key="2023-01", driver_numbers=[16, 44, 1, 63])
+        ("2023-01", 1, "grid", "16", "2023-03-04 22:00", 27), ("2023-01", 2, "grid", "1", "2023-03-04 22:00", 27),
+        ("2023-01", 3, "grid", "44", "2023-03-04 22:00", 27), ("2023-01", 4, "grid", "63", "2023-03-04 22:00", 27),
+        # final grid: car 16 starts from the pit lane, car 63 is withdrawn
+        ("2023-01", 1, "grid", "1", "2023-03-05 13:00", 40), ("2023-01", 2, "grid", "44", "2023-03-05 13:00", 40),
+        ("2023-01", 3, "pit_lane", "16", "2023-03-05 13:00", 40),
+        ("2023-01", None, "withdrawn", "63", "2023-03-05 13:00", 40)])
+    example = types.SimpleNamespace(event_key="2023-01", driver_numbers=[16, 44, 1, 63, 77])
     view = lambda t: types.SimpleNamespace(archive=archive, cutoff=pd.Timestamp(t, tz="UTC"))
     assert published_grid_at(view("2023-03-04 21:00"), example) is None
-    assert published_grid_at(view("2023-03-04 23:00"), example).tolist() == [1, 3, 2, 4]
-    assert published_grid_at(view("2023-03-05 14:00"), example).tolist() == [3, 2, 1, 4]
-    assert grid_published(archive, "2023-01", pd.Timestamp("2023-03-05 15:00", tz="UTC")) ==         pd.Timestamp("2023-03-05 13:00", tz="UTC")
-    assert grid_published(archive, "2023-01", pd.Timestamp("2023-03-05 12:00", tz="UTC")) ==         pd.Timestamp("2023-03-04 22:00", tz="UTC")
+    slots, withdrawn = published_grid_at(view("2023-03-04 23:00"), example)
+    assert slots.tolist() == [1, 3, 2, 4, 5] and not withdrawn.any()      # car 77 not on it: behind
+    slots, withdrawn = published_grid_at(view("2023-03-05 14:00"), example)
+    assert slots.tolist() == [3, 2, 1, 5, 4] and withdrawn.tolist() == [False, False, False, True, False]
+    assert grid_published(archive, "2023-01", pd.Timestamp("2023-03-05 15:00", tz="UTC")) == \
+        pd.Timestamp("2023-03-05 13:00", tz="UTC")
+    assert grid_published(archive, "2023-01", pd.Timestamp("2023-03-05 12:00", tz="UTC")) == \
+        pd.Timestamp("2023-03-04 22:00", tz="UTC")
     assert grid_published(archive, "2023-02", pd.Timestamp("2023-03-05 15:00", tz="UTC")) is None
+
+
+def test_withdrawn_entrants_finish_behind_everyone_and_free_their_places():
+    from predictor.race import withdraw
+    from predictor.targets import OUTCOMES
+    example = types.SimpleNamespace(season=2023, session_type="R")
+    final = np.array([[1, 2, 3, 4], [2, 1, 4, 3]])
+    win, pts, mech = (OUTCOMES.index(o) for o in ("win", "other_points", "mechanical"))
+    outcomes = np.array([[win, pts, pts, pts], [pts, win, mech, pts]])
+    moved, again = withdraw(final, outcomes, np.array([True, False, False, False]), example)
+    assert moved.tolist() == [[4, 1, 2, 3], [4, 1, 3, 2]]
+    assert again[0, 1] == win and again[1, 1] == win and again[1, 2] == mech
 
 
 def test_grid_models_change_only_the_grid_they_read():
@@ -1266,29 +1285,77 @@ def test_grid_models_change_only_the_grid_they_read():
     assert not any(c.published_grid for c in reg["race_mix3ffnps51aps5"]().components)
 
 
-def test_grid_penalties_drop_cars_and_send_others_to_the_back():
-    from predictor.race import apply_grid_penalties
-    drivers = ["1", "2", "3", "4", "5"]
-    qualifying = np.array([[1, 2, 3, 4, 5], [5, 4, 3, 2, 1]])
-    # car 1 drops 2 places, car 3 goes to the back
-    after = apply_grid_penalties(qualifying, drivers, {"1": (2, False), "3": (0, True)})
-    assert after[0].tolist() == [2, 1, 5, 3, 4]          # 2, 1 (behind car 3, who leaves for the back), 4, 5, 3
-    assert after[1].tolist() == [4, 3, 5, 2, 1]          # 5, 4, 2, 1 (dropped past the end), then 3
-    assert apply_grid_penalties(qualifying, drivers, {}).tolist() == qualifying.tolist()
+def _grid(rule, penalties, n=6):
+    """Grid order (qualifying slots, pole first) from qualifying order 1..n."""
+    from predictor.gridrules import apply_grid_penalties
+    drivers = [str(q) for q in range(1, n + 1)]
+    slots = apply_grid_penalties(np.arange(1, n + 1), drivers, penalties, rule)[0]
+    return [int(q) for q in np.argsort(slots) + 1]
 
 
-def test_known_penalties_are_those_published_by_the_cutoff(tmp_path):
+def test_empty_grid_procedure_of_2024_article_42_3():
+    from predictor.gridrules import GridPenalty as P
+    for rule in ("art42", "drops"):
+        # the first two qualifiers each get 3 places: temporary slots 4 and 5, the
+        # unpenalised drivers fill 1-3 and 6
+        assert _grid(rule, {"1": P(3), "2": P(3)}) == [3, 4, 5, 1, 2, 6]
+        # a shared temporary slot (3): the slower qualifier keeps it, the other goes just ahead
+        assert _grid(rule, {"1": P(2), "2": P(1)}) == [3, 1, 2, 4, 5, 6]
+        # a temporary slot past the end: penalised drivers move up into the gap
+        assert _grid(rule, {"5": P(10)}) == [1, 2, 3, 4, 6, 5]
+        assert _grid(rule, {}) == [1, 2, 3, 4, 5, 6]
+    # Monza 2022's provisional grid: Verstappen (2nd, 5 places) starts 7th
+    quali = ["16", "1", "55", "11", "44", "63", "4", "3", "10", "14", "31", "77", "45", "24", "22", "6", "5", "18",
+             "20", "47"]
+    monza = {"1": P(5), "11": P(10), "31": P(5), "77": P(15), "20": P(15), "47": P(15), "55": P(back=True),
+             "44": P(back=True), "22": P(back=True)}
+    order = [quali[q - 1] for q in _grid("drops", {str(quali.index(d) + 1): p for d, p in monza.items()}, 20)]
+    assert order == ["16", "63", "4", "3", "10", "14", "1", "45", "24", "6", "5", "18", "11", "31", "77", "20", "47",
+                     "55", "44", "22"]
+
+
+def test_more_than_15_places_is_the_back_of_the_grid_in_qualifying_order():
+    from predictor.gridrules import GridPenalty as P, procedure
+    n = 20
+    # from October 2022: 75 places (car 2), 20 (car 5) and the back of the grid (car 9)
+    # line up at the back in qualifying order; exactly 15 (car 1) is still a drop
+    penalties = {"2": P(75), "5": P(20), "9": P(back=True), "1": P(15)}
+    order = _grid("art42", penalties, n)
+    assert order[-3:] == [2, 5, 9]
+    assert order.index(1) < 17
+    # before, drops adding up past 15 stayed drops (Bottas, Belgium 2022): only the
+    # decision sending car 9 back puts it behind
+    order = _grid("drops", penalties, n)
+    assert order[-1] == 9 and order[-3:-1] == [5, 2]               # temporary slots 25 and 77
+    assert _grid("art42", {"3": P(20), "4": P(3)}, 6)[-1] == 3
+    assert _grid("drops", {"3": P(20), "4": P(3)}, 6)[-1] == 3        # alone at the end either way
+    # pit-lane starters behind the back of the grid
+    assert _grid("art42", {"1": P(pit_lane=True), "2": P(back=True)}) == [3, 4, 5, 6, 2, 1]
+    ts = lambda t: pd.Timestamp(t, tz="UTC")
+    assert procedure(2021, ts("2021-12-12")) == "drops"
+    assert procedure(2022, ts("2022-10-09")) == "drops"
+    assert procedure(2022, ts("2022-10-22")) == "art42"
+    assert procedure(2024, ts("2024-03-02")) == "art42"
+
+
+def test_known_penalties_are_those_served_in_the_race_and_published_by_the_cutoff(tmp_path):
+    from predictor.gridrules import GridPenalty as P
     from predictor.race import known_penalties
     (tmp_path / "reference").mkdir()
-    pd.DataFrame({"event_key": ["2023-02", "2023-02", "2023-02", "2023-03"], "driver_number": ["16", "16", "4", "1"],
-                  "places": pd.array([10, 5, None, 3], dtype="Int64"), "back_of_grid": [False, False, True, False],
+    pd.DataFrame({"event_key": ["2023-02"] * 4 + ["2023-03"], "served": ["R", "R", "R", "S", "R"],
+                  "driver_number": ["16", "16", "4", "77", "1"],
+                  "places": pd.array([10, 5, None, 3, 3], dtype="Int64"),
+                  "back_of_grid": [False, False, True, False, False],
+                  "pit_lane": [False] * 5, "doc_number": [1, 2, 3, 4, 5],
                   "published_utc": pd.to_datetime(["2023-03-17 16:51", "2023-03-18 12:00", "2023-03-18 20:00",
-                                                   "2023-03-17 10:00"], utc=True)}).to_parquet(
+                                                   "2023-03-18 09:00", "2023-03-17 10:00"], utc=True)}).to_parquet(
         tmp_path / "reference" / "grid_penalties.parquet")
     view = lambda t: types.SimpleNamespace(archive=types.SimpleNamespace(root=tmp_path), cutoff=pd.Timestamp(t, tz="UTC"))
     assert known_penalties(view("2023-03-17 12:00"), "2023-02") == {}
-    assert known_penalties(view("2023-03-18 13:00"), "2023-02") == {"16": (15, False)}
-    assert known_penalties(view("2023-03-19 13:00"), "2023-02") == {"16": (15, False), "4": (0, True)}
+    assert known_penalties(view("2023-03-18 13:00"), "2023-02") == {"16": P(15, first=0)}
+    assert known_penalties(view("2023-03-19 13:00"), "2023-02") == {"16": P(15, first=0), "4": P(0, True, first=2)}
+    # the sprint's penalty (car 77) is served in the sprint, not the race
+    assert known_penalties(view("2023-03-19 13:00"), "2023-02", served="S") == {"77": P(3, first=0)}
 
 
 def test_penalty_models_set_both_grid_flags():

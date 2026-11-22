@@ -334,12 +334,14 @@ def entry_lists(root, events, driver_table, entrants, sessions):
 
 def starting_grids(root, sessions, entrants):
     """FIA race starting grids (provisional and final, grid penalties applied)
-    resolved to event keys: one row per grid slot with the car's driver number and
-    the document's publication time. A grid is kept only if every car number in it
-    is an entrant of that event's race (checked, never repaired); the rest are
-    listed in the manifest."""
-    columns = ["event_key", "season", "grid_kind", "grid_position", "driver_number", "published_utc", "doc_number",
-               "file"]
+    resolved to event keys: one row per car with its grid slot, its status as
+    printed (grid, pit_lane, withdrawn: slot empty), the driver number and the
+    document's publication time. A grid is kept only if every car starting in it is
+    an entrant of that event's race (checked, never repaired; a withdrawn car may
+    have no race entry, Sargeant in Australia 2024); the rest are listed in the
+    manifest."""
+    columns = ["event_key", "season", "grid_kind", "grid_position", "status", "driver_number", "published_utc",
+               "doc_number", "file"]
     path = root / "external" / "fia" / "tables" / "starting_grids.parquet"
     if not path.is_file():
         return pd.DataFrame(columns=columns), []
@@ -353,13 +355,17 @@ def starting_grids(root, sessions, entrants):
                                 if pd.Timedelta(0) < start - when <= pd.Timedelta(days=3)), None) for when in published]
     grids["published_utc"] = published
     grids["driver_number"] = grids.raw_number.astype(str)
+    if "status" not in grids:
+        grids["status"] = "grid"
+    grids["grid_position"] = pd.to_numeric(grids.grid_position, errors="coerce").astype("Int64")
     race_entrants = (entrants[entrants.session_id.isin(set(races.session_id))]
                      .assign(driver_number=lambda e: e.driver_number.astype(str))
                      .groupby("event_key").driver_number.apply(set).to_dict())
     rejected, keep = [], []
     for file, grid in grids.groupby("file", sort=False):
         event = grid.event_key.iloc[0]
-        unknown = set(grid.driver_number) - race_entrants.get(event, set()) if event else set(grid.driver_number)
+        starting = set(grid.driver_number[grid.status != "withdrawn"])   # a withdrawn car may have no race entry
+        unknown = starting - race_entrants.get(event, set()) if event else starting
         if event is None or unknown:
             rejected.append({"file": file, "event_key": event, "unknown_numbers": sorted(unknown)})
         else:
@@ -368,24 +374,103 @@ def starting_grids(root, sessions, entrants):
     return kept[columns].sort_values(["published_utc", "grid_position"]).reset_index(drop=True), rejected
 
 
-def grid_penalties(root, sessions):
-    """Stewards' grid penalties resolved to the race they apply to: the first race
-    starting after the decision was published ("for the next race in which the
-    driver participates" is that race when imposed during its weekend; a penalty
-    imposed in a race is published after its start, so it goes to the next one).
-    One row per decision: event_key, driver_number, places (a drop) or
-    back_of_grid, published_utc."""
-    columns = ["event_key", "season", "driver_number", "places", "back_of_grid", "session", "decision",
-               "published_utc", "doc_number"]
+SPRINT_QUALIFYING_SESSIONS = frozenset({"Sprint Shootout", "Sprint Qualifying"})
+
+
+def served_in(season, session, decision):
+    """Where a grid penalty is served: "S" (the sprint grid), "R" (the race grid),
+    "S/R" (whichever of the two comes first) or "S+R" (both: "start the Sprint and
+    the Race from the pit lane", Baku 2023). The decision's wording decides when it
+    names the session ("next Sprint/Race", "next Sprint session", "next Race", the
+    regulations' capitalised term); otherwise, from 2023, an offence in the sprint's
+    qualifying is served on the sprint grid (2024 Art. 37.4 b; "next race" in Austria
+    2023 was served in the sprint), and everything else on the race grid (in 2021-2022
+    "Sprint Qualifying" was the sprint itself, and its penalties went to the race).
+    Checked against the sprint and race grids of every 2021-2024 sprint weekend."""
+    if re.search(r"sprint\s*/\s*race", decision, re.I):
+        return "S/R"
+    if re.search(r"sprint and the race", decision, re.I):
+        return "S+R"
+    if re.search(r"\bsprint\b", decision, re.I):
+        return "S"
+    if re.search(r"\bRace\b", decision):
+        return "R"
+    if season >= 2023 and session in SPRINT_QUALIFYING_SESSIONS:
+        return "S"
+    return "R"
+
+
+FIA_EVENT_ALIASES = {"formula170thanniversarygrandprix": "70thanniversarygrandprix",
+                     "braziliangrandprix": "saopaulograndprix", "mexicangrandprix": "mexicocitygrandprix"}
+
+
+def _event_name_key(name):
+    """An event name reduced for matching: ASCII letters and digits, lower case."""
+    plain = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", plain.lower())
+
+
+def _fia_event_key(named, season, name):
+    """The event key of the FIA's event name `name` in `season` ({(season, name key):
+    event key}), through FIA_EVENT_ALIASES where the archive names it differently
+    (2021-2022 Brazil and Mexico, the 70th Anniversary GP); None if unmatched."""
+    key = _event_name_key(name)
+    return named.get((season, key), named.get((season, FIA_EVENT_ALIASES.get(key, key))))
+
+
+def grid_penalties(root, sessions, events):
+    """Stewards' grid penalties resolved to the session they are served in (`served_in`)
+    and its event. The weekend is the one the FIA filed the decision under (its
+    publication time can be days late: Russell's Mexico 2024 pit-lane start is
+    stamped three days after that race), or the next weekend for an offence in the
+    race decided after its start; within it, the first session of the served kind starting after
+    publication (the first of that kind if publication came after them all). A
+    decision cancelled and replaced by a later one ("Decision 26 is cancelled and
+    replaced by...", Belgium 2022) is dropped. One row per decision and session:
+    event_key, served ("S" or "R"), driver_number, places (a drop), back_of_grid,
+    pit_lane, published_utc."""
+    columns = ["event_key", "served", "season", "driver_number", "places", "back_of_grid", "pit_lane", "session",
+               "decision", "published_utc", "doc_number"]
     path = root / "external" / "fia" / "tables" / "grid_penalties.parquet"
     if not path.is_file():
         return pd.DataFrame(columns=columns)
     penalties = pd.read_parquet(path)
     penalties["season"] = penalties.season.astype(int)
     penalties["published_utc"] = pd.to_datetime(penalties.published_utc, utc=True)
-    races = sessions[sessions.session_type == "R"].sort_values("scheduled_start_utc")
-    after = races.scheduled_start_utc.searchsorted(penalties.published_utc, side="right")
-    penalties["event_key"] = [races.event_key.iloc[i] if i < len(races) else None for i in after]
+    for flag in ("pit_lane",):
+        penalties[flag] = penalties[flag].fillna(False).astype(bool) if flag in penalties else False
+    for number in ("fia_document", "replaces"):
+        if number not in penalties:
+            penalties[number] = pd.NA
+    replaced = {(r.season, r.event, int(r.replaces)) for r in penalties.itertuples() if pd.notna(r.replaces)}
+    penalties = penalties[[(r.season, r.event, None if pd.isna(r.fia_document) else int(r.fia_document))
+                           not in replaced for r in penalties.itertuples()]]
+    named = {(int(e.season), _event_name_key(e.event_name)): e.event_key for e in events.itertuples()}
+    starts = sessions[sessions.session_type.isin(["S", "R"])].sort_values("scheduled_start_utc")
+    race_order = list(starts[starts.session_type == "R"].event_key)
+    race_starts = starts[starts.session_type == "R"].set_index("event_key").scheduled_start_utc.to_dict()
+    rows = []
+    for row in penalties.itertuples(index=False):
+        own = _fia_event_key(named, row.season, row.event)
+        race_start = race_starts.get(own)
+        if (own is not None and not pd.isna(row.session) and row.session == "Race"
+                and (race_start is None or row.published_utc > race_start)):
+            # an offence in the race goes to the next weekend; a decision filed under the
+            # race before its start (a power unit change, Spain 2022) is served in it
+            at = race_order.index(own) if own in race_order else None
+            own = race_order[at + 1] if at is not None and at + 1 < len(race_order) else None
+        where = served_in(row.season, row.session, row.decision)
+        for kinds in (["S"], ["R"]) if where == "S+R" else [where.split("/")]:
+            pool = starts[starts.session_type.isin(kinds)]
+            if own is not None:
+                pool = pool[pool.event_key == own]
+                later = pool[pool.scheduled_start_utc > row.published_utc]
+                chosen = later if len(later) else pool
+            else:                    # not matched to an event: the first such session after publication
+                chosen = pool[pool.scheduled_start_utc > row.published_utc]
+            rows.append({**row._asdict(), "event_key": chosen.event_key.iloc[0] if len(chosen) else None,
+                         "served": chosen.session_type.iloc[0] if len(chosen) else kinds[-1]})
+    penalties = pd.DataFrame(rows, columns=list(penalties.columns) + ["event_key", "served"])
     penalties["driver_number"] = penalties.driver_number.astype(str)
     penalties["places"] = penalties.places.astype("Int64")
     return penalties[columns].sort_values("published_utc").reset_index(drop=True)
@@ -418,7 +503,7 @@ def build(root):
     history = qualifying_history(root, races, lineage)
     entries = entry_lists(root, events, driver_table, entrants, sessions)
     grids, rejected_grids = starting_grids(root, sessions, entrants)
-    penalties = grid_penalties(root, sessions)
+    penalties = grid_penalties(root, sessions, events)
     files = {}
     for name, frame in (("events", events), ("sessions", sessions), ("entrants", entrants),
                         ("drivers", driver_table), ("teams", team_table), ("circuits", circuit_table),

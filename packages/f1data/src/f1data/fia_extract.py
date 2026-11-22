@@ -18,11 +18,14 @@ document number, publication time, page):
                     footnote 1 reads "191"), so drivers are identified by name.
   starting_grids    "Provisional / Final Starting Grid" of a race (sprint grids are
                     left out): one row per grid slot, in grid order, with the grid
-                    penalties already applied; 2019 grids (and a few later ones) are
-                    images without a text layer and are reported, not guessed.
-  grid_penalties    stewards' decisions whose Decision imposes a grid penalty: the car,
-                    the session, a drop of N places or the back of the grid, and
-                    whether it is served at the driver's next event.
+                    penalties already applied, then the pit-lane starters and the
+                    cars the notes list as withdrawn (status grid / pit_lane /
+                    withdrawn); 2019 grids (and a few later ones) are images without
+                    a text layer and are reported, not guessed.
+  grid_penalties    stewards' decisions whose Decision imposes a grid penalty or a
+                    pit-lane start: the car, the session, a drop of N places, the
+                    back of the grid or the pit lane, and the decision's wording
+                    (which says where it is served).
 
 The PDFs are text-based (not scans). Layout-dependent parsers check what they
 read (row counts, value ranges) and report problems instead of guessing; a
@@ -505,21 +508,39 @@ def parse_entry_list(pdf):
 # line in the two-column layout, so pairs are searched anywhere in the text.
 GRID_PAIR = re.compile(r"(?:^|\s)(\d{1,2}) (\d{1,2}) (?=[A-Z])")
 MIN_GRID_SLOTS = 15
+PIT_LANE_HEADING = "DRIVERS REQUIRED TO START FROM THE PIT LANE"
+PIT_LANE_CAR = re.compile(r"(?m)^(\d{1,2}) (?=[A-Z])")          # "24 ZHOU Guanyu * 1:33.258"
+SECTION_END = re.compile(r"(?m)^(?:NOTES|\* ?PENALTIES)")
+WITHDRAWN = re.compile(r"Cars? ([\d ,&]+?) ?[-–�] ?Withdrawn")
 
 
 def parse_starting_grid(pdf):
-    """Rows (grid_position, raw_number) of a starting grid, in grid order. The cover
-    page is skipped; a pair counts only as the next slot (1, 2, ...) with a car not
-    yet placed, so lap times, document numbers and penalty notes are not read."""
+    """Rows (grid_position, raw_number, status) of a starting grid. Status "grid":
+    the numbered slots, in grid order; a pair counts only as the next slot (1, 2,
+    ...) with a car not yet placed, so lap times, document numbers and penalty
+    notes are not read. "pit_lane": the cars listed under the pit-lane heading, in
+    the listed order, given the slots after the grid's. "withdrawn": cars the notes
+    list as withdrawn (grid_position None). The cover page is skipped."""
     pages = pdf.pages[1:] or pdf.pages
     text = "\n".join(page.extract_text() or "" for page in pages)
+    grid_text, _, rest = text.partition(PIT_LANE_HEADING)
     rows, seen = [], set()
-    for slot, car in GRID_PAIR.findall(text):
+    for slot, car in GRID_PAIR.findall(grid_text):
         if int(slot) == len(rows) + 1 and car not in seen:
-            rows.append({"grid_position": int(slot), "raw_number": car})
+            rows.append({"grid_position": int(slot), "raw_number": car, "status": "grid"})
             seen.add(car)
     if len(rows) < MIN_GRID_SLOTS:
         raise ExtractionProblem(f"starting grid: only {len(rows)} slots read (no text layer?)")
+    end = SECTION_END.search(rest)
+    for car in PIT_LANE_CAR.findall(rest[:end.start()] if end else rest):
+        if car not in seen:
+            rows.append({"grid_position": len(rows) + 1, "raw_number": car, "status": "pit_lane"})
+            seen.add(car)
+    for cars in WITHDRAWN.findall(text):
+        for car in re.findall(r"\d{1,2}", cars):
+            if car not in seen:
+                rows.append({"grid_position": None, "raw_number": car, "status": "withdrawn"})
+                seen.add(car)
     return rows
 
 
@@ -530,16 +551,22 @@ NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, 
                 "ten": 10, "fifteen": 15, "twenty": 20}
 PLACES = re.compile(r"(\d+|" + "|".join(NUMBER_WORDS) + r")[\s-]*(?:grid\s+)?(?:place|position)s?\b"
                     r"|(?:drop|penalty) of (\d+|" + "|".join(NUMBER_WORDS) + r") grid", re.I)
-BACK_OF_GRID = re.compile(r"(?:back|rear) of the (?:starting )?grid", re.I)
+BACK_OF_GRID = re.compile(r"(?:back|rear) of the (?:starting )?grid|behind (?:any|all) other classified drivers?", re.I)
+DOCUMENT_NUMBER = re.compile(r"\bDocument\s+(\d+)\b")
+REPLACES = re.compile(r"\bDecision\s+(\d+)\s+is\s+cancelled", re.I)
 
 
 def parse_grid_penalty(text):
-    """{driver_number, session, decision, places, back_of_grid, next_event} of a
-    stewards' decision whose Decision field imposes a grid penalty; None otherwise
-    (no Decision field, no grid penalty in it, or no car number)."""
+    """{driver_number, session, decision, places, back_of_grid, pit_lane, next_event,
+    fia_document, replaces} of a stewards' decision whose Decision field imposes a
+    grid penalty, the back of the grid ("behind any other classified driver" from
+    2023) or a pit-lane start; None otherwise (no Decision field, none of these in it,
+    or no car number). fia_document: the document's number at its event; replaces:
+    the number of the decision it cancels and replaces, if any."""
     field = DECISION_FIELD.search(text)
     decision = re.sub(r"\s+", " ", field.group(1)).strip() if field else ""
-    if not re.search(r"\bgrid\b", decision, re.I):
+    pit_lane = bool(re.search(r"start\b.*\bfrom the pit ?lane", decision, re.I))
+    if not re.search(r"\bgrid\b", decision, re.I) and not pit_lane and not BACK_OF_GRID.search(decision):
         return None
     car = re.search(r"No\s*/\s*Driver\s+(\d{1,2})\b", text)
     if car is None:
@@ -550,9 +577,12 @@ def parse_grid_penalty(text):
     if places:
         word = (places.group(1) or places.group(2)).lower()
         count = int(word) if word.isdigit() else NUMBER_WORDS[word]
+    number, replaces = DOCUMENT_NUMBER.search(text), REPLACES.search(decision)
     return {"driver_number": car.group(1), "session": session.group(1).strip() if session else None,
             "decision": decision, "places": count, "back_of_grid": bool(BACK_OF_GRID.search(decision)),
-            "next_event": bool(re.search(r"\bnext\b", decision, re.I))}
+            "pit_lane": pit_lane, "next_event": bool(re.search(r"\bnext\b", decision, re.I)),
+            "fia_document": int(number.group(1)) if number else None,
+            "replaces": int(replaces.group(1)) if replaces else None}
 
 
 # ---------------------------------------------------------------- driver

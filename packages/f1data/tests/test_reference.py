@@ -113,3 +113,39 @@ def test_starting_grid_slots_are_read_in_order_from_the_two_column_layout():
     assert rows[0]["raw_number"] == "1" and rows[1]["raw_number"] == "22"
     with pytest.raises(ExtractionProblem):
         parse_starting_grid(SimpleNamespace(pages=[cover, SimpleNamespace(extract_text=lambda: "")]))
+
+
+def test_pit_lane_starters_and_withdrawals_keep_their_status():
+    """Singapore 2023's final grid: Zhou from the pit lane, Stroll withdrawn."""
+    from types import SimpleNamespace
+    from f1data.fia_extract import parse_starting_grid
+    lines = ["Doc 40 Time 18:00"]
+    for slot in range(1, 19):
+        lines += [f"{slot} {slot + 40} Driver NAME{slot} 1:31.{slot:03d}", "Some Team"]
+    lines += ["DRIVERS REQUIRED TO START FROM THE PIT LANE", "24 ZHOU Guanyu * 1:33.258", "Alfa Romeo F1 Team Stake",
+              "NOTES", "Car 18 - Withdrawn", "* PENALTIES", "Car 24 - Required to start from the pit lane - x"]
+    cover = SimpleNamespace(extract_text=lambda: "cover")
+    rows = parse_starting_grid(SimpleNamespace(pages=[cover, SimpleNamespace(extract_text=lambda: "\n".join(lines))]))
+    assert [r["status"] for r in rows] == ["grid"] * 18 + ["pit_lane", "withdrawn"]
+    assert rows[18] == {"grid_position": 19, "raw_number": "24", "status": "pit_lane"}
+    assert rows[19]["raw_number"] == "18" and rows[19]["grid_position"] is None
+
+
+def test_grid_penalties_are_served_where_the_decision_says():
+    from f1data.reference import served_in
+    # Miami 2024, Bottas: sprint qualifying offence, served on the sprint grid
+    assert served_in(2024, "Sprint Qualifying", "Drop of 3 grid positions for the next Sprint session in which "
+                     "the driver participates per Article 37.4 b).") == "S"
+    # Austin 2024, Zhou: sprint qualifying offence, but the decision names the Race
+    assert served_in(2024, "Sprint Qualifying", "Drop of 5 grid positions for the next Race in which the driver "
+                     "participates.") == "R"
+    # Austria 2023, Leclerc: shootout offence, "next race" (served in the sprint)
+    assert served_in(2023, "Sprint Shootout", "Drop of 3 grid positions for the next race in which the driver "
+                     "participates.") == "S"
+    assert served_in(2023, "Sprint Shootout", "Drop of 3 grid positions for the next Sprint/Race in which the "
+                     "driver participates.") == "S/R"
+    assert served_in(2023, "Sprint Shootout", "Required to start the Sprint and the Race from the pit lane.") == "S+R"
+    # 2021 "Sprint Qualifying" was the sprint itself: its penalties went to the race
+    assert served_in(2021, "Sprint Qualifying", "Drop of 3 grid positions.") == "R"
+    assert served_in(2024, "Qualifying", "Drop of 3 grid positions for the next race in which the driver "
+                     "participates.") == "R"
