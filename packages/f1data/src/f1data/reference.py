@@ -368,6 +368,29 @@ def starting_grids(root, sessions, entrants):
     return kept[columns].sort_values(["published_utc", "grid_position"]).reset_index(drop=True), rejected
 
 
+def grid_penalties(root, sessions):
+    """Stewards' grid penalties resolved to the race they apply to: the first race
+    starting after the decision was published ("for the next race in which the
+    driver participates" is that race when imposed during its weekend; a penalty
+    imposed in a race is published after its start, so it goes to the next one).
+    One row per decision: event_key, driver_number, places (a drop) or
+    back_of_grid, published_utc."""
+    columns = ["event_key", "season", "driver_number", "places", "back_of_grid", "session", "decision",
+               "published_utc", "doc_number"]
+    path = root / "external" / "fia" / "tables" / "grid_penalties.parquet"
+    if not path.is_file():
+        return pd.DataFrame(columns=columns)
+    penalties = pd.read_parquet(path)
+    penalties["season"] = penalties.season.astype(int)
+    penalties["published_utc"] = pd.to_datetime(penalties.published_utc, utc=True)
+    races = sessions[sessions.session_type == "R"].sort_values("scheduled_start_utc")
+    after = races.scheduled_start_utc.searchsorted(penalties.published_utc, side="right")
+    penalties["event_key"] = [races.event_key.iloc[i] if i < len(races) else None for i in after]
+    penalties["driver_number"] = penalties.driver_number.astype(str)
+    penalties["places"] = penalties.places.astype("Int64")
+    return penalties[columns].sort_values("published_utc").reset_index(drop=True)
+
+
 def build(root):
     """Rebuild every reference table from the archive. Returns the manifest."""
     out = root / "reference"
@@ -395,10 +418,12 @@ def build(root):
     history = qualifying_history(root, races, lineage)
     entries = entry_lists(root, events, driver_table, entrants, sessions)
     grids, rejected_grids = starting_grids(root, sessions, entrants)
+    penalties = grid_penalties(root, sessions)
     files = {}
     for name, frame in (("events", events), ("sessions", sessions), ("entrants", entrants),
                         ("drivers", driver_table), ("teams", team_table), ("circuits", circuit_table),
-                        ("qualifying_history", history), ("entry_lists", entries), ("starting_grids", grids)):
+                        ("qualifying_history", history), ("entry_lists", entries), ("starting_grids", grids),
+                        ("grid_penalties", penalties)):
         files[name] = write_table(frame, out / f"{name}.parquet", {})
     gaps = unresolved(entrants)
     manifest = {
@@ -417,6 +442,7 @@ def build(root):
                         "unresolved_names": sorted(set(entries.driver_name[entries.driver_id.isna()])),
                         "unmatched_events": int(entries.event_key.isna().sum())},
         "starting_grids": {"rows": len(grids), "events": int(grids.event_key.nunique()), "rejected": rejected_grids},
+        "grid_penalties": {"rows": len(penalties), "unmatched_events": int(penalties.event_key.isna().sum())},
         "note": "Unresolved entrants keep empty IDs.",
     }
     atomic_json(out / "manifest.json", manifest)

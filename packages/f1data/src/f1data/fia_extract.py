@@ -20,6 +20,9 @@ document number, publication time, page):
                     left out): one row per grid slot, in grid order, with the grid
                     penalties already applied; 2019 grids (and a few later ones) are
                     images without a text layer and are reported, not guessed.
+  grid_penalties    stewards' decisions whose Decision imposes a grid penalty: the car,
+                    the session, a drop of N places or the back of the grid, and
+                    whether it is served at the driver's next event.
 
 The PDFs are text-based (not scans). Layout-dependent parsers check what they
 read (row counts, value ranges) and report problems instead of guessing; a
@@ -520,6 +523,38 @@ def parse_starting_grid(pdf):
     return rows
 
 
+# ---------------------------------------------------------------- grid penalties
+
+DECISION_FIELD = re.compile(r"\nDecision\s+(.*?)(?:\nReason\b|$)", re.S)
+NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                "ten": 10, "fifteen": 15, "twenty": 20}
+PLACES = re.compile(r"(\d+|" + "|".join(NUMBER_WORDS) + r")[\s-]*(?:grid\s+)?(?:place|position)s?\b"
+                    r"|(?:drop|penalty) of (\d+|" + "|".join(NUMBER_WORDS) + r") grid", re.I)
+BACK_OF_GRID = re.compile(r"(?:back|rear) of the (?:starting )?grid", re.I)
+
+
+def parse_grid_penalty(text):
+    """{driver_number, session, decision, places, back_of_grid, next_event} of a
+    stewards' decision whose Decision field imposes a grid penalty; None otherwise
+    (no Decision field, no grid penalty in it, or no car number)."""
+    field = DECISION_FIELD.search(text)
+    decision = re.sub(r"\s+", " ", field.group(1)).strip() if field else ""
+    if not re.search(r"\bgrid\b", decision, re.I):
+        return None
+    car = re.search(r"No\s*/\s*Driver\s+(\d{1,2})\b", text)
+    if car is None:
+        return None
+    session = re.search(r"\nSession\s+(.+)", text)
+    places = PLACES.search(decision)
+    count = None
+    if places:
+        word = (places.group(1) or places.group(2)).lower()
+        count = int(word) if word.isdigit() else NUMBER_WORDS[word]
+    return {"driver_number": car.group(1), "session": session.group(1).strip() if session else None,
+            "decision": decision, "places": count, "back_of_grid": bool(BACK_OF_GRID.search(decision)),
+            "next_event": bool(re.search(r"\bnext\b", decision, re.I))}
+
+
 # ---------------------------------------------------------------- driver
 
 def kind_of(entry):
@@ -537,6 +572,8 @@ def kind_of(entry):
         return "entry_lists"
     if entry["category"] == "starting_grid" and "sprint" not in title and "infringement" not in title:
         return "starting_grids"
+    if entry["category"] in ("decision", "infringement"):   # "Offence - Car N" to 2022, "Infringement - Car N" from 2023
+        return "grid_penalties"
     return None
 
 
@@ -558,7 +595,8 @@ def extract(root, seasons=None, kinds=None):
     """Parse every document of the known kinds (or only `kinds`) into tables/."""
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))["files"]
     tables = {"pu_usage": [], "rnc_usage": [], "car_updates": [], "car_updates_none": [], "tyre_nominations": [],
-              "entry_lists": [], "starting_grids": []}
+              "entry_lists": [], "starting_grids": [],
+              "grid_penalties": []}
     problems, counts, applied = [], {}, 0
     corrections = load_corrections()
     for key, entry in sorted(manifest.items()):
@@ -607,6 +645,11 @@ def extract(root, seasons=None, kinds=None):
                 with pdfplumber.open(root / key) as pdf:
                     tables["starting_grids"] += [{**source, "grid_kind": grid_kind, **row}
                                                  for row in parse_starting_grid(pdf)]
+            if kind == "grid_penalties":
+                with pdfplumber.open(root / key) as pdf:
+                    penalty = parse_grid_penalty("\n".join(page.extract_text() or "" for page in pdf.pages))
+                if penalty is not None:
+                    tables["grid_penalties"].append({**source, **penalty})
             counts[kind] = counts.get(kind, 0) + 1
         except (ExtractionProblem, ValueError, KeyError) as error:
             problems.append({"file": key, "kind": kind, "error": str(error)})

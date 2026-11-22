@@ -1264,3 +1264,37 @@ def test_grid_models_change_only_the_grid_they_read():
     assert [c.name for c in model.components] == ["race:v3ffnps5g", "race:v1aps5g"]
     assert all(c.published_grid for c in model.components)
     assert not any(c.published_grid for c in reg["race_mix3ffnps51aps5"]().components)
+
+
+def test_grid_penalties_drop_cars_and_send_others_to_the_back():
+    from predictor.race import apply_grid_penalties
+    drivers = ["1", "2", "3", "4", "5"]
+    qualifying = np.array([[1, 2, 3, 4, 5], [5, 4, 3, 2, 1]])
+    # car 1 drops 2 places, car 3 goes to the back
+    after = apply_grid_penalties(qualifying, drivers, {"1": (2, False), "3": (0, True)})
+    assert after[0].tolist() == [2, 1, 5, 3, 4]          # 2, 1 (behind car 3, who leaves for the back), 4, 5, 3
+    assert after[1].tolist() == [4, 3, 5, 2, 1]          # 5, 4, 2, 1 (dropped past the end), then 3
+    assert apply_grid_penalties(qualifying, drivers, {}).tolist() == qualifying.tolist()
+
+
+def test_known_penalties_are_those_published_by_the_cutoff(tmp_path):
+    from predictor.race import known_penalties
+    (tmp_path / "reference").mkdir()
+    pd.DataFrame({"event_key": ["2023-02", "2023-02", "2023-02", "2023-03"], "driver_number": ["16", "16", "4", "1"],
+                  "places": pd.array([10, 5, None, 3], dtype="Int64"), "back_of_grid": [False, False, True, False],
+                  "published_utc": pd.to_datetime(["2023-03-17 16:51", "2023-03-18 12:00", "2023-03-18 20:00",
+                                                   "2023-03-17 10:00"], utc=True)}).to_parquet(
+        tmp_path / "reference" / "grid_penalties.parquet")
+    view = lambda t: types.SimpleNamespace(archive=types.SimpleNamespace(root=tmp_path), cutoff=pd.Timestamp(t, tz="UTC"))
+    assert known_penalties(view("2023-03-17 12:00"), "2023-02") == {}
+    assert known_penalties(view("2023-03-18 13:00"), "2023-02") == {"16": (15, False)}
+    assert known_penalties(view("2023-03-19 13:00"), "2023-02") == {"16": (15, False), "4": (0, True)}
+
+
+def test_penalty_models_set_both_grid_flags():
+    from predictor import evaluation
+    reg = evaluation.model_registry()
+    for key, name in (("race_mix3ffnps51aps5k", "race:mix3ffnps51aps5k"), ("race_mix3fwp2apk", "race:mix3fwp2apk")):
+        model = reg[key]()
+        assert model.name == name
+        assert all(c.published_grid and c.known_penalties and c.name.endswith("k") for c in model.components)

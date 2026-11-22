@@ -15,7 +15,10 @@ come from the historical rate (`baselines.RetirementModel`), as for the baseline
   (`pace.knockout_positions`), so a driver fast in qualifying is fast in the race
   in the same draw. With `published_grid` (stage 4), the latest FIA starting grid
   published by the cutoff (grid penalties applied; `published_grid_at`) replaces
-  the qualifying order once it is out; grid penalties are not forecast before it.
+  the qualifying order once it is out. With `known_penalties`, until then the grid
+  penalties the stewards have published by the cutoff for this race are applied to
+  the qualifying order, or to each simulated grid (`apply_grid_penalties`); grid
+  penalties not yet decided are not forecast.
 - **kappa, sigma.** kappa is what a grid slot is worth in pace units (% of a lap):
   0 lets the race pace alone decide, a large kappa freezes the grid. sigma is race
   noise beyond the pace model's (starts, strategy, incidents). Both are fitted per
@@ -96,6 +99,53 @@ def published_grid_at(view, example):
     return _slots(dict(zip(latest.driver_number, latest.grid_position)), example.driver_numbers)
 
 
+@functools.lru_cache(maxsize=4)
+def grid_penalty_table(root):
+    """The reference table of stewards' grid penalties under data root `root` (empty
+    if not built): event_key (the race served), driver_number, places, back_of_grid,
+    published_utc."""
+    path = root / "reference" / "grid_penalties.parquet"
+    if not path.is_file():
+        return pd.DataFrame(columns=["event_key", "driver_number", "places", "back_of_grid", "published_utc"])
+    table = pd.read_parquet(path)
+    table["published_utc"] = pd.to_datetime(table.published_utc, utc=True)
+    table["driver_number"] = table.driver_number.astype(str)
+    return table
+
+
+def known_penalties(view, event_key):
+    """{driver number: (places dropped, back of the grid)} from the grid penalties for
+    `event_key`'s race published by the view's cutoff (drops add up)."""
+    table = grid_penalty_table(view.archive.root)
+    rows = table[(table.event_key == event_key) & (table.published_utc <= view.cutoff)]
+    penalties = {}
+    for row in rows.itertuples():
+        places, back = penalties.get(row.driver_number, (0, False))
+        places += 0 if pd.isna(row.places) else int(row.places)
+        penalties[row.driver_number] = (places, back or bool(row.back_of_grid))
+    return penalties
+
+
+def apply_grid_penalties(slots, driver_numbers, penalties):
+    """Grid slots (draws x entrants, 1 = pole) after `penalties` ({driver: (places,
+    back of the grid)}): a dropped car goes behind the car qualified `places` slots
+    behind it, cars sent to the back line up behind everyone else in qualifying
+    order. Reproduces 85% of the 2020-2024 provisional grids exactly from qualifying
+    and the decisions published before them (51% without the penalties)."""
+    slots = np.atleast_2d(slots).astype(float)
+    key = slots.copy()
+    for i, number in enumerate(driver_numbers):
+        places, back = penalties.get(str(number), (0, False))
+        if back:
+            key[:, i] = 1000 + slots[:, i]
+        elif places:
+            key[:, i] = slots[:, i] + places + 0.5
+    order = np.argsort(key, axis=1, kind="stable")
+    out = np.empty_like(slots)
+    out[np.arange(len(slots))[:, None], order] = np.arange(1, slots.shape[1] + 1)
+    return out
+
+
 def grid_at(view, example):
     """Grid slots (1 = pole) of the example's entrants from the session that sets the
     race grid, if it is classified at the cutoff; None otherwise. An entrant missing
@@ -119,6 +169,7 @@ class RaceModel:
         self.overtaking = overtaking
         self.detailed_retirements = detailed_retirements
         self.published_grid = False  # True: the published starting grid replaces the qualifying order once out
+        self.known_penalties = False  # True: grid penalties published by the cutoff applied until then
         self._passes = {}           # race session -> race_passes(...)
         self.retirements = DetailedRetirements() if detailed_retirements else RetirementModel()
         self.settings = {}          # (season, cutoff label) -> {"kappa", "sigma", "rps", ...}
@@ -160,11 +211,16 @@ class RaceModel:
             noise /= np.sqrt(np.random.default_rng([seed, 5]).chisquare(dof, (count, 1)) / dof)
         race = race + noise
         grid = published_grid_at(view, example) if self.published_grid else None
-        if grid is None:
-            grid = grid_at(view, example)
+        if grid is not None:
+            return race, np.atleast_2d(grid).astype(float)
+        grid = grid_at(view, example)
         if grid is None:
             grid = knockout_positions(qualifying, pace.hyper.noise["Q"], np.random.default_rng([seed, 6]), dof=dof,
                                       scale_rng=np.random.default_rng([seed, 7]))
+        if self.known_penalties:
+            penalties = known_penalties(view, example.event_key)
+            if penalties:
+                grid = apply_grid_penalties(grid, example.driver_numbers, penalties)
         return race, np.atleast_2d(grid).astype(float)
 
     def difficulty(self, view, example):

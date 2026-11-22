@@ -133,16 +133,18 @@ def _race_model(pace, name, simulated=False, **options):
     return RaceModel(model_registry()[pace](), name, **options)
 
 
-def _published_grid(key):
-    """Registry model `key` (a race model or a mixture of them) reading the published
-    starting grid once it is out (race.published_grid_at); "g" ends its name and its
-    components' names."""
+def _grid_input(key, suffix, **flags):
+    """Registry model `key` (a race model or a mixture of them) with the grid flags of
+    race.RaceModel set on it and its components (`published_grid`: the published
+    starting grid once out; `known_penalties`: published grid penalties applied until
+    then); `suffix` ends its name and its components' names."""
     model = model_registry()[key]()
     for part in getattr(model, "components", [model]):
-        part.published_grid = True
+        for flag, value in flags.items():
+            setattr(part, flag, value)
         if part is not model:
-            part.name += "g"
-    model.name += "g"
+            part.name += suffix
+    model.name += suffix
     return model
 
 
@@ -461,8 +463,11 @@ def model_registry():
                                             neutralisations=True, weekend_lap=True, detailed_retirements=True,
                                             strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                             team_wear=True, lap_effect_wear=True),
-            # stage 4: the champion after qualifying reading the published starting grid
-            "race_mix3ffnps51aps5g": lambda: _published_grid("race_mix3ffnps51aps5"),
+            # stage 4: the champions reading the published starting grid (g) and published grid penalties (k)
+            "race_mix3ffnps51aps5g": lambda: _grid_input("race_mix3ffnps51aps5", "g", published_grid=True),
+            "race_mix3ffnps51aps5k": lambda: _grid_input("race_mix3ffnps51aps5", "k", published_grid=True,
+                                                         known_penalties=True),
+            "race_mix3fwp2apk": lambda: _grid_input("race_mix3fwp2ap", "k", published_grid=True, known_penalties=True),
             "race_mix3ffnp1ap": lambda: ForecastMixture(["race3ffnp", "race1ap"], [0.5, 0.5], "race:mix3ffnp1ap"),
             "race_mix3fwp2ap": lambda: ForecastMixture(["race3fwp", "race2ap"], [0.5, 0.5], "race:mix3fwp2ap"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
