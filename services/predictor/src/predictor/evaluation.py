@@ -200,6 +200,18 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrp", "after_session": "pace3wrqwtrp",
 # noise, 15+ -0.000256 (better), 2024 -0.00037: promoted. Before the weekend
 # race:mix3fwps52aps5 +0.000071 (noise), outcome and winner log loss worse beyond noise:
 # not adopted. On qualifying it was not adopted at either cutoff (15+ worse).
+# Rerun with the corrected scale (2026-11-22, split-driver measurement, about 7 in
+# place of 4.4): after qualifying race:mix3ffnps51aps5 -0.000340 [-0.000519,
+# -0.000162], winner better beyond noise, 15+ -0.00043 (better), 2024 -0.00067:
+# confirmed. Before the weekend race:mix3fwps52aps5 -0.000013 (noise), outcome and
+# winner log loss worse beyond noise: not adopted. Five clean laps admitted with the
+# independent-lap covariance only (no scale; race:mix3ffnpm51apm5, mix3fwpm52apm5):
+# +0.000032 (noise, winner worse) after qualifying, +0.000146 (worse) before the
+# weekend: not adopted. Qualifying: after the session every stint-scale variant is
+# worse beyond noise (v3wruqwt-rps +0.000045) and admission alone (v3wrqwt-rpm5,
+# +0.000026) is worse at 15+; before the weekend v3wruqwt-rps is level (-0.000010,
+# 15+ noise, 2024 -0.000018, winner log loss better beyond noise): not adopted, the
+# tie-break left to the owner.
 RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2ap", "after_session": "race_mix3ffnps51aps5"}
 
 
