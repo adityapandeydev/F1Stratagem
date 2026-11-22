@@ -200,6 +200,16 @@ def test_race_champions_route_by_forecast_moment():
     assert router.models[router.route(after)].name == "race:mix3ffnps51aps5"
 
 
+def test_qualifying_champions_route_by_forecast_moment_and_condition():
+    from predictor.evaluation import CHAMPIONS, ChampionRouter
+    router = ChampionRouter(CHAMPIONS)
+    moment = lambda label, condition="dry": types.SimpleNamespace(cutoff_label=label, condition=condition)
+    assert router.models[router.route(moment("pre_weekend"))].name == "pace:v3wruqwt-rps"
+    assert router.models[router.route(moment("last"))].name == "pace:v3wrqwt-rp"
+    assert router.models[router.route(moment("pre_weekend", "wet"))].name == "pace:v3wrqwt-rpc"
+    assert router.models[router.route(moment("last", "wet"))].name == "pace:v3wrqwt-rpc"
+
+
 def test_the_battle_model_can_read_forecast_pace_differences():
     from predictor.race import BATTLE_DRAWS, SimulatedRace
     model = SimulatedRace.__new__(SimulatedRace)

@@ -155,7 +155,7 @@ def _race_model(pace, name, simulated=False, **options):
 # +0.000003 [-0.000026, +0.000036] after the session, +0.000027 [-0.000021, +0.000078]
 # before (90% bootstrap, 3 batches): level, kept as a tie so every forecast reads race
 # pace the same way.
-CHAMPIONS = {"pre_weekend": "pace3wrqwtrp", "after_session": "pace3wrqwtrp",
+CHAMPIONS = {"pre_weekend": "pace3wrqwtrps", "after_session": "pace3wrqwtrp",
              "pre_weekend_wet": "pace3wrqwtcrp", "after_session_wet": "pace3wrqwtcrp"}
 
 # Race champions (2019-24, 128 races, RPS against race:v1a). Before the weekend the
@@ -211,7 +211,9 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrp", "after_session": "pace3wrqwtrp",
 # worse beyond noise (v3wruqwt-rps +0.000045) and admission alone (v3wrqwt-rpm5,
 # +0.000026) is worse at 15+; before the weekend v3wruqwt-rps is level (-0.000010,
 # 15+ noise, 2024 -0.000018, winner log loss better beyond noise): not adopted, the
-# tie-break left to the owner.
+# tie-break left to the owner; adopted by the owner (2026-11-22) as a tie: the forecast
+# made before the weekend reads race pace with its measured uncertainty, as the race
+# forecast after qualifying does. The wet champion is unchanged (scale measured dry).
 RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2ap", "after_session": "race_mix3ffnps51aps5"}
 
 
