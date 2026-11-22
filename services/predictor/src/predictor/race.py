@@ -153,7 +153,7 @@ def known_penalties(view, event_key, served="R"):
 def withdraw(final, outcomes, withdrawn, example):
     """(final positions, outcomes) with the `withdrawn` entrants moved behind everyone,
     the others moved up, and the finishers' outcomes (win, points) read again from
-    their new positions; a withdrawn entrant's outcome is left as drawn (unscored)."""
+    their new positions; a withdrawn entrant does not start (incident_or_other, unscored)."""
     draws, n = final.shape
     key = final + withdrawn[None, :] * (n + 1)
     order = np.argsort(key, axis=1, kind="stable")
@@ -163,7 +163,8 @@ def withdraw(final, outcomes, withdrawn, example):
     paying = points_positions(example.season, example.session_type)
     again = np.where(moved == 1, OUTCOMES.index("win"),
                      np.where(moved <= paying, OUTCOMES.index("other_points"), OUTCOMES.index("outside_points")))
-    return moved, np.where(finished & ~withdrawn[None, :], again, outcomes)
+    outcomes = np.where(finished, again, outcomes)
+    return moved, np.where(withdrawn[None, :], OUTCOMES.index("incident_or_other"), outcomes)
 
 
 def grid_at(view, example):

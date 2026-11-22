@@ -1273,6 +1273,8 @@ def test_withdrawn_entrants_finish_behind_everyone_and_free_their_places():
     moved, again = withdraw(final, outcomes, np.array([True, False, False, False]), example)
     assert moved.tolist() == [[4, 1, 2, 3], [4, 1, 3, 2]]
     assert again[0, 1] == win and again[1, 1] == win and again[1, 2] == mech
+    # the withdrawn car drawn as the winner does not start: no win left on it
+    assert (again[:, 0] == OUTCOMES.index("incident_or_other")).all()
 
 
 def test_grid_models_change_only_the_grid_they_read():
