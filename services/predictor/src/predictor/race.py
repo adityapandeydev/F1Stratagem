@@ -380,6 +380,14 @@ class RaceModel:
         if not earlier:
             self.settings[(season, cutoff)] = {**self.neutral(), "rps": None, "races": 0}
             return
+        previous = self.settings.get((season - 1, cutoff))
+        if previous is None and self.stable_fit and self.keeps_previous and any(
+                e.season < season - 1 for e in earlier):
+            # last season's settings could have been fitted but are not here (a run started
+            # at a later season, or restarted): choosing without them would silently switch
+            # to the plain lowest mean, so refuse instead (before the costly search)
+            raise RuntimeError(f"{self.name}: the {season - 1} settings at '{cutoff}' are needed to choose "
+                               f"{season}'s (fit the seasons in order from the first)")
         prepared = []
         for example in earlier:
             key = (example.event_key, example.cutoff_label, season)
@@ -397,14 +405,6 @@ class RaceModel:
                 per_race.append(score(forecast, example)["rps"])
             surface.append((setting, per_race))
         means = np.array([np.mean(r) for _, r in surface])
-        previous = self.settings.get((season - 1, cutoff))
-        if previous is None and self.stable_fit and self.keeps_previous and any(
-                e.season < season - 1 for e in earlier):
-            # last season's settings could have been fitted but are not here (a run started
-            # at a later season, or restarted): choosing without them would silently switch
-            # to the plain lowest mean, so refuse instead
-            raise RuntimeError(f"{self.name}: the {season - 1} settings at '{cutoff}' are needed to choose "
-                               f"{season}'s (fit the seasons in order from the first)")
         chosen = self._choose(surface, means, previous)
         best = (float(means[chosen]), surface[chosen][0])
         # every candidate's RPS per earlier race (diagnosis of the settings fit; not saved)

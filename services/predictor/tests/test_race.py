@@ -1516,10 +1516,12 @@ def test_a_missing_previous_season_is_refused_not_silently_replaced():
         races = lambda *seasons: [types.SimpleNamespace(season=s, cutoff_label="last", event_key=f"{s}-01",
                                                         session_type="R") for s in seasons]
         model._history = races(2018, 2019)
+        searched = []
+        model.candidates = lambda: searched.append(1) or iter([{"kappa": 0.05, "sigma": 0.6}])
         model._fit_season(2020, "last")              # 2018's races exist, so 2019's settings were fittable
         raise AssertionError("expected a refusal")
     except RuntimeError as error:
-        assert "2019" in str(error)
+        assert "2019" in str(error) and not searched  # refused before the costly candidate search
     finally:
         ev.score = score
     try:
