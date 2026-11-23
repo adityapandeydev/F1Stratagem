@@ -1434,3 +1434,22 @@ def test_settings_can_be_fitted_without_the_grid_inputs():
     from predictor import evaluation
     kx = evaluation.model_registry()["race_mix3ffnps51aps5kx"]()
     assert all(c.known_penalties and c.published_grid and not c.grid_inputs_in_fit for c in kx.components)
+
+
+def test_keyed_draws_keep_every_other_event_when_only_stop_timing_changes():
+    from predictor import race_sim
+    # identical cars, no tyre wear, a negligible pit loss (stops only happen with a loss
+    # above zero; two zero cost residuals, so each stop still draws a number): moving the
+    # stops changes nothing real, so with keyed random numbers every order stays the same
+    pace, grid = np.zeros((300, 8)), np.arange(1, 9, dtype=float)[None]
+    model = race_sim.PassModel()
+    model.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    run = lambda stint, keyed: race_sim.simulate(
+        pace, grid, model, 0.0, 40, 90.0, 0.3, np.random.default_rng(1), keyed=keyed, with_stops=True,
+        strategy={"pit_loss": 1e-9, "stops": 1.6, "wear": 0.0, "sc_ratio": 1.0, "residuals": np.array([0.0, 0.0]),
+                  "stint_noise": stint})
+    keyed = run(0.0, True)
+    assert keyed[1].mean() > 1                                       # the cars do stop
+    assert np.array_equal(keyed[0], run(3.0, True)[0])
+    sequential = (run(0.0, False)[0] != run(3.0, False)[0]).any(axis=1)
+    assert sequential.mean() > 0.9                                   # the sequential stream shifts

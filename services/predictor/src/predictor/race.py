@@ -37,6 +37,7 @@ rate by PASS_PRIOR_RACES races' worth of it; a circuit without history gets the
 typical rate. gamma is fitted with kappa and sigma (0 is stage 1a).
 """
 import functools
+import zlib
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,11 @@ KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
 DRAWS = 10000
 FIT_DRAWS = 1000
+# The simulator's random numbers keyed by (draw, purpose, lap, car) so candidate settings
+# share their scenarios, and settings fitted on seeds of their own (`fit_seed`); False:
+# the sequential stream and the forecast seeds (the fits before 2026-11-23, for comparison).
+KEYED = True
+FIT_SEEDS = True
 GRID_FROM_SPRINT = frozenset({2021, 2022})   # seasons whose sprint set the race grid
 GAMMAS = (0.0, 0.5, 1.0, 1.5, 2.0)
 PASS_PRIOR_RACES = 1.0      # weight of the typical pass rate in a circuit's, in races
@@ -358,7 +364,7 @@ class RaceModel:
         if not self.grid_inputs_in_fit:
             self.published_grid = self.known_penalties = False
         try:
-            return (*self.draws(view, example, FIT_DRAWS, seed_for(example)), self.start_context(view, example))
+            return (*self.draws(view, example, FIT_DRAWS, fit_seed(example)), self.start_context(view, example))
         finally:
             self.published_grid, self.known_penalties = saved
 
@@ -377,17 +383,21 @@ class RaceModel:
                 view = self._view_for(example)
                 self._draws[key] = self._fit_inputs(view, example)
             prepared.append((example, *self._draws[key]))
-        best = None
+        best, surface = None, []
         for setting in self.candidates():
-            total = 0.0
+            per_race = []
             for example, race, grid, context in prepared:
-                seed = seed_for(example)
+                seed = fit_seed(example)
                 forecast = self.forecast(example, self.run(race, grid, setting, context, seed), seed, {},
                                          context.get("withdrawn"))
-                total += score(forecast, example)["rps"]
-            rps = total / len(prepared)
+                per_race.append(score(forecast, example)["rps"])
+            rps = float(np.mean(per_race))
+            surface.append((setting, per_race))
             if best is None or rps < best[0]:
                 best = (rps, setting)
+        # every candidate's RPS per earlier race (diagnosis of the settings fit; not saved)
+        self.fit_surface = {**getattr(self, "fit_surface", {}),
+                            (season, cutoff): ([e.event_key for e, *_ in prepared], surface)}
         self.settings[(season, cutoff)] = {**best[1], "rps": best[0], "races": len(prepared)}
         self._draws = {}             # tied to this season's pace settings
 
@@ -421,6 +431,13 @@ class RaceModel:
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
             **({"retire_factors": dict(zip(("incident", "mechanical"), map(list, self.retirements.chances(example))))}
                if self.detailed_retirements else {})}, withdrawn)
+
+
+def fit_seed(example):
+    """Random seed of an earlier race when settings are fitted on it: its own, apart
+    from the seed of its forecast (`seed_for`), so a fit is not tuned to the draws
+    the race is later scored with; shared by every candidate setting (paired)."""
+    return zlib.crc32(f"fit|{seed_for(example)}".encode()) if FIT_SEEDS else seed_for(example)
 
 
 def scheduled_laps(earlier, layout):
@@ -839,7 +856,7 @@ class SimulatedRace(RaceModel):
                 continue
             ahead = pairs.ahead.map(column).to_numpy(int)
             behind = pairs.behind.map(column).to_numpy(int)
-            pick = np.random.default_rng([seed_for(example), 11]).integers(0, len(race), (len(pairs), BATTLE_DRAWS))
+            pick = np.random.default_rng([fit_seed(example), 11]).integers(0, len(race), (len(pairs), BATTLE_DRAWS))
             delta = (race[pick, behind[:, None]] - race[pick, ahead[:, None]]) * pairs.lap.to_numpy(float)[:, None] / 100
             parts.append(pd.DataFrame({"gap": np.repeat(pairs.gap.to_numpy(float), BATTLE_DRAWS),
                                        "delta": delta.ravel(),
@@ -959,7 +976,7 @@ class SimulatedRace(RaceModel):
                                  setting.get("pass_shift", 0.0), context.get("neutral"),
                                  self._race_strategy(context.get("strategy"), setting),
                                  follow=self._follow, follow_release=self._release, follow_penalty=self._penalty,
-                                 fresh_peak=self._peak, windows=self._window, roles=self._role)
+                                 fresh_peak=self._peak, windows=self._window, roles=self._role, keyed=KEYED)
 
     @staticmethod
     def _race_strategy(strategy, setting):

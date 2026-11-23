@@ -212,9 +212,10 @@ struct Strategy {
 }
 
 /// The random numbers of one draw. `Seq`: drawn in sequence from the draw's
-/// generator (forecasts). `Keyed`: each number a hash of (seed, purpose, lap, car),
-/// so variants of one race (other pit timing, no traffic) share the same lap noise,
-/// battles, neutralisations and starts (paired diagnostics).
+/// generator. `Keyed` (forecasts and settings fits): each number a hash of (seed,
+/// purpose, lap, car), so variants of one race (other settings, pit timing, no
+/// traffic) share the same lap noise, battles, neutralisations and starts: moving a
+/// stop does not shift which random number later becomes lap noise or a pass.
 enum Rand<'a> {
     Seq(&'a mut Pcg64),
     Keyed(u64),
@@ -514,8 +515,8 @@ fn close_up(time: &mut [f64], order: &mut Vec<usize>, gap: f64) {
 
 /// One draw: the race from the grid to the flag; writes finishing positions (1 =
 /// first) into `positions`.
-fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Pcg64, positions: &mut [i64], stops: &mut [i64]) {
-    let (time, made) = race_times(race, seconds, grid, &mut Rand::Seq(rng), &Diag::default(), None);
+fn race_of_draw(race: &Race, seconds: &[f64], grid: &[f64], rng: &mut Rand, positions: &mut [i64], stops: &mut [i64]) {
+    let (time, made) = race_times(race, seconds, grid, rng, &Diag::default(), None);
     for (out, &k) in stops.iter_mut().zip(&made) {
         *out = k as i64;
     }
@@ -1029,9 +1030,9 @@ fn simulate<'py>(
     if !laps_of.is_empty() && laps_of.len() != n {
         return Err(PyValueError::new_err("stop laps: one row per entrant"));
     }
-    if trace || keyed || free_traffic || !fixed.is_empty() || !laps_of.is_empty() {
-        // diagnostics: optionally keyed random numbers (paired variants share scenarios),
-        // fixed per-car stop counts, no traffic; the lap-by-lap trace
+    if trace || free_traffic || !fixed.is_empty() || !laps_of.is_empty() {
+        // diagnostics: fixed per-car stop counts, no traffic, the lap-by-lap trace
+        // (optionally keyed random numbers)
         let runs: Vec<(Vec<i64>, Vec<i64>, Trace)> = py.allow_threads(|| {
             (0..draws)
                 .into_par_iter()
@@ -1071,8 +1072,12 @@ fn simulate<'py>(
     let mut stops = vec![0i64; draws * n];
     py.allow_threads(|| {
         positions.par_chunks_mut(n).zip(stops.par_chunks_mut(n)).enumerate().for_each(|(d, (out, made))| {
-            // one generator per draw, its state spread from (seed, draw) (no correlated streams)
-            let mut rng = Pcg64::seed_from_u64(seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            // one stream per draw, spread from (seed, draw) (no correlated streams). Keyed:
+            // each number fixed by (draw, purpose, lap, car), so settings that move a
+            // stop leave every other random event of the draw as it was
+            let draw_seed = seed ^ (d as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut generator = Pcg64::seed_from_u64(draw_seed);
+            let mut rng = if keyed { Rand::Keyed(draw_seed) } else { Rand::Seq(&mut generator) };
             let cars = d * n..(d + 1) * n;
             race_of_draw(&race, &seconds[cars.clone()], &grid[cars], &mut rng, out, made);
         });
