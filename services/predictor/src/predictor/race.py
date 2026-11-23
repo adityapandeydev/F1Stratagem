@@ -56,6 +56,7 @@ KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
 DRAWS = 10000
 FIT_DRAWS = 1000
+STICK_SE = 1.645   # the simple model keeps last season's settings unless beaten by this many paired SEs
 GRID_FROM_SPRINT = frozenset({2021, 2022})   # seasons whose sprint set the race grid
 GAMMAS = (0.0, 0.5, 1.0, 1.5, 2.0)
 PASS_PRIOR_RACES = 1.0      # weight of the typical pass rate in a circuit's, in races
@@ -191,8 +192,9 @@ class RaceModel:
     """Model interface: fit(history, view_for) then predict(view, example). Races only."""
 
     # True: the stable settings fit (2026-11-23): keyed simulator random numbers, fit seeds
-    # of their own, the choice smoothed over neighbouring candidates (`smoothed`). False:
-    # the fit before then (sequential numbers, forecast seeds, lowest mean), for comparison
+    # of their own, and a steadier choice (`_choose`: last season's settings kept unless
+    # clearly beaten; the simulator smooths over neighbouring settings). False: the fit
+    # before then (sequential numbers, forecast seeds, lowest mean), for comparison
     stable_fit = True
 
     def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
@@ -394,13 +396,28 @@ class RaceModel:
                 per_race.append(score(forecast, example)["rps"])
             surface.append((setting, per_race))
         means = np.array([np.mean(r) for _, r in surface])
-        chosen = int((smoothed([s for s, _ in surface], means) if self.stable_fit else means).argmin())
+        chosen = self._choose(surface, means, self.settings.get((season - 1, cutoff)))
         best = (float(means[chosen]), surface[chosen][0])
         # every candidate's RPS per earlier race (diagnosis of the settings fit; not saved)
         self.fit_surface = {**getattr(self, "fit_surface", {}),
                             (season, cutoff): ([e.event_key for e, *_ in prepared], surface)}
         self.settings[(season, cutoff)] = {**best[1], "rps": best[0], "races": len(prepared)}
         self._draws = {}             # tied to this season's pace settings
+
+    def _choose(self, surface, means, previous):
+        """Index of the chosen candidate. Old fit: the lowest mean RPS. Stable fit (rule R3,
+        chosen on the 2020-22 replay, docs of 2026-11-23): last season's setting unless
+        the lowest beats it by more than STICK_SE paired standard errors per race."""
+        best = int(means.argmin())
+        if not self.stable_fit or not previous:
+            return best
+        names = [k for k in surface[0][0]]
+        kept = next((i for i, (s, _) in enumerate(surface) if all(s[n] == previous.get(n) for n in names)), None)
+        if kept is None:
+            return best
+        d = np.asarray(surface[kept][1]) - np.asarray(surface[best][1])
+        se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else 0.0
+        return kept if d.mean() <= STICK_SE * se else best
 
     def predict(self, view, example, draws=None):
         draws = DRAWS if draws is None else draws          # read at call time: `evaluate --draws` sets it
@@ -445,7 +462,7 @@ def fit_seed(example, own=True):
 def smoothed(settings, means):
     """Each candidate's mean RPS averaged with the candidates one step away in one
     setting on the grid of tried values, so a lone lucky candidate on a flat surface
-    cannot win (chosen as rule R2 on the 2020-22 fits, docs of 2026-11-23)."""
+    cannot win (rule R2, the simulator's choice: SimulatedRace._choose)."""
     names = [k for k in settings[0] if k not in ("rps", "races")]
     levels = {n: sorted({s[n] for s in settings}) for n in names}
     at = np.array([[levels[n].index(s[n]) for n in names] for s in settings])
@@ -537,6 +554,14 @@ class SimulatedRace(RaceModel):
         if history and self._archive is None:
             self._archive = view_for(history[0]).archive
         return self
+
+    def _choose(self, surface, means, previous):
+        """Index of the chosen candidate. Old fit: the lowest mean RPS. Stable fit: the
+        lowest after smoothing over neighbouring settings (rule R2, chosen on the 2020-22
+        replay, docs of 2026-11-23: the simulator's surface is flat)."""
+        if not self.stable_fit:
+            return int(means.argmin())
+        return int(smoothed([s for s, _ in surface], means).argmin())
 
     def candidates(self):
         for shift in (PASS_SHIFTS if self.pass_shift else (0.0,)):

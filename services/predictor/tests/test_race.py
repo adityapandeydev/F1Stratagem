@@ -1478,3 +1478,23 @@ def test_old_fit_variants_switch_off_the_stable_fit():
         assert old.name.endswith("o") and all(not c.stable_fit for c in old.components)
         new = reg[key[:-1]]()
         assert all(c.stable_fit for c in new.components)
+
+
+def test_the_simple_model_keeps_last_seasons_settings_unless_clearly_beaten():
+    from predictor.race import RaceModel, SimulatedRace
+    simple = RaceModel.__new__(RaceModel)
+    a, b = {"kappa": 0.05, "sigma": 0.6}, {"kappa": 0.075, "sigma": 0.6}
+    base = np.full(40, 0.12)
+    swing = np.tile([0.003, -0.003], 20)                       # per-race differences: mean 0.0001, SE ~0.0005
+    close = [(a, list(base + 0.0001 + swing)), (b, list(base))]   # b better, within noise
+    means = np.array([np.mean(r) for _, r in close])
+    assert simple._choose(close, means, None) == 1                 # no earlier season: the lowest
+    assert simple._choose(close, means, a) == 0                    # within noise: last season's kept
+    clear = [(a, list(base + 0.01)), (b, list(base))]
+    assert simple._choose(clear, np.array([np.mean(r) for _, r in clear]), a) == 1
+    simple.stable_fit = False
+    assert simple._choose(close, means, a) == 1                    # the old fit: always the lowest
+    sim = SimulatedRace.__new__(SimulatedRace)
+    settings = [{"x": x} for x in (0, 1, 2, 3)]
+    surface = [(s, [m]) for s, m in zip(settings, (0.10, 0.10, 0.12, 0.09))]
+    assert sim._choose(surface, np.array([0.10, 0.10, 0.12, 0.09]), settings[3]) in (0, 1)   # smoothed, not sticky
