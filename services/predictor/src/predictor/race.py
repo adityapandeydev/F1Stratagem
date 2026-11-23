@@ -196,6 +196,7 @@ class RaceModel:
     # clearly beaten; the simulator smooths over neighbouring settings). False: the fit
     # before then (sequential numbers, forecast seeds, lowest mean), for comparison
     stable_fit = True
+    keeps_previous = True     # the stable choice reads last season's settings (`_choose`)
 
     def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
         self.pace = pace
@@ -396,7 +397,15 @@ class RaceModel:
                 per_race.append(score(forecast, example)["rps"])
             surface.append((setting, per_race))
         means = np.array([np.mean(r) for _, r in surface])
-        chosen = self._choose(surface, means, self.settings.get((season - 1, cutoff)))
+        previous = self.settings.get((season - 1, cutoff))
+        if previous is None and self.stable_fit and self.keeps_previous and any(
+                e.season < season - 1 for e in earlier):
+            # last season's settings could have been fitted but are not here (a run started
+            # at a later season, or restarted): choosing without them would silently switch
+            # to the plain lowest mean, so refuse instead
+            raise RuntimeError(f"{self.name}: the {season - 1} settings at '{cutoff}' are needed to choose "
+                               f"{season}'s (fit the seasons in order from the first)")
+        chosen = self._choose(surface, means, previous)
         best = (float(means[chosen]), surface[chosen][0])
         # every candidate's RPS per earlier race (diagnosis of the settings fit; not saved)
         self.fit_surface = {**getattr(self, "fit_surface", {}),
@@ -554,6 +563,8 @@ class SimulatedRace(RaceModel):
         if history and self._archive is None:
             self._archive = view_for(history[0]).archive
         return self
+
+    keeps_previous = False    # the smoothed choice does not read last season's settings
 
     def _choose(self, surface, means, previous):
         """Index of the chosen candidate. Old fit: the lowest mean RPS. Stable fit: the

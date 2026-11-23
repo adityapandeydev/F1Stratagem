@@ -1498,3 +1498,39 @@ def test_the_simple_model_keeps_last_seasons_settings_unless_clearly_beaten():
     settings = [{"x": x} for x in (0, 1, 2, 3)]
     surface = [(s, [m]) for s, m in zip(settings, (0.10, 0.10, 0.12, 0.09))]
     assert sim._choose(surface, np.array([0.10, 0.10, 0.12, 0.09]), settings[3]) in (0, 1)   # smoothed, not sticky
+
+
+def test_a_missing_previous_season_is_refused_not_silently_replaced():
+    from predictor.race import RaceModel, SimulatedRace
+    model = RaceModel.__new__(RaceModel)
+    model.name, model.settings, model._draws = "race:test", {}, {}
+    model.candidates = lambda: iter([{"kappa": 0.05, "sigma": 0.6}])
+    model._fit_inputs = lambda view, example: (None, None, {})
+    model._view_for = lambda example: None
+    model.run = lambda race, grid, setting, context, seed: None
+    model.forecast = lambda *a, **k: None
+    import predictor.evaluation as ev
+    score = ev.score
+    ev.score = lambda forecast, example: {"rps": 0.1}
+    try:
+        races = lambda *seasons: [types.SimpleNamespace(season=s, cutoff_label="last", event_key=f"{s}-01",
+                                                        session_type="R") for s in seasons]
+        model._history = races(2018, 2019)
+        model._fit_season(2020, "last")              # 2018's races exist, so 2019's settings were fittable
+        raise AssertionError("expected a refusal")
+    except RuntimeError as error:
+        assert "2019" in str(error)
+    finally:
+        ev.score = score
+    try:
+        ev.score = lambda forecast, example: {"rps": 0.1}
+        model._history = races(2018)
+        model._fit_season(2019, "last")              # the first fitted season: nothing earlier to keep
+        assert model.settings[(2019, "last")]["kappa"] == 0.05
+        model.stable_fit = False
+        model.settings = {}
+        model._history = races(2018, 2019)
+        model._fit_season(2020, "last")              # the old fit never reads the previous season
+    finally:
+        ev.score = score
+    assert not SimulatedRace.keeps_previous and RaceModel.keeps_previous
