@@ -120,11 +120,12 @@ def published_grid_at(view, example):
 def grid_penalty_table(root):
     """The reference table of stewards' grid penalties under data root `root` (empty
     if not built): event_key and served (the session it is served in: "S" sprint, "R"
-    race), driver_number, places, back_of_grid, pit_lane, published_utc."""
+    race), driver_number, places, back_of_grid, pit_lane, published_utc, superseded_utc
+    (when a replacing decision was published; NaT while the decision is in force)."""
     path = root / "reference" / "grid_penalties.parquet"
     if not path.is_file():
         return pd.DataFrame(columns=["event_key", "served", "driver_number", "places", "back_of_grid", "pit_lane",
-                                     "published_utc", "doc_number"])
+                                     "published_utc", "doc_number", "superseded_utc"])
     table = pd.read_parquet(path)
     table["published_utc"] = pd.to_datetime(table.published_utc, utc=True)
     table["driver_number"] = table.driver_number.astype(str)
@@ -132,15 +133,19 @@ def grid_penalty_table(root):
         table["served"] = "R"
     if "pit_lane" not in table:
         table["pit_lane"] = False
+    table["superseded_utc"] = (pd.to_datetime(table.superseded_utc, utc=True) if "superseded_utc" in table
+                               else pd.Series(pd.NaT, index=table.index, dtype="datetime64[ns, UTC]"))
     return table
 
 
 def known_penalties(view, event_key, served="R"):
     """{driver number: GridPenalty} from the grid penalties served in `event_key`'s
-    race (`served` "R"; "S" its sprint) published by the view's cutoff: drops add up,
-    `first` orders the drivers by their earliest decision (offence order)."""
+    race (`served` "R"; "S" its sprint) published by the view's cutoff and not yet
+    replaced by then: drops add up, `first` orders the drivers by their earliest
+    decision (offence order)."""
     table = grid_penalty_table(view.archive.root)
-    rows = table[(table.event_key == event_key) & (table.served == served) & (table.published_utc <= view.cutoff)]
+    rows = table[(table.event_key == event_key) & (table.served == served) & (table.published_utc <= view.cutoff)
+                 & ~(table.superseded_utc <= view.cutoff)]
     penalties = {}
     for rank, row in enumerate(rows.sort_values(["published_utc", "doc_number"]).itertuples()):
         old = penalties.get(row.driver_number, GridPenalty(first=rank))
@@ -301,6 +306,24 @@ class RaceModel:
         kappa = setting["kappa"] * context["difficulty"] ** setting.get("gamma", 0.0)
         return self.positions(race, grid, kappa, setting["sigma"], seed)
 
+    def run(self, race, grid, setting, context, seed):
+        """`order` over the cars that start: the entrants context["withdrawn"] marks
+        take no part (no passes, blocking or pit traffic) and fill the last places;
+        `forecast` then classifies them behind everyone."""
+        withdrawn = context.get("withdrawn")
+        if withdrawn is None or not withdrawn.any():
+            return self.order(race, grid, setting, context, seed)
+        active = ~withdrawn
+        sub = dict(context)
+        strategy = context.get("strategy")
+        if strategy and strategy.get("team") is not None:     # the only per-car strategy input
+            sub["strategy"] = {**strategy, "team": np.asarray(strategy["team"])[active]}
+        positions = self.order(race[:, active], grid[:, active], setting, sub, seed)
+        full = np.empty((len(positions), len(withdrawn)), dtype=positions.dtype)
+        full[:, active] = positions
+        full[:, withdrawn] = np.arange(active.sum() + 1, len(withdrawn) + 1)
+        return full
+
     def positions(self, race, grid, kappa, sigma, seed):
         """Finishing order before retirements, draws x entrants (1 = first)."""
         score = race + kappa * (grid - 1)
@@ -346,7 +369,7 @@ class RaceModel:
             total = 0.0
             for example, race, grid, context in prepared:
                 seed = seed_for(example)
-                forecast = self.forecast(example, self.order(race, grid, setting, context, seed), seed, {},
+                forecast = self.forecast(example, self.run(race, grid, setting, context, seed), seed, {},
                                          context.get("withdrawn"))
                 total += score(forecast, example)["rps"]
             rps = total / len(prepared)
@@ -370,7 +393,7 @@ class RaceModel:
         seed = seed_for(example)
         race, grid = self.draws(view, example, draws, seed)
         context = self.start_context(view, example)
-        positions = self.order(race, grid, chosen, context, seed)
+        positions = self.run(race, grid, chosen, context, seed)
         known_grid = grid.shape[0] == 1
         withdrawn = context.pop("withdrawn", None)
         return self.forecast(example, positions, seed, {

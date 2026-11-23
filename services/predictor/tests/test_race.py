@@ -1367,3 +1367,46 @@ def test_penalty_models_set_both_grid_flags():
         model = reg[key]()
         assert model.name == name
         assert all(c.published_grid and c.known_penalties and c.name.endswith("k") for c in model.components)
+
+
+def test_a_withdrawn_car_takes_no_part_in_the_simulated_race():
+    from predictor import race_sim
+    from predictor.race import SimulatedRace
+    model = SimulatedRace.__new__(SimulatedRace)
+    model.passes = race_sim.PassModel()
+    model.passes.coef = np.array([-0.8, -1.9, -0.3, -1.6, 0.2, 0.7])
+    model._follow = model._peak = model._window = model._role = model._penalty = None
+    model._release = 0.0
+    rng = np.random.default_rng(6)
+    pace = rng.normal(0, 0.4, (300, 6))
+    grid = np.array([[3.0, 1.0, 2.0, 4.0, 5.0, 6.0]])
+    strategy = {"pit_loss": 22.0, "stops": 1.6, "wear": 0.05, "sc_ratio": 0.8, "residuals": np.array([0.0, 4.0]),
+                "team": np.array([0, 1, 1, 2, 2, 0]), "team_mean": np.array([0.01, -0.02, 0.0]),
+                "team_sd": np.array([0.0, 0.0, 0.0])}
+    withdrawn = np.array([False, False, False, False, False, True])
+    context = {"circuit_term": 0.0, "laps": 40, "lap_seconds": 90.0, "strategy": strategy, "withdrawn": withdrawn}
+    setting = {"sigma": 0.0, "start_noise": 0.3}
+    runs = []
+    for withdrawn_pace in (-3.0, 0.0, 3.0):                 # the withdrawn car very fast, level, very slow
+        pace[:, 5] = withdrawn_pace
+        runs.append(model.run(pace.copy(), grid, setting, context, 1))
+    assert all(np.array_equal(runs[0], other) for other in runs[1:])
+    assert (runs[0][:, 5] == 6).all() and (np.sort(runs[0][:, :5], axis=1) == np.arange(1, 6)).all()
+
+
+def test_a_replaced_penalty_counts_until_its_replacement_is_published(tmp_path):
+    from predictor.gridrules import GridPenalty as P
+    from predictor.race import known_penalties
+    # Belgium 2022, Bottas: 15 places (decision 18) and ten (decision 26, 15:01) on
+    # Friday; decision 42 replaced the ten with five on Saturday at 09:35
+    (tmp_path / "reference").mkdir()
+    pd.DataFrame({"event_key": ["2022-14"] * 3, "served": ["R"] * 3, "driver_number": ["77"] * 3,
+                  "places": pd.array([15, 10, 5], dtype="Int64"), "back_of_grid": [False] * 3,
+                  "pit_lane": [False] * 3, "doc_number": [18, 26, 42],
+                  "published_utc": pd.to_datetime(["2022-08-26 14:18", "2022-08-26 15:01", "2022-08-27 09:35"], utc=True),
+                  "superseded_utc": pd.to_datetime([None, "2022-08-27 09:35", None], utc=True)}).to_parquet(
+        tmp_path / "reference" / "grid_penalties.parquet")
+    view = lambda t: types.SimpleNamespace(archive=types.SimpleNamespace(root=tmp_path), cutoff=pd.Timestamp(t, tz="UTC"))
+    assert known_penalties(view("2022-08-26 16:00"), "2022-14") == {"77": P(25, first=0)}
+    assert known_penalties(view("2022-08-27 09:34"), "2022-14") == {"77": P(25, first=0)}
+    assert known_penalties(view("2022-08-27 09:35"), "2022-14") == {"77": P(20, first=0)}

@@ -149,3 +149,25 @@ def test_grid_penalties_are_served_where_the_decision_says():
     assert served_in(2021, "Sprint Qualifying", "Drop of 3 grid positions.") == "R"
     assert served_in(2024, "Qualifying", "Drop of 3 grid positions for the next race in which the driver "
                      "participates.") == "R"
+
+
+def test_a_replaced_grid_penalty_is_kept_with_the_time_it_was_replaced(tmp_path):
+    from f1data.reference import grid_penalties
+    # Belgium 2022, Bottas: decision 26 (ten places) is cancelled and replaced by
+    # decision 42 (five places) the next morning; decision 18 (15 places) stands
+    tables = tmp_path / "external" / "fia" / "tables"
+    tables.mkdir(parents=True)
+    pd.DataFrame({"season": [2022] * 3, "event": ["Belgian Grand Prix"] * 3, "driver_number": ["77"] * 3,
+                  "session": ["Practice 1", "Practice 1", "Practice 2"],
+                  "decision": ["Drop of 15 grid positions.", "Drop of 10 grid positions.", "Drop of 5 grid positions."],
+                  "places": [15.0, 10.0, 5.0], "back_of_grid": [False] * 3, "pit_lane": [False] * 3,
+                  "fia_document": [18, 26, 42], "replaces": [None, None, 26.0], "doc_number": [18, 26, 42],
+                  "published_utc": ["2022-08-26T14:18:00+00:00", "2022-08-26T15:01:00+00:00",
+                                    "2022-08-27T09:35:00+00:00"]}).to_parquet(tables / "grid_penalties.parquet")
+    sessions = pd.DataFrame({"event_key": ["2022-14"], "session_type": ["R"],
+                             "scheduled_start_utc": [pd.Timestamp("2022-08-28 13:00", tz="UTC")]})
+    events = pd.DataFrame({"season": [2022], "event_name": ["Belgian Grand Prix"], "event_key": ["2022-14"]})
+    table = grid_penalties(tmp_path, sessions, events).set_index("doc_number")
+    assert list(table.index) == [18, 26, 42] and (table.event_key == "2022-14").all()
+    assert table.superseded_utc[26] == pd.Timestamp("2022-08-27 09:35", tz="UTC")
+    assert table.superseded_utc[[18, 42]].isna().all()

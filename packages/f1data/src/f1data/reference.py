@@ -426,11 +426,12 @@ def grid_penalties(root, sessions, events):
     race decided after its start; within it, the first session of the served kind starting after
     publication (the first of that kind if publication came after them all). A
     decision cancelled and replaced by a later one ("Decision 26 is cancelled and
-    replaced by...", Belgium 2022) is dropped. One row per decision and session:
-    event_key, served ("S" or "R"), driver_number, places (a drop), back_of_grid,
-    pit_lane, published_utc."""
+    replaced by...", Belgium 2022) is kept with superseded_utc, the publication time
+    of the replacement: it is in force at cutoffs before then. One row per decision
+    and session: event_key, served ("S" or "R"), driver_number, places (a drop),
+    back_of_grid, pit_lane, published_utc, superseded_utc (NaT while in force)."""
     columns = ["event_key", "served", "season", "driver_number", "places", "back_of_grid", "pit_lane", "session",
-               "decision", "published_utc", "doc_number"]
+               "decision", "published_utc", "doc_number", "superseded_utc"]
     path = root / "external" / "fia" / "tables" / "grid_penalties.parquet"
     if not path.is_file():
         return pd.DataFrame(columns=columns)
@@ -442,9 +443,14 @@ def grid_penalties(root, sessions, events):
     for number in ("fia_document", "replaces"):
         if number not in penalties:
             penalties[number] = pd.NA
-    replaced = {(r.season, r.event, int(r.replaces)) for r in penalties.itertuples() if pd.notna(r.replaces)}
-    penalties = penalties[[(r.season, r.event, None if pd.isna(r.fia_document) else int(r.fia_document))
-                           not in replaced for r in penalties.itertuples()]]
+    replaced = {}                    # (season, event, document) -> when the replacement was published
+    for r in penalties.itertuples():
+        if pd.notna(r.replaces):
+            key = (r.season, r.event, int(r.replaces))
+            replaced[key] = min(replaced.get(key, r.published_utc), r.published_utc)
+    penalties["superseded_utc"] = pd.to_datetime(
+        [replaced.get((r.season, r.event, None if pd.isna(r.fia_document) else int(r.fia_document)))
+         for r in penalties.itertuples()], utc=True)
     named = {(int(e.season), _event_name_key(e.event_name)): e.event_key for e in events.itertuples()}
     starts = sessions[sessions.session_type.isin(["S", "R"])].sort_values("scheduled_start_utc")
     race_order = list(starts[starts.session_type == "R"].event_key)
