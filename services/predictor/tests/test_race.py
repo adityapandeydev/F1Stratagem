@@ -196,8 +196,13 @@ def test_race_champions_route_by_forecast_moment():
     assert router.name == "race_champion" and router.champions == RACE_CHAMPIONS
     before = types.SimpleNamespace(cutoff_label="pre_weekend")
     after = types.SimpleNamespace(cutoff_label="last")
-    assert router.models[router.route(before)].name == "race:mix3fwp2ap"
+    grid = types.SimpleNamespace(cutoff_label="after_grid")
+    assert router.models[router.route(before)].name == "race:mix3fwp2apk"
     assert router.models[router.route(after)].name == "race:mix3ffnps51aps5"
+    assert router.models[router.route(grid)].name == "race:mix3ffnps51aps5g"
+    # the qualifying champions have no 'after_grid' entry: the session's champion serves it
+    from predictor.evaluation import ChampionRouter
+    assert ChampionRouter().route(grid) == "after_session"
 
 
 def test_qualifying_champions_route_by_forecast_moment_and_condition():

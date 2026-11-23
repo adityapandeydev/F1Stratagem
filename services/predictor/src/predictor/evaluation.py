@@ -229,7 +229,20 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrps", "after_session": "pace3wrqwtrp",
 # tie-break left to the owner; adopted by the owner (2026-11-22) as a tie: the forecast
 # made before the weekend reads race pace with its measured uncertainty, as the race
 # forecast after qualifying does. The wet champion is unchanged (scale measured dry).
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2ap", "after_session": "race_mix3ffnps51aps5"}
+# Stage 4 (2026-11-23, 3 seed batches, after the review fixes: withdrawn cars sit out
+# the simulation, a replaced decision counts until its replacement is published).
+# Published starting grid at the 'after_grid' cutoff (race_mix3ffnps51aps5g, grid
+# changed in 67 races): -0.000179 [-0.000561, +0.000203] (noise, within margin), 15+
+# -0.000089, 2024 -0.000002, outcome and winner log loss level. Stewards' grid
+# penalties known before the weekend (race_mix3fwp2apk, 12 races changed): -0.000011
+# [-0.000043, +0.000014], winner log loss -0.00089 (block interval better, plain
+# interval touches 0), 15+ +0.000003, 2024 +0.000015. Both adopted by the owner as
+# ties (published facts in place of assumptions), never as gains. Penalties known at
+# the last cutoff after qualifying (race_mix3ffnps51aps5k, 47 races changed): +0.000236
+# [-0.000124, +0.000626], 2024 +0.00095 (over the limit): not adopted, under diagnosis;
+# its 81 races with unchanged grids are worse (+0.00018 beyond noise).
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2apk", "after_session": "race_mix3ffnps51aps5",
+                  "after_grid": "race_mix3ffnps51aps5g"}
 
 
 class ChampionRouter:
@@ -254,7 +267,15 @@ class ChampionRouter:
                 model.fit_cache = cache
 
     def route(self, example):
-        moment = "pre_weekend" if example.cutoff_label == "pre_weekend" else "after_session"
+        """The champion's key: 'pre_weekend'; 'after_grid' (once the FIA starting grid is
+        out) when the router has one; otherwise 'after_session'; '_wet' added for a wet
+        example when the router has that key."""
+        if example.cutoff_label == "pre_weekend":
+            moment = "pre_weekend"
+        elif example.cutoff_label == "after_grid" and "after_grid" in self.champions:
+            moment = "after_grid"
+        else:
+            moment = "after_session"
         wet = f"{moment}_wet"
         return wet if getattr(example, "condition", None) == "wet" and wet in self.champions else moment
 
