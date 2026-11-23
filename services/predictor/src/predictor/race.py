@@ -196,6 +196,7 @@ class RaceModel:
         self.detailed_retirements = detailed_retirements
         self.published_grid = False  # True: the published starting grid replaces the qualifying order once out
         self.known_penalties = False  # True: grid penalties published by the cutoff applied until then
+        self.grid_inputs_in_fit = True  # False (diagnosis): settings fitted without the two grid inputs above
         self._passes = {}           # race session -> race_passes(...)
         self.retirements = DetailedRetirements() if detailed_retirements else RetirementModel()
         self.settings = {}          # (season, cutoff label) -> {"kappa", "sigma", "rps", ...}
@@ -348,6 +349,19 @@ class RaceModel:
             driver_numbers=list(example.driver_numbers), driver_ids=list(example.driver_ids), model=self.name,
             seed=seed, metadata=metadata)
 
+    def _fit_inputs(self, view, example):
+        """(race pace, grid, context) of an earlier race for fitting the settings. With
+        `grid_inputs_in_fit` False they are read without the published grid and the
+        known penalties, so the settings are those of the model without them (the
+        diagnosis of the inputs' own effect, separate from refitting)."""
+        saved = self.published_grid, self.known_penalties
+        if not self.grid_inputs_in_fit:
+            self.published_grid = self.known_penalties = False
+        try:
+            return (*self.draws(view, example, FIT_DRAWS, seed_for(example)), self.start_context(view, example))
+        finally:
+            self.published_grid, self.known_penalties = saved
+
     def _fit_season(self, season, cutoff):
         """The settings for `season` at the cutoff labelled `cutoff`, from the races of
         earlier seasons in the history forecast from the same cutoff."""
@@ -361,8 +375,7 @@ class RaceModel:
             key = (example.event_key, example.cutoff_label, season)
             if key not in self._draws:
                 view = self._view_for(example)
-                self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)),
-                                    self.start_context(view, example))
+                self._draws[key] = self._fit_inputs(view, example)
             prepared.append((example, *self._draws[key]))
         best = None
         for setting in self.candidates():
@@ -816,7 +829,7 @@ class SimulatedRace(RaceModel):
             key = (example.event_key, example.cutoff_label, season)
             if key not in self._draws:
                 view = self._view_for(example)
-                self._draws[key] = (*self.draws(view, example, FIT_DRAWS, seed_for(example)), self.start_context(view, example))
+                self._draws[key] = self._fit_inputs(view, example)
             race = self._draws[key][0]
             column = {str(n): i for i, n in enumerate(example.driver_numbers)}
             pairs = frame.iloc[rows]

@@ -1415,3 +1415,22 @@ def test_a_replaced_penalty_counts_until_its_replacement_is_published(tmp_path):
     assert known_penalties(view("2022-08-26 16:00"), "2022-14") == {"77": P(25, first=0)}
     assert known_penalties(view("2022-08-27 09:34"), "2022-14") == {"77": P(25, first=0)}
     assert known_penalties(view("2022-08-27 09:35"), "2022-14") == {"77": P(20, first=0)}
+
+
+def test_settings_can_be_fitted_without_the_grid_inputs():
+    from predictor.race import RaceModel
+    model = RaceModel.__new__(RaceModel)
+    model.published_grid = model.known_penalties = True
+    seen = []
+    model.draws = lambda view, example, count, seed: seen.append((model.published_grid, model.known_penalties)) or (0, 0)
+    model.start_context = lambda view, example: {}
+    example = types.SimpleNamespace(event_key="e", session_type="R", cutoff_label="last")
+    model.grid_inputs_in_fit = True
+    model._fit_inputs(None, example)
+    model.grid_inputs_in_fit = False
+    model._fit_inputs(None, example)
+    assert seen == [(True, True), (False, False)]
+    assert model.published_grid and model.known_penalties          # forecasts still read them
+    from predictor import evaluation
+    kx = evaluation.model_registry()["race_mix3ffnps51aps5kx"]()
+    assert all(c.known_penalties and c.published_grid and not c.grid_inputs_in_fit for c in kx.components)
