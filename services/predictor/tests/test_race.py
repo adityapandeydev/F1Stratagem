@@ -1453,3 +1453,26 @@ def test_keyed_draws_keep_every_other_event_when_only_stop_timing_changes():
     assert np.array_equal(keyed[0], run(3.0, True)[0])
     sequential = (run(0.0, False)[0] != run(3.0, False)[0]).any(axis=1)
     assert sequential.mean() > 0.9                                   # the sequential stream shifts
+
+
+def test_the_stable_fit_smooths_the_choice_over_neighbouring_settings():
+    from predictor.race import fit_seed, smoothed
+    settings = [{"a": a, "b": b} for a in (0, 1, 2) for b in (0, 1)]
+    # a lone low candidate (a=2, b=1) among high neighbours loses to the low region (a=0)
+    means = np.array([0.09, 0.09, 0.11, 0.12, 0.12, 0.085])
+    assert int(means.argmin()) == 5
+    assert int(smoothed(settings, means).argmin()) == 0
+    assert np.allclose(smoothed(settings, np.full(6, 0.1)), 0.1)
+    example = types.SimpleNamespace(event_key="2020-01", session_type="R", cutoff_label="last")
+    from predictor.baselines import seed_for
+    assert fit_seed(example, own=False) == seed_for(example) != fit_seed(example)
+
+
+def test_old_fit_variants_switch_off_the_stable_fit():
+    from predictor import evaluation
+    reg = evaluation.model_registry()
+    for key in ("race_mix3ffnps51aps5o", "race_mix3fwp2apko", "race_mix3ffnps51aps5go"):
+        old = reg[key]()
+        assert old.name.endswith("o") and all(not c.stable_fit for c in old.components)
+        new = reg[key[:-1]]()
+        assert all(c.stable_fit for c in new.components)

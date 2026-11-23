@@ -489,6 +489,11 @@ def model_registry():
             "race_mix3ffnps51aps5k": lambda: _grid_input("race_mix3ffnps51aps5", "k", published_grid=True,
                                                          known_penalties=True),
             "race_mix3fwp2apk": lambda: _grid_input("race_mix3fwp2ap", "k", published_grid=True, known_penalties=True),
+            # the race champions with the settings fit before 2026-11-23 (sequential random numbers,
+            # forecast seeds, lowest mean RPS), for the re-baseline of the stable fit
+            "race_mix3ffnps51aps5o": lambda: _grid_input("race_mix3ffnps51aps5", "o", stable_fit=False),
+            "race_mix3fwp2apko": lambda: _grid_input("race_mix3fwp2apk", "o", stable_fit=False),
+            "race_mix3ffnps51aps5go": lambda: _grid_input("race_mix3ffnps51aps5g", "o", stable_fit=False),
             # diagnosis: the penalty model's grids with the base model's settings (fitted without them)
             "race_mix3ffnps51aps5kx": lambda: _grid_input("race_mix3ffnps51aps5", "kx", published_grid=True,
                                                           known_penalties=True, grid_inputs_in_fit=False),
