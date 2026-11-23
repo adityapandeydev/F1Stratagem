@@ -241,8 +241,10 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrps", "after_session": "pace3wrqwtrp",
 # the last cutoff after qualifying (race_mix3ffnps51aps5k, 47 races changed): +0.000236
 # [-0.000124, +0.000626], 2024 +0.00095 (over the limit): not adopted, under diagnosis;
 # its 81 races with unchanged grids are worse (+0.00018 beyond noise).
-RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2apk", "after_session": "race_mix3ffnps51aps5",
-                  "after_grid": "race_mix3ffnps51aps5g"}
+# Served with the settings fit of before 2026-11-23 (the "o" variants) until the stable fit
+# (race.RaceModel.stable_fit) has passed its re-baseline against them.
+RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2apko", "after_session": "race_mix3ffnps51aps5o",
+                  "after_grid": "race_mix3ffnps51aps5go"}
 
 
 class ChampionRouter:
