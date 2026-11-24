@@ -1419,25 +1419,6 @@ def test_a_replaced_penalty_counts_until_its_replacement_is_published(tmp_path):
     assert known_penalties(view("2022-08-27 09:35"), "2022-14") == {"77": P(20, first=0)}
 
 
-def test_settings_can_be_fitted_without_the_grid_inputs():
-    from predictor.race import RaceModel
-    model = RaceModel.__new__(RaceModel)
-    model.published_grid = model.known_penalties = True
-    seen = []
-    model.draws = lambda view, example, count, seed: seen.append((model.published_grid, model.known_penalties)) or (0, 0)
-    model.start_context = lambda view, example: {}
-    example = types.SimpleNamespace(event_key="e", session_type="R", cutoff_label="last")
-    model.grid_inputs_in_fit = True
-    model._fit_inputs(None, example)
-    model.grid_inputs_in_fit = False
-    model._fit_inputs(None, example)
-    assert seen == [(True, True), (False, False)]
-    assert model.published_grid and model.known_penalties          # forecasts still read them
-    from predictor import evaluation
-    kx = evaluation.model_registry()["race_mix3ffnps51aps5kx"]()
-    assert all(c.known_penalties and c.published_grid and not c.grid_inputs_in_fit for c in kx.components)
-
-
 def test_keyed_draws_keep_every_other_event_when_only_stop_timing_changes():
     from predictor import race_sim
     # identical cars, no tyre wear, a negligible pit loss (stops only happen with a loss
@@ -1480,59 +1461,12 @@ def test_old_fit_variants_switch_off_the_stable_fit():
         assert all(c.stable_fit for c in new.components)
 
 
-def test_the_simple_model_keeps_last_seasons_settings_unless_clearly_beaten():
+def test_both_race_models_choose_by_the_smoothed_mean_unless_on_the_old_fit():
     from predictor.race import RaceModel, SimulatedRace
-    simple = RaceModel.__new__(RaceModel)
-    a, b = {"kappa": 0.05, "sigma": 0.6}, {"kappa": 0.075, "sigma": 0.6}
-    base = np.full(40, 0.12)
-    swing = np.tile([0.003, -0.003], 20)                       # per-race differences: mean 0.0001, SE ~0.0005
-    close = [(a, list(base + 0.0001 + swing)), (b, list(base))]   # b better, within noise
-    means = np.array([np.mean(r) for _, r in close])
-    assert simple._choose(close, means, None) == 1                 # no earlier season: the lowest
-    assert simple._choose(close, means, a) == 0                    # within noise: last season's kept
-    clear = [(a, list(base + 0.01)), (b, list(base))]
-    assert simple._choose(clear, np.array([np.mean(r) for _, r in clear]), a) == 1
-    simple.stable_fit = False
-    assert simple._choose(close, means, a) == 1                    # the old fit: always the lowest
-    sim = SimulatedRace.__new__(SimulatedRace)
     settings = [{"x": x} for x in (0, 1, 2, 3)]
-    surface = [(s, [m]) for s, m in zip(settings, (0.10, 0.10, 0.12, 0.09))]
-    assert sim._choose(surface, np.array([0.10, 0.10, 0.12, 0.09]), settings[3]) in (0, 1)   # smoothed, not sticky
-
-
-def test_a_missing_previous_season_is_refused_not_silently_replaced():
-    from predictor.race import RaceModel, SimulatedRace
-    model = RaceModel.__new__(RaceModel)
-    model.name, model.settings, model._draws = "race:test", {}, {}
-    model.candidates = lambda: iter([{"kappa": 0.05, "sigma": 0.6}])
-    model._fit_inputs = lambda view, example: (None, None, {})
-    model._view_for = lambda example: None
-    model.run = lambda race, grid, setting, context, seed: None
-    model.forecast = lambda *a, **k: None
-    import predictor.evaluation as ev
-    score = ev.score
-    ev.score = lambda forecast, example: {"rps": 0.1}
-    try:
-        races = lambda *seasons: [types.SimpleNamespace(season=s, cutoff_label="last", event_key=f"{s}-01",
-                                                        session_type="R") for s in seasons]
-        model._history = races(2018, 2019)
-        searched = []
-        model.candidates = lambda: searched.append(1) or iter([{"kappa": 0.05, "sigma": 0.6}])
-        model._fit_season(2020, "last")              # 2018's races exist, so 2019's settings were fittable
-        raise AssertionError("expected a refusal")
-    except RuntimeError as error:
-        assert "2019" in str(error) and not searched  # refused before the costly candidate search
-    finally:
-        ev.score = score
-    try:
-        ev.score = lambda forecast, example: {"rps": 0.1}
-        model._history = races(2018)
-        model._fit_season(2019, "last")              # the first fitted season: nothing earlier to keep
-        assert model.settings[(2019, "last")]["kappa"] == 0.05
+    means = np.array([0.10, 0.10, 0.12, 0.09])      # a lone low candidate at the edge
+    for cls in (RaceModel, SimulatedRace):
+        model = cls.__new__(cls)
+        assert model._choose(settings, means) in (0, 1)    # smoothed: the low region wins
         model.stable_fit = False
-        model.settings = {}
-        model._history = races(2018, 2019)
-        model._fit_season(2020, "last")              # the old fit never reads the previous season
-    finally:
-        ev.score = score
-    assert not SimulatedRace.keeps_previous and RaceModel.keeps_previous
+        assert model._choose(settings, means) == 3         # the old fit: the lowest mean

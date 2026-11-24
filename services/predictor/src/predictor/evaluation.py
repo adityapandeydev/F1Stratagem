@@ -496,9 +496,6 @@ def model_registry():
             "race_mix3ffnps51aps5o": lambda: _grid_input("race_mix3ffnps51aps5", "o", stable_fit=False),
             "race_mix3fwp2apko": lambda: _grid_input("race_mix3fwp2apk", "o", stable_fit=False),
             "race_mix3ffnps51aps5go": lambda: _grid_input("race_mix3ffnps51aps5g", "o", stable_fit=False),
-            # diagnosis: the penalty model's grids with the base model's settings (fitted without them)
-            "race_mix3ffnps51aps5kx": lambda: _grid_input("race_mix3ffnps51aps5", "kx", published_grid=True,
-                                                          known_penalties=True, grid_inputs_in_fit=False),
             "race_mix3ffnp1ap": lambda: ForecastMixture(["race3ffnp", "race1ap"], [0.5, 0.5], "race:mix3ffnp1ap"),
             "race_mix3fwp2ap": lambda: ForecastMixture(["race3fwp", "race2ap"], [0.5, 0.5], "race:mix3fwp2ap"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),
