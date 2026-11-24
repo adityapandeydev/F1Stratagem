@@ -509,6 +509,8 @@ def model_registry():
             "race_mix3ffnps51aps5ko": lambda: _grid_input("race_mix3ffnps51aps5k", "o", stable_fit=False),
             "race_mix3ffnps51aps5kqo": lambda: _grid_input("race_mix3ffnps51aps5", "kqo", published_grid=True,
                                                            known_penalties=True, split_grid=True, stable_fit=False),
+            "race3ffnps5ko": lambda: _grid_input("race3ffnps5", "ko", published_grid=True, known_penalties=True,
+                                                 stable_fit=False),
             "race1aps5o": lambda: _grid_input("race1aps5", "o", stable_fit=False),
             "race1aps5ko": lambda: _grid_input("race1aps5", "ko", published_grid=True, known_penalties=True,
                                                stable_fit=False),
