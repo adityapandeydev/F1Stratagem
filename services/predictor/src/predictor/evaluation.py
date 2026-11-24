@@ -137,11 +137,15 @@ def _grid_input(key, suffix, **flags):
     """Registry model `key` (a race model or a mixture of them) with the grid flags of
     race.RaceModel set on it and its components (`published_grid`: the published
     starting grid once out; `known_penalties`: published grid penalties applied until
-    then); `suffix` ends its name and its components' names."""
+    then; `split_grid`: qualifying and start slots weighted apart, set on the plain
+    race models only: the simulator has no grid term); `suffix` ends its name and its
+    components' names."""
+    from .race import SimulatedRace
     model = model_registry()[key]()
     for part in getattr(model, "components", [model]):
         for flag, value in flags.items():
-            setattr(part, flag, value)
+            if flag != "split_grid" or not isinstance(part, SimulatedRace):
+                setattr(part, flag, value)
         if part is not model:
             part.name += suffix
     model.name += suffix
@@ -499,6 +503,17 @@ def model_registry():
             "race_mix3ffnps51aps5o": lambda: _grid_input("race_mix3ffnps51aps5", "o", stable_fit=False),
             "race_mix3fwp2apko": lambda: _grid_input("race_mix3fwp2apk", "o", stable_fit=False),
             "race_mix3ffnps51aps5go": lambda: _grid_input("race_mix3ffnps51aps5g", "o", stable_fit=False),
+            # penalties after qualifying on the served old fit, without and with the split grid
+            # term of the simple model (qualifying slot apart from start slot); the simple model
+            # alone as well, for a quick read of the split
+            "race_mix3ffnps51aps5ko": lambda: _grid_input("race_mix3ffnps51aps5k", "o", stable_fit=False),
+            "race_mix3ffnps51aps5kqo": lambda: _grid_input("race_mix3ffnps51aps5", "kqo", published_grid=True,
+                                                           known_penalties=True, split_grid=True, stable_fit=False),
+            "race1aps5o": lambda: _grid_input("race1aps5", "o", stable_fit=False),
+            "race1aps5ko": lambda: _grid_input("race1aps5", "ko", published_grid=True, known_penalties=True,
+                                               stable_fit=False),
+            "race1aps5kqo": lambda: _grid_input("race1aps5", "kqo", published_grid=True, known_penalties=True,
+                                                split_grid=True, stable_fit=False),
             "race_mix3ffnp1ap": lambda: ForecastMixture(["race3ffnp", "race1ap"], [0.5, 0.5], "race:mix3ffnp1ap"),
             "race_mix3fwp2ap": lambda: ForecastMixture(["race3fwp", "race2ap"], [0.5, 0.5], "race:mix3fwp2ap"),
             "race1b": lambda: _race_model("pace3wrqwt", "race:v1b", overtaking=True),

@@ -35,6 +35,17 @@ with each circuit's on-track pass rate (`laps.race_passes`: passes per green lap
 dry races) from the races finished before the cutoff, shrunk towards the typical
 rate by PASS_PRIOR_RACES races' worth of it; a circuit without history gets the
 typical rate. gamma is fitted with kappa and sigma (0 is stage 1a).
+
+Split grid (`split_grid`, stage 4): a car's qualifying slot says how fast it is on the
+day as well as where it starts, and a grid penalty separates the two. With the
+qualifying order known, the grid term reads
+
+    kappa x ((qualifying slot - 1) + rho x (start slot - qualifying slot)),
+
+rho fitted with kappa and sigma (RHOS; 1 is the single grid term, tried first so it
+is kept when no earlier race separates them). Penalised cars of 2019-2024 finished on
+average where they qualified (docs: penalised drivers check, 2026-11-24). With a
+simulated grid (before qualifying) the term is the single one.
 """
 import functools
 import zlib
@@ -54,6 +65,7 @@ from .retirements import DetailedRetirements, history_incidents
 
 KAPPAS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 SIGMAS = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.4)
+RHOS = (1.0, 0.75, 0.5, 0.25, 0.0)   # split grid: weight of the places a start differs from qualifying
 DRAWS = 10000
 FIT_DRAWS = 1000
 GRID_FROM_SPRINT = frozenset({2021, 2022})   # seasons whose sprint set the race grid
@@ -195,6 +207,7 @@ class RaceModel:
     # (`_choose`). False: the fit before then (sequential numbers, forecast seeds, lowest
     # mean), which the step-4 re-baseline kept better after qualifying
     stable_fit = True
+    split_grid = False      # True: qualifying slot and start slot weighted apart (rho; RaceModel.order only)
 
     def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
         self.pace = pace
@@ -263,6 +276,8 @@ class RaceModel:
         context = self.context(view, example)
         published = published_grid_at(view, example) if self.published_grid else None
         withdrawn = published[1] if published is not None and published[1].any() else None
+        if self.split_grid:     # the qualifying slots (None before qualifying: the grid is simulated)
+            context["qualified"] = grid_at(view, example)
         return {**context, "withdrawn": withdrawn}
 
     def difficulty(self, view, example):
@@ -290,14 +305,17 @@ class RaceModel:
 
     def candidates(self):
         """Settings tried by the fit, in order (the first best is kept)."""
-        for gamma in (GAMMAS if self.overtaking else (0.0,)):
-            for kappa in KAPPAS:
-                for sigma in SIGMAS:
-                    yield {"kappa": kappa, "sigma": sigma, **({"gamma": gamma} if self.overtaking else {})}
+        for rho in (RHOS if self.split_grid else (None,)):
+            for gamma in (GAMMAS if self.overtaking else (0.0,)):
+                for kappa in KAPPAS:
+                    for sigma in SIGMAS:
+                        yield {"kappa": kappa, "sigma": sigma, **({"gamma": gamma} if self.overtaking else {}),
+                               **({"rho": rho} if self.split_grid else {})}
 
     def neutral(self):
         """Settings without any earlier race to fit them on."""
-        return {"kappa": 0.0, "sigma": 0.0, **({"gamma": 0.0} if self.overtaking else {})}
+        return {"kappa": 0.0, "sigma": 0.0, **({"gamma": 0.0} if self.overtaking else {}),
+                **({"rho": 1.0} if self.split_grid else {})}
 
     def prepare_season(self, season, cutoff):
         """Anything fitted per season and cutoff before the settings (nothing here)."""
@@ -311,6 +329,10 @@ class RaceModel:
 
     def order(self, race, grid, setting, context, seed):
         kappa = setting["kappa"] * context["difficulty"] ** setting.get("gamma", 0.0)
+        qualified = context.get("qualified")
+        if "rho" in setting and qualified is not None and grid.shape[0] == 1:
+            qualified = np.asarray(qualified, dtype=float)[None, :]
+            grid = qualified + setting["rho"] * (grid - qualified)
         return self.positions(race, grid, kappa, setting["sigma"], seed)
 
     def run(self, race, grid, setting, context, seed):
@@ -325,6 +347,8 @@ class RaceModel:
         strategy = context.get("strategy")
         if strategy and strategy.get("team") is not None:     # the only per-car strategy input
             sub["strategy"] = {**strategy, "team": np.asarray(strategy["team"])[active]}
+        if context.get("qualified") is not None:              # split grid: the qualifying slots
+            sub["qualified"] = np.asarray(context["qualified"])[active]
         positions = self.order(race[:, active], grid[:, active], setting, sub, seed)
         full = np.empty((len(positions), len(withdrawn)), dtype=positions.dtype)
         full[:, active] = positions
@@ -415,6 +439,7 @@ class RaceModel:
         positions = self.run(race, grid, chosen, context, seed)
         known_grid = grid.shape[0] == 1
         withdrawn = context.pop("withdrawn", None)
+        context.pop("qualified", None)
         return self.forecast(example, positions, seed, {
             "grid": "known" if known_grid else "simulated",
             **({"withdrawn": [str(n) for n, w in zip(example.driver_numbers, withdrawn) if w]}
@@ -437,10 +462,21 @@ def fit_seed(example, own=True):
     return zlib.crc32(f"fit|{seed_for(example)}".encode()) if own else seed_for(example)
 
 
-def smoothed(settings, means):
+def smoothed(settings, means, apart=("rho",)):
     """Each candidate's mean RPS averaged with the candidates one step away in one
     setting on the grid of tried values, so a lone lucky candidate on a flat surface
-    cannot win (rule R2, `RaceModel._choose`)."""
+    cannot win (rule R2, `RaceModel._choose`). Settings in `apart` are not smoothed over:
+    each of their values is smoothed on its own, so a setting that changes nothing
+    (rho without penalised cars) leaves exact ties, kept by the first candidate."""
+    split = [n for n in apart if n in settings[0]]
+    if split:
+        means, out, groups = np.asarray(means, dtype=float), np.empty(len(settings)), {}
+        for i, s in enumerate(settings):
+            groups.setdefault(tuple(s[n] for n in split), []).append(i)
+        for idx in groups.values():
+            out[idx] = smoothed([{k: v for k, v in settings[i].items() if k not in split} for i in idx],
+                                means[idx], ())
+        return out
     names = [k for k in settings[0] if k not in ("rps", "races")]
     levels = {n: sorted({s[n] for s in settings}) for n in names}
     at = np.array([[levels[n].index(s[n]) for n in names] for s in settings])

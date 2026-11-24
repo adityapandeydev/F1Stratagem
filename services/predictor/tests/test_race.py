@@ -1471,3 +1471,77 @@ def test_both_race_models_choose_by_the_smoothed_mean_unless_on_the_old_fit():
         assert model._choose(settings, means) in (0, 1)    # smoothed: the low region wins
         model.stable_fit = False
         assert model._choose(settings, means) == 3         # the old fit: the lowest mean
+
+
+def test_split_grid_weights_qualifying_and_start_slots_apart():
+    from predictor.race import RaceModel, RHOS
+    model = RaceModel.__new__(RaceModel)
+    rng = np.random.default_rng(3)
+    race = rng.normal(0, 0.3, (500, 4))
+    qualified = np.array([1.0, 2.0, 3.0, 4.0])
+    grid = np.array([[4.0, 1.0, 2.0, 3.0]])                    # the pole-sitter penalised to the back
+    plain = {"kappa": 0.2, "sigma": 0.1}
+    base = model.order(race, grid, plain, {"difficulty": 1.0}, 7)
+    # rho 1 is exactly the single grid term; without the qualifying slots the term is the single one
+    assert np.array_equal(model.order(race, grid, {**plain, "rho": 1.0}, {"difficulty": 1.0, "qualified": qualified}, 7), base)
+    assert np.array_equal(model.order(race, grid, {**plain, "rho": 0.0}, {"difficulty": 1.0, "qualified": None}, 7), base)
+    # rho 0: the start slot adds nothing to the qualifying slot
+    split = model.order(race, grid, {**plain, "rho": 0.0}, {"difficulty": 1.0, "qualified": qualified}, 7)
+    assert np.array_equal(split, model.order(race, qualified[None, :], plain, {"difficulty": 1.0}, 7))
+    assert (split[:, 0] == 1).mean() > (base[:, 0] == 1).mean()
+    # a simulated grid (many rows) is never split
+    many = np.tile(grid, (500, 1))
+    assert np.array_equal(model.order(race, many, {**plain, "rho": 0.0}, {"difficulty": 1.0, "qualified": qualified}, 7),
+                          model.order(race, many, plain, {"difficulty": 1.0}, 7))
+    # candidates: rho outermost, 1 first (kept on ties), only with the split
+    model.overtaking, model.split_grid = False, True
+    tried = list(model.candidates())
+    assert [c["rho"] for c in tried[:: len(tried) // len(RHOS)]] == list(RHOS) and RHOS[0] == 1.0
+    assert model.neutral()["rho"] == 1.0
+    model.split_grid = False
+    assert all("rho" not in c for c in model.candidates()) and "rho" not in model.neutral()
+
+
+def test_split_grid_ties_keep_the_single_grid_term():
+    from predictor.race import RaceModel, RHOS
+    model = RaceModel.__new__(RaceModel)
+    model.overtaking, model.split_grid = False, True
+    settings = list(model.candidates())
+    # no earlier race separates qualifying from start: every rho scores the same
+    per = {(s["kappa"], s["sigma"]): 0.1 + 0.001 * s["kappa"] + 0.0001 * s["sigma"] for s in settings}
+    means = np.array([per[(s["kappa"], s["sigma"])] for s in settings])
+    for stable in (True, False):
+        model.stable_fit = stable
+        assert settings[model._choose(settings, means)]["rho"] == RHOS[0] == 1.0
+
+
+def test_split_grid_drops_withdrawn_cars_from_the_qualifying_slots():
+    from predictor.race import RaceModel
+    model = RaceModel.__new__(RaceModel)
+    seen = {}
+    model.order = lambda race, grid, setting, context, seed: seen.update(q=context["qualified"], g=grid) or \
+        np.tile(np.arange(1, grid.shape[1] + 1), (race.shape[0], 1))
+    withdrawn = np.array([False, True, False])
+    model.run(np.zeros((2, 3)), np.array([[1.0, 3.0, 2.0]]), {"kappa": 0.1, "sigma": 0.0, "rho": 0.5},
+              {"difficulty": 1.0, "withdrawn": withdrawn, "qualified": np.array([1.0, 2.0, 3.0])}, 1)
+    assert seen["q"].tolist() == [1.0, 3.0] and seen["g"].tolist() == [[1.0, 2.0]]
+
+
+def test_split_grid_variants_set_the_split_on_the_plain_model_only():
+    from predictor import evaluation
+    from predictor.race import SimulatedRace
+    model = evaluation.model_registry()["race_mix3ffnps51aps5kqo"]()
+    for part in model.components:
+        assert part.split_grid == (not isinstance(part, SimulatedRace))
+        assert part.known_penalties and part.published_grid and not part.stable_fit
+    assert not any(c.split_grid for c in evaluation.model_registry()["race_mix3ffnps51aps5ko"]().components)
+
+
+def test_smoothing_without_rho_is_unchanged_and_rho_slices_are_smoothed_alone():
+    from predictor.race import smoothed
+    settings = [{"a": a, "b": b} for a in (0, 1, 2) for b in (0, 1)]
+    means = np.array([0.09, 0.09, 0.11, 0.12, 0.12, 0.085])
+    assert np.array_equal(smoothed(settings, means), smoothed(settings, means, ()))
+    with_rho = [{**s, "rho": r} for r in (1.0, 0.5) for s in settings]
+    out = smoothed(with_rho, np.concatenate([means, means + 1]))
+    assert np.array_equal(out[:6], smoothed(settings, means)) and np.allclose(out[6:], out[:6] + 1)
