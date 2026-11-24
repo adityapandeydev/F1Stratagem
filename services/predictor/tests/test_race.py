@@ -197,11 +197,12 @@ def test_race_champions_route_by_forecast_moment():
     before = types.SimpleNamespace(cutoff_label="pre_weekend")
     after = types.SimpleNamespace(cutoff_label="last")
     grid = types.SimpleNamespace(cutoff_label="after_grid")
-    assert router.models[router.route(before)].name == "race:mix3fwp2apko"
+    assert router.models[router.route(before)].name == "race:mix3fwp2apk"
     assert router.models[router.route(after)].name == "race:mix3ffnps51aps5o"
     assert router.models[router.route(grid)].name == "race:mix3ffnps51aps5go"
-    # served with the old settings fit until the stable fit is promoted
-    assert not any(c.stable_fit for m in router.models.values() for c in m.components)
+    # the stable settings fit before the weekend only; the old fit after qualifying
+    stable = {k: all(c.stable_fit for c in m.components) for k, m in router.models.items()}
+    assert stable == {"pre_weekend": True, "after_session": False, "after_grid": False}
     # the qualifying champions have no 'after_grid' entry: the session's champion serves it
     from predictor.evaluation import ChampionRouter
     assert ChampionRouter().route(grid) == "after_session"
