@@ -70,6 +70,9 @@ DRAWS = 10000
 FIT_DRAWS = 1000
 GRID_FROM_SPRINT = frozenset({2021, 2022})   # seasons whose sprint set the race grid
 GAMMAS = (0.0, 0.5, 1.0, 1.5, 2.0)
+# step 9b, an experiment (RaceModel.front_bonus): race-score bonus of the cars starting 1-3,
+# fitted after the other settings with those held fixed (0 = today's order)
+FRONT_BONUSES = (0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.4)
 PASS_PRIOR_RACES = 1.0      # weight of the typical pass rate in a circuit's, in races
 
 
@@ -209,6 +212,9 @@ class RaceModel:
     stable_fit = True
     split_grid = False      # True: qualifying slot and start slot weighted apart (rho; RaceModel.order only)
     grid_retirements = False  # True: retirement chance also by starting slot (step 9a; retirements.grid_factor)
+    # True: cars starting 1-3 get a fitted race-score bonus (step 9b; the served kappa, sigma and
+    # retirements are fitted first and held fixed; RaceModel.order only, not the simulator)
+    front_bonus = False
     recent_retirements = False  # True: retirement rate weighted towards recent races (step 9a; retirements.recent_rate)
 
     def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
@@ -381,7 +387,7 @@ class RaceModel:
         if "rho" in setting and qualified is not None and grid.shape[0] == 1:
             qualified = np.asarray(qualified, dtype=float)[None, :]
             grid = qualified + setting["rho"] * (grid - qualified)
-        return self.positions(race, grid, kappa, setting["sigma"], seed)
+        return self.positions(race, grid, kappa, setting["sigma"], seed, front=setting.get("front", 0.0))
 
     def run(self, race, grid, setting, context, seed):
         """`order` over the cars that start: the entrants context["withdrawn"] marks
@@ -403,9 +409,12 @@ class RaceModel:
         full[:, withdrawn] = np.arange(active.sum() + 1, len(withdrawn) + 1)
         return full
 
-    def positions(self, race, grid, kappa, sigma, seed):
-        """Finishing order before retirements, draws x entrants (1 = first)."""
+    def positions(self, race, grid, kappa, sigma, seed, front=0.0):
+        """Finishing order before retirements, draws x entrants (1 = first); `front`:
+        race-score bonus of the cars starting 1-3 (lower scores finish ahead)."""
         score = race + kappa * (grid - 1)
+        if front:
+            score = score - front * (grid <= 3)
         if sigma > 0:
             score = score + sigma * np.random.default_rng([seed, 8]).standard_normal(race.shape)
         order = np.argsort(score, axis=1)
@@ -458,7 +467,20 @@ class RaceModel:
             means.append(np.mean(per_race))
         means = np.array(means)
         chosen = self._choose(settings, means)
-        self.settings[(season, cutoff)] = {**settings[chosen], "rps": float(means[chosen]), "races": len(prepared)}
+        best, best_rps = settings[chosen], float(means[chosen])
+        if self.front_bonus:            # the bonus alone, the settings just chosen held fixed
+            fronts = []
+            for front in FRONT_BONUSES:
+                setting, per_race = {**best, "front": front}, []
+                for example, race, grid, context in prepared:
+                    seed = fit_seed(example, self.stable_fit)
+                    forecast = self.forecast(example, self.run(race, grid, setting, context, seed), seed, {},
+                                             context.get("withdrawn"), grid=grid)
+                    per_race.append(score(forecast, example)["rps"])
+                fronts.append(np.mean(per_race))
+            k = int(np.argmin(fronts))              # ties to the smaller bonus
+            best, best_rps = {**best, "front": FRONT_BONUSES[k]}, float(fronts[k])
+        self.settings[(season, cutoff)] = {**best, "rps": best_rps, "races": len(prepared)}
         self._draws = {}             # tied to this season's pace settings
 
     def _choose(self, settings, means):

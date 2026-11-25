@@ -516,6 +516,8 @@ def model_registry():
             # retirement effect (the simulator half's arm failed docs/step9/level_check.py)
             "race1aps5or": lambda: _grid_input("race1aps5", "or", stable_fit=False, grid_retirements=True,
                                                recent_retirements=True),
+            # step 9b: the simple half with a fitted bonus for the cars starting 1-3
+            "race1aps5of": lambda: _grid_input("race1aps5", "of", stable_fit=False, front_bonus=True),
             "race1aps5ko": lambda: _grid_input("race1aps5", "ko", published_grid=True, known_penalties=True,
                                                stable_fit=False),
             "race1aps5kqo": lambda: _grid_input("race1aps5", "kqo", published_grid=True, known_penalties=True,
