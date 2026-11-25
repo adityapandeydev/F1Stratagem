@@ -1365,8 +1365,12 @@ Kept in code, not served, each with what would bring it back:
 | Fresh-tyre peak, start-tyre roles, learned gambles | level or worse | the room test |
 | Wet pieces: drying curve and tyre-class crossover, driver wet ability, wet track evolution, wet segments by tyres; driver × circuit affinity | noise | after the 2025–2026 check (more wet data) |
 | Lap effects per lap number (gate A) | ties, 2024 over the limit | with the next pace-model change |
+| Car profile in the pace model (car x track suitability; this weekend's profile change) | simple model with fixed settings: suitability -0.00018 before the weekend, noise later; weekend change +0.00030 after first practice, worse | like-for-like sessions (FP1 against earlier FP1s, Q against earlier Qs); 2025–2026 data |
+| Team residual carried to the next race | squared team error +0.0073, worse in every season; previous-race correlation +0.03 | closed |
+| Slick-intermediate crossover trend | with inputs timed correctly, no better than the last gap; 7 races in 2018–2024 with any mixed interval, practice none | after the 2025–2026 check |
+| In-race rain | deferred, untested | after the crossover |
 
-#### Plan from 2026-11-25 (as written that day)
+#### Plan from 2026-11-25 (as written that day; steps 2–6 were run the same day: the car profile and the team residual did not convert, the crossover is parked, and stage 5 followed)
 
 The audit moved the priority from race mechanisms to the pace forecast: the
 reachable error is in race pace, mostly at team level, and race-mechanism features
