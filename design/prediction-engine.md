@@ -809,11 +809,14 @@ sampled.
 - Rerun after every race, and at the season start after testing. Uncertainty
   narrows as the season progresses; the history of title probabilities across
   the season is stored and shown, with points scenarios for each contender.
-- **User-built calendars:** the same simulator runs over a calendar made in the
-  platform's calendar builder, using the lap simulator (2a) for circuit pace and
-  the circuit priors for event hazards. Circuits without recent F1 data are
-  flagged with wider uncertainty. The calendar builder's core purpose is picking
-  and sharing calendars; championship prediction is an optional layer on top.
+- **User-built calendars:** a fantasy feature of the website, never part of the
+  model's evaluation. The calendar builder enforces what is possible: dates that
+  cannot be raced (Canada in December, the Gulf in mid-summer) are refused there,
+  and borderline ones carry a warning, so the model only ever receives a valid
+  calendar. The API sends it in the same request shape as the FIA calendar, so
+  the season simulator runs on it unchanged; only its weather comes from
+  climatology instead of forecasts. Circuits without recent F1 data are flagged
+  with wider uncertainty.
 - **Weather for user calendars:** dates are usually beyond any forecast, so they
   use climatology: a per-circuit, per-day-of-year table built once from decades of
   reanalysis (rain probability in a race window, temperature distribution,
@@ -1339,10 +1342,13 @@ The shared state beats the projection in every season on all four measures and
 the independent redraw on rank RPS in five of six seasons per championship
 (expected points are the same by construction). With one to seven races left
 the projection's points error is slightly lower (drivers 6.8 against 7.4): the
-weekend forecast under-rates the top three drivers by about 1.1 points a race in
-five of six seasons, the front-runner bias already seen in stage 3's
-calibration. It belongs to the race model's ranking tuning, not to the season
-simulator. Title probabilities stay descriptive (six champions).
+simulation under-forecasts the current championship top three by about 1.1
+points a race in five of six seasons, and those three drivers account for about
+0.56 of the 0.62-point late-season gap. Stage 3's calibration found front-runners
+by grid position (1–3) finishing better than forecast; the two findings are
+related, but grouped differently (championship against grid position), so the
+mechanism is open. A target for ranking tuning (step 9). Title probabilities
+stay descriptive (six champions).
 
 #### Served champions (2026-11-25)
 

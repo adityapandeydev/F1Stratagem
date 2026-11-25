@@ -215,7 +215,16 @@ class SeasonSimulator:
             drivers = list(drivers) + absent
         old_d, old_c = carried
         n, size = add.shape
-        positions = gp_counts.shape[2] - 1
+        # countback reaches the deepest finish, earlier or simulated (a field that shrinks
+        # must not drop an earlier P20)
+        deepest = [gp_counts.shape[2] - 1]
+        for table in (old_d, old_c):
+            p = table.attrs["finishes"].position
+            if len(p) and p.notna().any():
+                deepest.append(int(p.max()))
+        positions = max(deepest)
+        if positions + 1 > gp_counts.shape[2]:
+            gp_counts = np.concatenate([gp_counts, np.zeros((n, size, positions + 1 - gp_counts.shape[2]))], axis=2)
         base = old_d.points.reindex(drivers).fillna(0.0).to_numpy()
         finish = old_d.attrs["finishes"]
         past = np.zeros((size, positions + 1))

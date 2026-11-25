@@ -43,3 +43,17 @@ def test_known_seat_change_wins_over_the_last_result():
     out = _sim()._tables(np.array([[18.0, 0.0]]), np.zeros((1, 2, 3)), ["albon", "gasly"], carried, seats)
     c = dict(zip(out["constructors"], out["constructor_points"][0]))
     assert c == {"red_bull": 18.0 + 18.0, "toro_rosso": 25.0}         # Albon's new points go to Red Bull
+
+
+def test_countback_keeps_finishes_deeper_than_the_remaining_field():
+    # a and b: 33 points each, one P2 and one P3 each; a also has a P20, b a retirement. Three
+    # cars race on (a field of 3), so the P20 is deeper than any simulated finish; countback
+    # must still count it and put a ahead (b is listed first, so a tie would favour b)
+    carried = standings(_entries([
+        (2022, 1, "R", "a", "x", 2, False), (2022, 1, "R", "b", "y", 3, False),
+        (2022, 2, "R", "b", "y", 2, False), (2022, 2, "R", "a", "x", 3, False),
+        (2022, 3, "R", "a", "x", 20, False), (2022, 3, "R", "b", "y", np.nan, False)]), END)
+    out = _sim()._tables(np.zeros((1, 3)), np.zeros((1, 3, 4)), ["b", "a", "c"], carried, {})
+    i, j = out["drivers"].index("a"), out["drivers"].index("b")
+    assert out["points"][0, i] == out["points"][0, j] == 33
+    assert out["rank"][0, i] == 1 and out["rank"][0, j] == 2
