@@ -1272,6 +1272,24 @@ and in five of six after qualifying (2019 the exception). Review corrections:
   before the weekend by 0.00076. The pace extraction measures 2,261 of 2,560
   driver entries; five races have too few for substitution.
 
+Corrected run (batch 3; teams with two measured drivers only in every arm; a team
+with one leaves the forecast unchanged; the served model reproduces to 1e-16):
+
+| Cutoff | Arm | Served settings fixed | Settings refitted |
+|---|---|---|---|
+| before the weekend | full | −0.0157 [−0.0178, −0.0136] | −0.0200 |
+| | team level | −0.0097 [−0.0114, −0.0079] | −0.0113 |
+| | teammate difference | −0.0049 [−0.0056, −0.0042] | −0.0060 |
+| last | full | −0.0086 [−0.0101, −0.0071] | −0.0117 |
+| | team level | −0.0048 [−0.0061, −0.0036] | −0.0058 |
+| | teammate difference | −0.0035 [−0.0041, −0.0028] | −0.0042 |
+
+Before the weekend the team level stays about twice the teammate difference with
+the settings fixed, in every season (2021–2024 −0.011 to −0.012 against −0.005 to
+−0.007). After qualifying it is 1.4 times, in five of six seasons (2019: −0.0007
+against −0.0030; 2024 close, −0.0040 against −0.0035). Races with a one-measured
+team (85) split like the others. Refitting the settings added 15–35% to every arm.
+
 #### Served champions (2026-11-25)
 
 | Forecast moment | Qualifying | Race |
@@ -1301,9 +1319,8 @@ reachable error is in race pace, mostly at team level, and race-mechanism featur
 were judged on top of a pace forecast that misses by an order of magnitude more
 than they can gain. The data are the same; the change is how they are used.
 
-1. **Corrected split.** Teams with two measured drivers only, the served settings
-   fixed and refitted, one seed batch, before the weekend and after qualifying.
-   Confirms the team share before building on it.
+1. **Corrected split.** Done (above): the team share holds with the fixes, most
+   clearly before the weekend.
 2. **Bounded car-profile pace check.** Profiles strictly before each cutoff, a few
    regularised car × track-mix terms, judged on held-out race pace error first:
    does a better car map convert into better forecasts, not only a smaller gap to
