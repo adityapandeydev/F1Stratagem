@@ -2,15 +2,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from predictor.championship import points, standings
+from predictor.championship import points, recorded_share, standings
+
+END = pd.Timestamp("2030-01-01", tz="UTC")
 
 
 def test_grand_prix_points_fastest_lap_and_unclassified():
-    got = points(2022, "R", [1, 2, 10, 11, np.nan], fastest=[False, False, True, False, False], round_=1)
+    got = points(2022, "R", [1, 2, 10, 11, np.nan], fastest=[False, False, True, False, False])
     assert got.tolist() == [25, 18, 2, 0, 0]          # P10 with the fastest lap: 1 + 1
-    got = points(2022, "R", [11, 1], fastest=[True, False], round_=1)
+    got = points(2022, "R", [11, 1], fastest=[True, False])
     assert got.tolist() == [0, 25]                    # fastest lap outside the top ten: nothing
-    got = points(2018, "R", [10], fastest=[True], round_=1)
+    got = points(2018, "R", [10], fastest=[True])
     assert got.tolist() == [1]                        # no fastest-lap point before 2019
 
 
@@ -22,8 +24,15 @@ def test_sprint_points_by_season_and_no_fastest_lap():
 
 
 def test_reduced_points_race_halves_and_drops_fastest_lap():
-    got = points(2021, "R", [1, 2, 10], fastest=[False, False, True], round_=12)
-    assert got.tolist() == [12.5, 9.0, 0.5]
+    share = recorded_share(2021, 12)
+    got = points(2021, "R", [1, 2, 10], fastest=[False, False, True], share=share)
+    assert share == 0.5 and got.tolist() == [12.5, 9.0, 0.5]
+
+
+def test_simulated_race_at_a_reduced_round_scores_full_points():
+    # a forecast before Spa 2021 simulates a full race there: 25 and the fastest-lap point
+    got = points(2021, "R", [1, 10], fastest=[True, False])
+    assert got.tolist() == [26, 1]
 
 
 def _entries(rows):
@@ -39,7 +48,7 @@ def test_countback_on_grand_prix_results_only():
         (2023, 2, "R", "a", "x", 2, False), (2023, 2, "R", "b", "y", 3, False),
         (2023, 2, "S", "a", "x", 1, False), (2023, 2, "S", "b", "y", 3, False),
     ])
-    drivers, _ = standings(e)
+    drivers, _ = standings(e, END)
     assert drivers.loc["a", "points"] == drivers.loc["b", "points"] == 52
     assert drivers.loc["b", "rank"] == 1 and drivers.loc["a", "rank"] == 2
     assert drivers.loc["b", "wins"] == 1 and drivers.loc["a", "wins"] == 0
@@ -54,16 +63,27 @@ def test_carried_standings_equal_the_whole_season():
         for i, d in enumerate("abcdef"):
             rows.append((2022, round_, "R", d, "t" + str(i // 2), order[i], i == fastest))
     e = _entries(rows)
-    whole = standings(e)
+    whole = standings(e, END)
     for split in range(1, 6):
-        carried = standings(e[e["round"] > split], carried=standings(e[e["round"] <= split]))
+        carried = standings(e[e["round"] > split], END, carried=standings(e[e["round"] <= split], END))
         for a, b in zip(whole, carried):
             pd.testing.assert_frame_equal(a.sort_index(), b.sort_index())
 
 
-def test_constructor_deduction_applies_once():
-    e = _entries([(2020, 1, "R", "p", "racing_point", 1, False), (2020, 1, "R", "q", "other", 2, False)])
-    _, constructors = standings(e)
-    assert constructors.loc["racing_point", "points"] == 25 - 15
-    _, carried = standings(e.assign(round=2), carried=standings(e))
-    assert carried.loc["racing_point", "points"] == 2 * 25 - 15
+def test_constructor_deduction_from_its_publication_once():
+    e = _entries([(2020, 1, "R", "p", "racing_point", 4, False), (2020, 1, "R", "q", "other", 1, False)])
+    july = pd.Timestamp("2020-07-05 23:59", tz="UTC")
+    _, constructors = standings(e, july)
+    assert constructors.loc["racing_point", "points"] == 12          # decision published 2020-08-07
+    _, constructors = standings(e, END)
+    assert constructors.loc["racing_point", "points"] == 12 - 15
+    # carried from July: the later ruling is applied once when the standings pass its date
+    later = e.assign(round=2)
+    _, c = standings(later, pd.Timestamp("2020-07-12 23:59", tz="UTC"), carried=standings(e, july))
+    assert c.loc["racing_point", "points"] == 24
+    _, c = standings(later, END, carried=standings(e, july))
+    assert c.loc["racing_point", "points"] == 24 - 15
+    _, c = standings(later, END, carried=standings(e, END))
+    assert c.loc["racing_point", "points"] == 24 - 15
+    with pytest.raises(ValueError):
+        standings(later, july, carried=standings(e, END))
