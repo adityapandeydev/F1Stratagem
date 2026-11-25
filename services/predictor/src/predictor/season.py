@@ -50,11 +50,11 @@ class _Scaled:
     def __init__(self, base, share):
         self.base, self.share = base, share
 
-    def apply(self, positions, example, rng):
+    def apply(self, positions, example, rng, grid=None):
         rate = self.base.retire_rate
         try:
             self.base.retire_rate = rate * self.share
-            return self.base.apply(positions, example, rng)
+            return self.base.apply(positions, example, rng, grid=grid)
         finally:
             self.base.retire_rate = rate
 
@@ -164,7 +164,8 @@ class SeasonSimulator:
             retirements = self.model.retirements if kind == "R" else _Scaled(self.model.retirements,
                                                                                SPRINT_RETIREMENT_SHARE)
             final, outcomes = retirements.apply(order, replace(example, session_type=kind),
-                                                np.random.default_rng([*seed, 9]))
+                                                np.random.default_rng([*seed, 9]),
+                                                grid=grid if getattr(self.model, "grid_retirements", False) else None)
             classified = outcomes <= CLASSIFIED
             fastest = np.zeros((n, size), dtype=bool)
             if kind == "R":

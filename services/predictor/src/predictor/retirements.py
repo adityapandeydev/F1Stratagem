@@ -19,6 +19,15 @@ factor:
   of a season (correlation 0.25) and from one season to the next (0.42); the true
   spread between team-seasons is about 0.04 per start around 0.10. A season's
   prior keeps CARRY of last season's deviation from 1.
+
+Starting position (step 9a, an experiment; `grid_beta`, 0 = off): a car's retirement
+chance is also multiplied by `grid_factor` of its starting slot, exp(beta x z) with z
+the slot scaled to [-0.5, 0.5] and the factor normalised to mean 1 over the field, so
+the field's rate is unchanged and only its spread across the grid moves. 2019-2024
+starters 1-3 retired 8.9% of the time, 16th and later 18.3% (2010-2018: 10% and 24%).
+beta is fitted by `fit_grid_beta` on earlier races' actual starting grids, on top of
+each model's own chances (circuit, team): the question is whether the slot adds
+information, not whether a front slot makes a car more reliable.
 """
 import numpy as np
 import pandas as pd
@@ -62,6 +71,35 @@ def history_incidents(root):
             .reset_index().rename(columns={"circuit_id": "circuit"}))
 
 
+GRID_BETAS = np.round(np.arange(-3.0, 3.0001, 0.01), 2)
+
+
+def grid_factor(grid, beta):
+    """Relative retirement chance per starting slot (1 = pole; rows: draws or one known
+    grid), normalised to mean 1 over each row's field."""
+    grid = np.atleast_2d(np.asarray(grid, dtype=float))
+    n = grid.shape[1]
+    z = (grid - 1) / max(n - 1, 1) - 0.5
+    factor = np.exp(beta * z)
+    return factor / factor.mean(axis=1, keepdims=True)
+
+
+def fit_grid_beta(races):
+    """Maximum-likelihood beta (on GRID_BETAS) from earlier races: a list of (base chance
+    per car, starting slot per car, retired per car) arrays, one triple per race."""
+    if not races:
+        return 0.0
+    best, best_ll = 0.0, None
+    for beta in GRID_BETAS:
+        ll = 0.0
+        for base, slot, retired in races:
+            p = np.clip(base * grid_factor(slot, beta)[0], 1e-6, 0.95)
+            ll += float(np.sum(np.where(retired, np.log(p), np.log1p(-p))))
+        if best_ll is None or ll > best_ll + 1e-12:
+            best, best_ll = float(beta), ll
+    return best
+
+
 def _shrunk(obs, exp, k):
     return (obs + k) / (exp + k)
 
@@ -76,6 +114,7 @@ class DetailedRetirements:
         self.incident_rate, self.mechanical_rate = 0.0, 0.0
         self.circuit_factor, self.team_factor = {}, {}
         self.retire_rate, self.mechanical_share = 0.0, 0.5     # summaries, as RetirementModel reports
+        self.grid_beta = 0.0                                   # starting-slot effect (0 = off)
 
     def fit(self, history):
         rows = []
@@ -155,11 +194,20 @@ class DetailedRetirements:
         team = np.array([self._team(example.season, l) if l is not None else 1.0 for l in lineages])
         return np.full(n, self.incident_rate * circuit), np.clip(self.mechanical_rate * team, 0.0, 0.9)
 
-    def apply(self, positions, example, rng):
+    def base_chances(self, example):
+        """Retirement chance per entrant before any starting-slot effect."""
+        incident, mechanical = self.chances(example)
+        return np.clip(incident + mechanical, 0.0, 0.95)
+
+    def apply(self, positions, example, rng, grid=None):
+        """`grid`: starting slots (one row, or one per draw) for the starting-slot effect."""
         draws, n = positions.shape
         incident, mechanical = self.chances(example)
         total = np.clip(incident + mechanical, 0.0, 0.95)
-        retired = rng.random((draws, n)) < total
+        chance = total
+        if grid is not None and self.grid_beta:
+            chance = np.clip(total * grid_factor(grid, self.grid_beta), 0.0, 0.95)
+        retired = rng.random((draws, n)) < chance
         key = positions + retired * (n + 1)          # finishers keep their order; retirements behind them
         order = np.argsort(key, axis=1)
         final = np.empty_like(positions)

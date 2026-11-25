@@ -208,6 +208,7 @@ class RaceModel:
     # mean), which the step-4 re-baseline kept better after qualifying
     stable_fit = True
     split_grid = False      # True: qualifying slot and start slot weighted apart (rho; RaceModel.order only)
+    grid_retirements = False  # True: retirement chance also by starting slot (step 9a; retirements.grid_factor)
 
     def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
         self.pace = pace
@@ -238,7 +239,52 @@ class RaceModel:
             self.retirements = DetailedRetirements(dict(zip(archive.events.event_key, archive.events.circuit_id)),
                                                    history_incidents(archive.root))
         self.retirements.fit(history)
+        if self.grid_retirements:
+            self.retirements.grid_beta = self._grid_beta(view_for)
         return self
+
+    def _grid_beta(self, view_for):
+        """The starting-slot retirement effect fitted on the races of the history: each
+        car's chance from the retirement model as fitted, its actual starting slot
+        (Jolpica results, read after the race; pit-lane starts behind the grid in their
+        order) and whether it retired (the production outcome)."""
+        from .retirements import fit_grid_beta
+        races = [e for e in self._history if e.session_type == "R"]
+        key = tuple(e.event_key for e in races)
+        if getattr(self, "_grid_beta_key", None) == key:
+            return self._grid_beta_value
+        starts = self._jolpica_grids(view_for(races[0]).archive.root) if races else {}
+        rows = []
+        for e in races:
+            slots = starts.get(e.event_key)
+            if slots is None:
+                continue
+            numbers = [str(n) for n in e.driver_numbers]
+            keep = np.array([o is not None and not x and n in slots for o, x, n in zip(e.outcomes, e.excluded, numbers)])
+            if keep.sum() < 2:
+                continue
+            base = np.asarray(self.retirements.base_chances(e), dtype=float)[keep]
+            slot = np.array([slots[n] for n, k in zip(numbers, keep) if k], dtype=float)
+            slot = pd.Series(slot).rank(method="first").to_numpy()        # 1..n among the cars kept
+            retired = np.array([o in RETIREMENTS for o, k in zip(e.outcomes, keep) if k])
+            rows.append((base, slot[None, :], retired))
+        self._grid_beta_key, self._grid_beta_value = key, fit_grid_beta(rows)
+        return self._grid_beta_value
+
+    def _jolpica_grids(self, root):
+        """event key -> {driver number: starting slot} from Jolpica results (grid 0 =
+        pit lane: behind every car on the grid)."""
+        if getattr(self, "_grids", None) is None:
+            path = root / "external" / "jolpica" / "tables" / "results.parquet"
+            self._grids = {}
+            if path.exists():
+                r = pd.read_parquet(path, columns=["season", "round", "number", "grid"],
+                                    filters=[("season", ">=", 2014), ("season", "<=", 2024)])
+                r["grid"] = pd.to_numeric(r.grid, errors="coerce").fillna(0)
+                r["slot"] = r.grid.where(r.grid > 0, 1000 + r.grid)
+                for (season, rnd), g in r.groupby(["season", "round"]):
+                    self._grids[f"{int(season)}-{int(rnd):02d}"] = dict(zip(g.number.astype(str), g.slot))
+        return self._grids
 
     def draws(self, view, example, count, seed):
         """(race pace, grid): race pace draws x entrants with the race observation noise,
@@ -365,12 +411,12 @@ class RaceModel:
         positions[np.arange(len(score))[:, None], order] = np.arange(1, score.shape[1] + 1)
         return positions
 
-    def forecast(self, example, positions, seed, metadata, withdrawn=None):
+    def forecast(self, example, positions, seed, metadata, withdrawn=None, grid=None):
         """Forecast from finishing orders before retirements; `withdrawn` (a boolean
         per entrant) are known not to start: classified behind everyone in every draw
         (not scored, but the places they would take go to the others)."""
         rng = np.random.default_rng([seed, 9])
-        final, outcomes = self.retirements.apply(positions, example, rng)
+        final, outcomes = self.retirements.apply(positions, example, rng, grid=grid if self.grid_retirements else None)
         if withdrawn is not None and withdrawn.any():
             final, outcomes = withdraw(final, outcomes, withdrawn, example)
         return Forecast.from_draws(
@@ -405,7 +451,7 @@ class RaceModel:
             for example, race, grid, context in prepared:
                 seed = fit_seed(example, self.stable_fit)
                 forecast = self.forecast(example, self.run(race, grid, setting, context, seed), seed, {},
-                                         context.get("withdrawn"))
+                                         context.get("withdrawn"), grid=grid)
                 per_race.append(score(forecast, example)["rps"])
             means.append(np.mean(per_race))
         means = np.array(means)
@@ -451,7 +497,8 @@ class RaceModel:
             "hyper": {"race": chosen, "noise": dict(self.pace.hyper.noise), "fit": self.pace.fit_log.get(example.season)},
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
             **({"retire_factors": dict(zip(("incident", "mechanical"), map(list, self.retirements.chances(example))))}
-               if self.detailed_retirements else {})}, withdrawn)
+               if self.detailed_retirements else {}),
+            **({"grid_beta": self.retirements.grid_beta} if self.grid_retirements else {})}, withdrawn, grid=grid)
 
 
 def fit_seed(example, own=True):

@@ -129,6 +129,7 @@ class RetirementModel:
     def __init__(self):
         self.retire_rate = 0.0
         self.mechanical_share = 0.5
+        self.grid_beta = 0.0          # starting-slot effect (retirements.grid_factor; 0 = off)
 
     def fit(self, history):
         outcomes = [o for e in history for o, x in zip(e.outcomes, e.excluded) if o is not None and not x]
@@ -140,9 +141,17 @@ class RetirementModel:
                 self.mechanical_share = resolved.count("mechanical") / len(resolved)
         return self
 
-    def apply(self, positions, example, rng):
+    def base_chances(self, example):
+        return np.full(len(example.driver_numbers), self.retire_rate)
+
+    def apply(self, positions, example, rng, grid=None):
+        """`grid`: starting slots (one row, or one per draw) for the starting-slot effect."""
         draws, n = positions.shape
-        retired = rng.random((draws, n)) < self.retire_rate
+        chance = self.retire_rate
+        if grid is not None and self.grid_beta:
+            from .retirements import grid_factor
+            chance = np.clip(self.retire_rate * grid_factor(grid, self.grid_beta), 0.0, 0.95)
+        retired = rng.random((draws, n)) < chance
         # Finishers keep their relative order; retirements are classified behind them.
         key = positions + retired * (n + 1)
         order = np.argsort(key, axis=1)
