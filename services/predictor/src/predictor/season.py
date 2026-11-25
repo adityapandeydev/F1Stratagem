@@ -21,7 +21,9 @@ distribution (the same marginal per event, drift included) with the same event-l
 random numbers: the difference is what carrying strength across a season does.
 
 Assumptions (documented, not fitted): the roster at the cutoff races every remaining
-event; the calendar and sprint schedule are the events of the season in the archive;
+event, and a driver already in the standings but not in that roster keeps his points and
+results and starts no more races; a driver's points go to the team the cutoff roster puts
+him in (`teams_at`); the calendar and sprint schedule are the events of the season in the archive;
 sprints use the race model with a grid of their own and a third of the race retirement
 rate; a retired car is not classified; the pace model has no circuit-specific state
 (checked).
@@ -55,6 +57,20 @@ class _Scaled:
             return self.base.apply(positions, example, rng)
         finally:
             self.base.retire_rate = rate
+
+
+def teams_at(driver_ids, lineage_ids, season, teams, last_team=None):
+    """Driver id -> constructor id at a cutoff: the cutoff roster's seat (its car lineage,
+    mapped through the season's teams table: season, lineage_id, constructor_id) first; the
+    team of the driver's last result (`last_team`) only for a driver the roster cannot place."""
+    out = {}
+    table = teams[teams.season == season].drop_duplicates("lineage_id").set_index("lineage_id").constructor_id
+    for driver, lineage in zip(driver_ids, lineage_ids):
+        if lineage is not None and not pd.isna(lineage) and lineage in table.index:
+            out[driver] = table[lineage]
+        elif last_team and driver in last_team:
+            out[driver] = last_team[driver]
+    return out
 
 
 def fastest_lap_table(results, before_season, first=2014):
@@ -163,8 +179,9 @@ class SeasonSimulator:
     def simulate(self, view, next_example, events, carried, teams, seed):
         """events: DataFrame of the remaining events in order (event_key, round, time: the
         event's pre-weekend cutoff, sprint: bool), the first being next_example's;
-        carried: (drivers, constructors) standings at the cutoff (championship.standings);
-        teams: driver id -> constructor id. Returns final points and ranks per draw."""
+        carried: (drivers, constructors) standings at the cutoff (championship.standings), or
+        None before the first race; teams: driver id -> constructor id (`teams_at`). Returns
+        final points and ranks per draw for every driver in the roster or the standings."""
         s = self._state(view, next_example)
         rng = np.random.default_rng([seed, 100 + int(self.shared)])
         paths = self.state_paths(s, list(events.time), rng)
@@ -184,19 +201,32 @@ class SeasonSimulator:
         return self._tables(add, gp_counts, drivers, carried, teams)
 
     def _tables(self, add, gp_counts, drivers, carried, teams):
+        """Final tables per draw from the points (`add`, draws x roster) and Grand Prix
+        finishes (`gp_counts`, draws x roster x position) the remaining events gave the
+        roster, on the carried standings. A driver in the standings but not in the roster
+        keeps his points and results and adds nothing."""
+        if carried is None:
+            carried = _empty_standings()
+        n = add.shape[0]
+        absent = [d for d in carried[0].index if d not in set(drivers)]
+        if absent:
+            add = np.hstack([add, np.zeros((n, len(absent)))])
+            gp_counts = np.concatenate([gp_counts, np.zeros((n, len(absent), gp_counts.shape[2]))], axis=1)
+            drivers = list(drivers) + absent
         old_d, old_c = carried
         n, size = add.shape
+        positions = gp_counts.shape[2] - 1
         base = old_d.points.reindex(drivers).fillna(0.0).to_numpy()
         finish = old_d.attrs["finishes"]
-        past = np.zeros((size, size + 1))
+        past = np.zeros((size, positions + 1))
         for i, d in enumerate(drivers):
             p = finish[(finish.key == d) & (finish.position >= 1)].position.astype(int)
-            for k in p[p <= size]:
+            for k in p[p <= positions]:
                 past[i, k] += 1
         total = base[None, :] + add
         counts = gp_counts + past[None]
         # countback: points, then wins, second places, ... (np.lexsort: last key first)
-        keys = [counts[:, :, k] for k in range(size, 0, -1)] + [total]
+        keys = [counts[:, :, k] for k in range(positions, 0, -1)] + [total]
         rank = np.empty((n, size), dtype=int)
         for i in range(n):
             order = np.lexsort([-k[i] for k in keys])
@@ -205,20 +235,28 @@ class SeasonSimulator:
         names = sorted(set(old_c.index) | {teams.get(d) for d in drivers if teams.get(d)})
         team_of = np.array([names.index(teams[d]) if teams.get(d) in names else -1 for d in drivers])
         c_total = np.tile(old_c.points.reindex(names).fillna(0.0).to_numpy(), (n, 1))
-        c_counts = np.zeros((n, len(names), size + 1))
+        c_counts = np.zeros((n, len(names), positions + 1))
         finish_c = old_c.attrs["finishes"]
         for t, name in enumerate(names):
             p = finish_c[(finish_c.key == name) & (finish_c.position >= 1)].position.astype(int)
-            for k in p[p <= size]:
+            for k in p[p <= positions]:
                 c_counts[:, t, k] += 1
         for i, t in enumerate(team_of):
             if t >= 0:
                 c_total[:, t] += add[:, i]
                 c_counts[:, t] += gp_counts[:, i]
-        c_keys = [c_counts[:, :, k] for k in range(size, 0, -1)] + [c_total]
+        c_keys = [c_counts[:, :, k] for k in range(positions, 0, -1)] + [c_total]
         c_rank = np.empty((n, len(names)), dtype=int)
         for i in range(n):
             order = np.lexsort([-k[i] for k in c_keys])
             c_rank[i, order] = np.arange(1, len(names) + 1)
         return {"drivers": drivers, "points": total, "rank": rank,
                 "constructors": names, "constructor_points": c_total, "constructor_rank": c_rank}
+
+
+def _empty_standings():
+    d = pd.DataFrame(columns=["points", "wins", "rank"], dtype=float)
+    c = pd.DataFrame(columns=["points", "wins", "rank"], dtype=float)
+    for t in (d, c):
+        t.attrs["finishes"] = pd.DataFrame({"key": pd.Series(dtype=object), "position": pd.Series(dtype=float)})
+    return d, c
