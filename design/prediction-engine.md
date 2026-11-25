@@ -46,7 +46,9 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Practice run classification, clean-air tagging | Planned |
 | Learned race events, weather scenarios, tyre sets | Planned |
 | Power-unit penalty forecasts | Dropped (penalised cars finish near their qualifying place; see Results 2026-11-19 to 2026-11-25) |
-| Championship simulation (real and user-built calendars; stage 5 of the race model) | Planned |
+| Championship standings (points, fastest lap, reduced-points races, timed constructor deductions, countback) | Implemented; official standings 2019–2024 reproduced exactly |
+| Championship simulation on the real calendar (stage 5): simple race model, season strength shared within a simulated season | Implemented; beats points-per-race projection in every season |
+| Championship simulation on user-built calendars | Planned |
 | Forecast ledger | Planned |
 | Live replay and live inference | Planned |
 
@@ -774,6 +776,36 @@ the current standings, with car and driver states evolving between events
 (including expected development and upgrade uncertainty) and grid penalties
 sampled.
 
+**Implemented (stage 5, `predictor.championship`, `predictor.season`).**
+
+- **Standings.** Points per classified position by season (Grand Prix and
+  sprint), the fastest-lap point (2019–2024, top ten only), reduced points as an
+  input of the session (a replay passes the recorded share, Belgium 2021; a
+  simulated race scores full points), FIA constructor deductions from the time
+  their decision was published, and countback over Grand Prix results only.
+  Standings carry forward from any round. Replayed on every Grand Prix and
+  sprint of 2019–2024: official points per driver, standings after every round
+  and final standings (31 drivers level on points included) reproduced exactly.
+- **What a simulated season shares.** The pace model's state at the cutoff splits
+  into carried states (car, driver, session offsets, wet ability: random walks
+  with the fitted drift) and weekend effects, which return to their prior at
+  every event. Each simulated season draws the carried states once and adds the
+  drift between events; weekend effects, qualifying, race-day noise,
+  retirements and the fastest lap are drawn per event as the race model draws a
+  single race, conditional on the season's state. Redrawing strength
+  independently every weekend averages away the uncertainty about which car is
+  really faster and concentrates the title odds.
+- **Race engine.** The simple race model (race pace, simulated grid, grid
+  weight and race-day noise, retirements), fast enough for thousands of seasons
+  over twenty-odd remaining events; sprints use a grid of their own and a third
+  of the race retirement rate.
+- **Roster.** The roster at the cutoff races every remaining event; a driver
+  already in the standings but missing from it keeps his points and results;
+  each driver scores for the team of his seat in the cutoff roster.
+- **Checks.** Drift three events ahead equals the pace model's own state; one
+  simulated weekend reproduces the race model's forecast within Monte Carlo
+  error.
+
 - Rerun after every race, and at the season start after testing. Uncertainty
   narrows as the season progresses; the history of title probabilities across
   the season is stored and shown, with points scenarios for each contender.
@@ -1290,6 +1322,28 @@ the settings fixed, in every season (2021–2024 −0.011 to −0.012 against �
 against −0.0030; 2024 close, −0.0040 against −0.0035). Races with a one-measured
 team (85) split like the others. Refitting the settings added 15–35% to every arm.
 
+#### Stage 5: championship simulation
+
+Walk-forward over 122 cutoffs (before rounds 2 to the last of 2019–2024), 2,000
+simulated seasons each, the realised calendar assumed known; seasons weighted
+equally:
+
+| | Shared season state | Redrawn every weekend | Points per Grand Prix so far |
+|---|---|---|---|
+| Drivers, final-rank RPS | 0.0408 | 0.0426 | 0.0728 |
+| Drivers, final points error | 18.2 | 18.2 | 21.6 |
+| Constructors, final-rank RPS | 0.0421 | 0.0449 | 0.0695 |
+| Constructors, final points error | 30.6 | 30.7 | 36.6 |
+
+The shared state beats the projection in every season on all four measures and
+the independent redraw on rank RPS in five of six seasons per championship
+(expected points are the same by construction). With one to seven races left
+the projection's points error is slightly lower (drivers 6.8 against 7.4): the
+weekend forecast under-rates the top three drivers by about 1.1 points a race in
+five of six seasons, the front-runner bias already seen in stage 3's
+calibration. It belongs to the race model's ranking tuning, not to the season
+simulator. Title probabilities stay descriptive (six champions).
+
 #### Served champions (2026-11-25)
 
 | Forecast moment | Qualifying | Race |
@@ -1312,7 +1366,7 @@ Kept in code, not served, each with what would bring it back:
 | Wet pieces: drying curve and tyre-class crossover, driver wet ability, wet track evolution, wet segments by tyres; driver × circuit affinity | noise | after the 2025–2026 check (more wet data) |
 | Lap effects per lap number (gate A) | ties, 2024 over the limit | with the next pace-model change |
 
-#### Plan from 2026-11-25
+#### Plan from 2026-11-25 (as written that day)
 
 The audit moved the priority from race mechanisms to the pace forecast: the
 reachable error is in race pace, mostly at team level, and race-mechanism features
