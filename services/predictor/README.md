@@ -70,14 +70,18 @@ f1data reference build                        # canonical IDs, once per archive 
 predictor evaluate --session Q --cutoff pre_weekend --reference pace:v3w --models pace3w pace3wa
 predictor evaluate --session Q --cutoff last --reference pace:v3w --models pace3w pace3wa
 predictor evaluate --session R --cutoff last --seasons 2019 2020 2021 2022 2023 2024 --reference race:v1a --models race1a race2a
+predictor evaluate --session R --cutoff last --seasons 2019 2020 2021 2022 2023 2024 --seed-batch 3 --fit-draws 4000 --draws 20000 --reference race:mix3ffnps51aps5o --models race_mix3ffnps51aps5o
+predictor compare-batches --runs <run of batch 3> <run of batch 4> <run of batch 5> --reference race:mix3ffnps51aps5o
+predictor calibrate --run <run saved with --save-forecasts> --models race:mix3ffnps51aps5o
 ```
 
 Rebuild a native module after changing it: `make predictor-native`. Rebuilding
 `kernels/pace/` changes the fit cache key, so every pace model refits; `kernels/race/`
 does not affect cached fits.
 
-`--cutoff` takes `pre_weekend`, `after_<session>` (e.g. `after_FP2`) or `last`
-(the latest cutoff before the target session). `--reference` names the model the
+`--cutoff` takes `pre_weekend`, `after_<session>` (e.g. `after_FP2`), `last`
+(the latest cutoff before the target session) or, for races, `after_grid` (once the
+FIA starting grid is published). `--reference` names the model the
 others are compared against.
 
 Seasons default to 2019–2023 (development); 2018 is warm-up data only. Baselines
@@ -92,6 +96,14 @@ The printed summary includes the paired difference against the reference with a
 bootstrap 90% interval (`better_beyond_noise`, `worse_beyond_noise`), the same
 comparison on each season's first three rounds, and RPS by season. A new component
 must not be `worse_beyond_noise` at any cutoff.
+
+Race models simulate thousands of races per forecast, so a small difference can be
+Monte Carlo noise that the bootstrap interval does not include. `--seed-batch` gives
+every model another set of common random numbers; `compare-batches` judges models
+on the mean of several batches (the promotion protocol uses three, with
+`--fit-draws 4000 --draws 20000`). `--save-forecasts` keeps every forecast per
+entrant, which `calibrate` reads for randomised PIT calibration and from which
+mixtures can be rebuilt without rerunning their components.
 
 Metrics: winner (or pole) log loss, ranked probability score, Brier scores for
 top 3 and top 10, expected-position error overall and by band (championship rank

@@ -14,14 +14,15 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Corrected race pace as evidence (tyres, tyre age, fuel lap by lap) | Implemented (v3wr) |
 | Qualifying simulated through Q1, Q2 and Q3 (eliminations, a lap per segment) | Implemented (v3wrq) |
 | Wet and mixed sessions as their own evidence types (own noise) | Implemented (v3wrqw) |
-| Robust Student-t observation noise | Implemented; qualifying champion at both cutoffs (v3wrqwt) |
+| Robust Student-t observation noise | Implemented; in every champion (v3wrqwt) |
+| Race pace read from the best-connected group of cars; measured estimation uncertainty with a fitted stint scale | Implemented; qualifying champions v3wrqwt-rp (after a session), v3wrqwt-rps (before the weekend), v3wrqwt-rpc (wet); pace of the race champions |
 | Wet forecast mode: wet qualifying forecast with wet-session noise | Implemented; serves the wet toggle (v3wrqwtc) |
 | Wet races read with a drying curve and tyre-class crossover (x), driver wet ability (y), wet track evolution in qualifying (e), wet segments typed by tyres (g), driver × circuit affinity (i) | Tested, not adopted; kept for the re-test after the holdout check |
 | Champion router: a model per forecast moment and condition | Implemented |
 | Fits drop each state after its last use | Implemented (identical results; 2.3–2.5× faster fits with long history) |
-| Race forecasts from the pace model: race pace, grid at the cutoff, retirements (stage 1a) | Implemented; last-cutoff race champion (race:v1a) |
+| Race forecasts from the pace model: race pace, grid at the cutoff, retirements (stage 1a) | Implemented; half of the after-qualifying and published-grid race mixtures |
 | Grid slot weighted by circuit overtaking difficulty (stage 1b) | Tested, not adopted |
-| Lap-by-lap race simulation with a battle model learned from position data (stage 2a) | Implemented; pre-weekend race champion (race:v2a) |
+| Lap-by-lap race simulation with a battle model learned from position data (stage 2a) | Implemented; half of the pre-weekend race mixture |
 | Native race simulation (Rust, PyO3) | Implemented (same forecasts; 27–41× faster) |
 | Forecast roster from the FIA entry list known at the cutoff | Implemented |
 | Native Kalman filter (Rust, PyO3): weighted observations, per-group estimation covariance, Student-t updates | Implemented |
@@ -32,12 +33,19 @@ as a Python service called by the platform's Go API; it holds no user state.
 | Qualifying history 1996–2017, driver season form, car × circuit affinity, driver corner skills | Tested, not adopted (see Training and evaluation) |
 | Retirement causes for 2023–2024 from reviewed race reports | Implemented |
 | Safety cars, virtual safety cars and red flags in the race simulation (stage 2b) | Implemented; simulation base (race:v2b) |
-| Tyre wear and pit stops in the race simulation (stage 3a) | Implemented; in evaluation (race:v3a) |
-| Pit timing models, grid penalties and weather in the race simulation (stages 3–4) | Planned |
+| Tyre wear and pit stops in the race simulation (stage 3a) | Implemented (race:v3a) |
+| Stage 3: per-car stop counts, pit-lane slow stops, team tyre wear, wear from lap effects, following gaps, learned pit windows | Implemented; the simulator half of every race champion |
+| Learned per-lap pit decisions, learned gambles, start-tyre roles, following penalty and corrected race pace, fresh-tyre peak, clean-air race pace, circuit pass slope | Tested, not adopted; kept in code (parked, see Results 2026-11-19 to 2026-11-25) |
+| Forecast mixtures (frozen 50/50 of the simulator and a simpler model) | Implemented; every race champion is one |
+| Published starting grid and grid penalties known at the cutoff (stage 4a) | Implemented; served once the grid is published and before the weekend; penalties after qualifying not adopted |
+| Stable settings fit (keyed random numbers, separate fit seeds, choice smoothed over neighbouring settings) | Implemented; serves before the weekend |
+| Car profile from telemetry (straight-line speed, acceleration, corner bands) | Measured: repeats beyond lap time; not adopted in the battle model; pace-model test next |
+| Weather in the race simulation, wet crossover (stage 4b) | Planned |
 | Circuit/car profiles, hazards | Planned |
 | Car performance envelope and lap simulator | Planned |
 | Practice run classification, clean-air tagging | Planned |
-| Learned race events, weather scenarios, grid-penalty forecasts, tyre strategy | Planned |
+| Learned race events, weather scenarios, tyre sets | Planned |
+| Power-unit penalty forecasts | Dropped (penalised cars finish near their qualifying place; see Results 2026-11-19 to 2026-11-25) |
 | Championship simulation (real and user-built calendars; stage 5 of the race model) | Planned |
 | Forecast ledger | Planned |
 | Live replay and live inference | Planned |
@@ -152,9 +160,8 @@ flowchart TB
         tel["Sessions: laps, telemetry, position"]
         hist["Jolpica history, pit stops"]
         wx["Weather: forecasts as issued, observed"]
-        fiat["FIA: PU and gearbox usage, car updates, tyre nominations"]
+        fiat["FIA: starting grids, penalty decisions, car updates, tyre nominations"]
         newsr["News records (6)"]
-        ops["Operator penalty decisions"]
     end
 
     subgraph measure["Measured profiles"]
@@ -172,7 +179,7 @@ flowchart TB
         hz["Hazards and circuit priors (3)"]
         learned["Starts, overtakes, pit decisions (3a)"]
         scen["Weather scenarios (3b)"]
-        pens["Grid-penalty forecasts (3c)"]
+        pens["Starting grid and known grid penalties (3c)"]
         strat["Strategy options (3d)"]
     end
 
@@ -191,7 +198,6 @@ flowchart TB
     carprof & env & runs & air --> pace
     wx --> scen
     fiat --> pens & deg
-    ops --> pens
     deg --> strat
     scen --> strat
     pace --> qsim & rsim
@@ -534,30 +540,28 @@ feeds tyre degradation; wind enters through the regime profile.
 - **Fetching:** forecasts are fetched by the server on a schedule and stored with
   their issue time in the forecast ledger; every user reads the stored copy.
 
-### 3c. Grid-penalty forecasts
+### 3c. Starting grids and grid penalties
 
-Each driver has a per-season allocation of every power-unit element and gearbox
-component, and a pool of the elements introduced so far. Rotating between
-introduced elements is free. A grid penalty applies once per additional element,
-at the first event where it is used.
+**Implemented (stage 4a).** The FIA starting grid (provisional about three hours
+after qualifying, final about two hours before the race) is parsed for 2020–2024
+and becomes its own cutoff, `after_grid`, once published. Before it is out, grid
+penalty decisions published by the cutoff (decisions and infringements, with the
+session that serves them, replaced decisions dropped) are applied to the
+qualifying order with the grid rules of their season: the empty-grid procedure,
+and back-of-grid groups for more than 15 places from late 2022. Qualifying plus
+decisions rebuilds 96 of 105 provisional grids exactly. A car withdrawn on the
+published grid sits out every simulated race.
 
-- Input: FIA usage sheets (elements introduced per driver, per event) and the
-  per-event notices of which elements are fitted.
-- Allocations change by season and are read from a per-season configuration taken
-  from the sporting regulations (2026 includes a bonus element for the new rules).
-- Output: per driver and upcoming event, the probability of introducing an element
-  beyond the allocation, from element ages, failure history and how teams time
-  penalties (low-penalty circuits, back-of-grid starts). Pre-weekend and
-  championship forecasts sample these penalties.
-- Because the penalty counts once per element, one wrong usage figure misplaces a
-  penalty in two events: the event where it is wrongly applied and the later
-  event where it should have been. FIA sheets are occasionally corrected after
-  publication.
-  - **Upcoming events:** before a forecast is published, each penalty the model
-    is about to apply is shown to an operator, who confirms or rejects it against
-    current news. The decision is stored with the forecast.
-  - **Backtests:** historical sheets are used as published (later sheets already
-    contain the corrections), with no confirmation step.
+Served: the published grid, and penalties known before the weekend. Penalties
+known after qualifying are not served: penalised cars finish near where they
+qualified, and neither one grid weight nor a split grid term (qualifying slot as
+pace signal, starting slot as track position) turned that into a better forecast.
+
+**Dropped: power-unit penalty forecasts.** The design forecast, per driver and
+event, the chance of introducing an element beyond the allocation (from FIA usage
+sheets, element ages and how teams time penalties), confirmed by an operator
+before publication. It adds little to the finishing order for the same reason, so
+penalties are to act through learned recovery and the car's pace instead.
 
 ### 3d. Tyre allocation and strategy
 
@@ -724,8 +728,8 @@ reorder the field; pit-lane times would measure that directly.
 - **Result.** Level with the same simulation without neutralisations at both
   cutoffs: they matter for strategy (a cheap stop under a safety car), which
   stage 3 adds, more than for the finishing order alone.
-- **3: tyres and strategy:** sets left, degradation-driven stop counts, pit loss,
-  undercut, and in wet races the crossover between tyre classes.
+- **3: tyres and strategy:** done (see Results 2026-11-19 to 2026-11-25); the
+  wet crossover moved to stage 4 with the in-race weather.
 - **4: grid penalties and weather scenarios.**
 - **5: championship simulation after every race.**
 - **2026 rules (2026–2029).** Under the 2026 power units, battery deployment
@@ -1060,6 +1064,261 @@ cutoff (v2af: for each battle, 10 draws of that race's forecast, the input the
 simulation gives it) halves the fitted shift (−0.5 to −1.5) and improves the
 simulation at the last cutoff beyond noise; some over-passing remains. Stage 2b
 builds on v2af.
+
+### Results 2026-11-19 to 2026-11-25
+
+Races 2019–2024 (128 races) unless stated. RPS differences per race, negative is
+better; "noise" means the 90% block interval spans zero. 2024 is development
+evidence; 2025–2026 stay sealed.
+
+#### Stage 3: tyres and strategy
+
+Against the simulation base of the time (race:v2bwr) or the serving champion:
+
+| Change | Before the weekend | Last cutoff | Decision |
+|---|---|---|---|
+| race:v3a, stops shared by every car of a draw | −0.00019, better beyond noise | +0.00043, worse beyond noise; outcome log loss better | in code; base stays v2bwr |
+| race:v3b pit-lane slow stops, race:v3c per-car stop counts (from 2014–2024 deviations by pace band) | −0.00000 / −0.00014 (noise) | +0.00024 / +0.00048, worse beyond noise; winner log loss −0.043 against race:v1a | v3c carried into v3e and v3f |
+| race:v3d fitted share of strategy randomness | noise | +0.00037, worse; the fitted share flips between seasons | not adopted |
+| race:v3e this weekend's tyre wear and tyre-era history | −0.00016 (noise) | +0.00044, worse | not adopted |
+| race:v3f team tyre wear from race stints, drawn per simulated race | −0.00039, better beyond noise (first strategy model to beat the base) | +0.00031 (noise) | **development simulator** |
+| race:mix3f, v3f and race:v2a 50/50 | −0.00031 against the champion, better in every season | −0.00038 against race:v1a, 2024 level | **promoted before the weekend** |
+| race:v3g learned per-lap pit decisions | +0.0013, worse | +0.0025, worse | parked (diagnosis below) |
+| race:v3ff held cars keep a learned gap (walk-forward, held-up cars only), attack release | +0.00037 against v3f (noise) | race:mix3ff1a −0.00060 [−0.00093, −0.00028] against race:v1a, 15+ and 2024 better | **promoted after qualifying** |
+| Following penalty (race:v3fp), race pace corrected for it (race:v1afp), both (race:v3fpc), per-car correction | all noise or worse; 2024 worse | all noise; 2024 worse | not adopted; kept for the analysis service |
+| Clean-air race pace (gap ahead ≥ 1.0 or 1.5 s) | noise | 1.5 s: −0.00027, better beyond noise; 2024 worse at every threshold | not adopted |
+| Wear from lap effects instead of a fixed fuel rate (race:mix3fw2a) | −0.000024, better (one batch); a tie over three batches | level | **served before the weekend** (tie-break: no assumed fuel rate) |
+| Learned pit windows (race:mix3ffn1a) | +0.000052, worse | −0.000086 (one batch); a tie over three batches | **served after qualifying** (tie-break: measured stop timing) |
+| Fresh-tyre peak after a stop (first laps 0.34% faster in the 13-inch era, 0.11% in the 18-inch era) | level | level | not adopted |
+| Start-tyre roles shift the windows | not tested | +0.000121, worse | not adopted |
+| Learned one-stop-more or one-stop-fewer gambles (three variants) | not tested | +0.00022 to +0.00033, worse | not adopted; the pace-band table stays |
+| Circuit-specific pass slope (held-out passes) | — | −0.000088 log loss per pass (about 0.05%) | real but negligible; not gated |
+| Learned mixture weights (walk-forward) | level | level; the optimum is flat | 50/50 stays |
+
+The learned pit-decision model (race:v3g) was diagnosed before anything else
+changed. On real race states its hazard predicts too few stops (0.90 of the real ones on
+ordinary laps, 0.62 after red flags, 0.63–0.65 on tyres up to 10 laps old) and cannot tell one-stop
+from two-stop races (correlation 0.09 per race). In paired simulations
+switching traffic off made it worse, so traffic is not the damage. Stops off the
+planned timing do not pay back: once comparable cars have stopped, a car's place
+has moved by 3.4 on average, against 2.2 in reality. The tyre-payback mechanics are exact (a
+controlled two-car test gives the implied 0.90 s per lap); the simulator's wear
+rate is about 25% low in the 13-inch era and right in the 18-inch era.
+
+Before the weekend the following model itself hurts (race:mix3ff2a: winner log loss
+worse beyond noise, 2023–2024 worse): a sticky order on an uncertain pace and grid.
+From then on strategy refinements target the forecast after qualifying, and the
+pre-weekend simulator stays simpler.
+
+Measured and closed without a model change: used tyre sets (26.7% of stints after a
+stop) are not slower once tyre age is counted (−0.12%, se 0.016); compound identity
+(C1–C5) predicts per-compound wear no better than the weekend's hard, medium and soft
+labels. The nominations table (`tyre_compounds.csv`, 149 Grands Prix) stays for
+strategy and the wet crossover.
+
+#### Calibration and seed noise
+
+- Randomised PIT variance 0.0747 after qualifying and 0.0769 before the weekend
+  (0.0833 is ideal): slightly underconfident, no bias. Wet races are overconfident
+  (the simulation is dry). Front-runners (grid 1–3) finish better than forecast:
+  P(top 3) 0.59 forecast against 0.69. The simulator and race:v1a share this bias,
+  so it comes from the shared pace model or grid weighting, not from pit cycles.
+- Row sharpening chosen walk-forward gains −0.0003 (noise) but breaks
+  position consistency; coherent recalibration waits for ranking tuning.
+- **Seed noise.** The pit-window promotion measured −0.000086, −0.000152 and
+  +0.000112 in three seed batches: Monte Carlo noise between batches (about
+  ±0.00013) exceeds small effects, and the bootstrap intervals do not include it.
+  The promotion protocol now averages three seed batches with 4,000 fitting draws
+  and 20,000 forecast draws, and a tie may be broken in favour of the more
+  realistic mechanism. Both small promotions above became ties under it.
+
+#### Race pace reading (gates A, B and C, three seed batches)
+
+| Option | Qualifying | Races | Decision |
+|---|---|---|---|
+| A: lap effects per lap number instead of a fixed fuel rate | last +0.000082, pre −0.000012 (noise) | ties; 2024 +0.000104 and +0.000233 (over the +0.0001 limit) | not adopted |
+| B: keep the best-connected group of cars when a race is not fully identified (+4 races) | before the weekend −0.000069, better beyond noise; after a session a tie | before the weekend −0.000099, better beyond noise; after qualifying a tie | **adopted** |
+| C: races of 5–19 laps, with a stint scale on the estimation variance (the reported variance understated the real error; scale 5.9–7.6 by maximum likelihood, split-driver fit) | before the weekend a tie (adopted); after a session worse | after qualifying −0.000340, better beyond noise, 2024 −0.00067; before the weekend outcome and winner log loss worse | **adopted after qualifying** and for qualifying before the weekend |
+
+#### Stage 4a: starting grids and grid penalties
+
+The qualifying order differs from the starting grid in 69% of races (141 drops of
+three places or more, 42 pit-lane starts). Starting grids are parsed from the FIA
+documents for 2020–2024 (2019 is published as images; it falls back to the
+qualifying order). Penalty decisions (214 rows 2019–2024) are applied with the
+grid rules of their season (empty-grid procedure, back-of-grid groups); qualifying
+plus decisions rebuilds 96 of 105 provisional grids exactly (qualifying alone: 54).
+
+| Input | Result | Decision |
+|---|---|---|
+| Published grid, a new cutoff once it is out (race:mix3ffnps51aps5g) | −0.000179 [−0.000561, +0.000203], a tie | **adopted** |
+| Penalties known before the weekend (race:mix3fwp2apk) | −0.000011, a tie; 12 races change | **adopted** |
+| Penalties known after qualifying (race:mix3ffnps51aps5k) | +0.000236 (noise), 2024 +0.00095 | not adopted |
+
+#### Settings-fit stability
+
+The diagnosis of the after-qualifying penalty gate found that refitting the
+simulator's settings on slightly different grids flipped them between distant
+values, differently per seed batch. Three causes:
+
+1. **Sequential random numbers.** A setting that moved a stop shifted which numbers
+   later became lap noise, passes or safety cars. Fixed: numbers keyed by draw, lap
+   and car (in a controlled test 299 of 300 finishing orders changed with the old
+   stream, 0 with keyed numbers); settings are fitted on seeds of their own.
+2. **Winner-take-all choice over a flat surface.** In every season 15–70 of the 75
+   simulator candidates lie within paired noise of the best. Fixed: the choice is
+   the lowest mean after averaging each candidate with its neighbours on the
+   settings grid, chosen by a time-separated replay of the 2020–2022 fits
+   (best score for the simulator; no rule better beyond noise).
+3. **Compensating settings** (race-day noise and stop-timing noise both spread the
+   order): not separable from aggregate RPS; accepted.
+
+Re-baseline (three batches): before the weekend the stable fit is better beyond
+noise (−0.000073 [−0.000120, −0.000030], 15+ better, 2024 −0.000091) and serves.
+After qualifying (+0.000202, 15+ worse, 2024 +0.00042) and with the published grid
+(+0.000259) it fails; the old fit serves there. A "keep last season's settings
+unless clearly beaten" rule froze the simple model's 2019 settings until 2023 and
+was removed.
+
+#### Penalties after qualifying: split grid term
+
+Penalised cars finish near where they qualified: 91 cars moved back qualified 10.8,
+started 16.3 and finished 10.66 (forecast 10.40 ignoring the penalty, 11.63 with
+it; win chance 5.5% actual, 5.6% and 1.9%). One grid weight did two jobs: the
+qualifying slot as a pace signal and the starting slot as track position. The
+simple model now separates them, `kappa × ((qualified − 1) + rho × (start −
+qualified))`, rho fitted from {1, 0.75, 0.5, 0.25, 0}. This removes the refit damage
+entirely (races with an unchanged grid score exactly as served), but the changed
+races stay worse: the mixture with penalties and the split scores +0.000181
+[−0.000143, +0.000525], 2024 +0.00072. Not adopted. Whether the simulator recovers
+out-of-position cars correctly is not shown either way (the check's pace proxy was
+too weak). Power-unit penalty forecasts are dropped:
+penalties should act through learned recovery and the car's pace, not through a
+forecast of who takes one.
+
+#### Car profile from telemetry
+
+From every dry practice and qualifying session 2018–2024 (491 sessions, 146
+weekends), each driver's best clean lap and best free-air lap (no car within 2 s
+ahead at the start line or either sector line), relative to the session median:
+times on straights and in slow, medium and fast corners, minimum speed per corner
+band, top speed, speed-trap speed, traction (100–180 km/h, full throttle at both
+ends) and high-speed acceleration (250–300 km/h, DRS closed at both ends).
+
+- **Repeatability.** Every measure repeats within a weekend beyond what lap time
+  already says (rank partial correlation, top speed 0.65, high-speed acceleration
+  0.60, traction 0.23), between teammates (0.56, 0.49), and to the next
+  consecutive weekend (0.44, 0.29). This is a shared team signal; it does not
+  separate the car from setup, driver or conditions.
+- **Battles.** Adding free-air top speed and high-speed acceleration to the battle
+  model (walk-forward 2020–2024, 87 test races): −0.00018 [−0.00056, +0.00020] log
+  loss per pair, better in 5 of 5 seasons but within noise. Not adopted; the
+  acceleration coefficient is positive in every season. Every measure at once, and
+  gradient-boosted or neural versions, are worse or unvalidated.
+
+#### Weather, first check
+
+Wet and mixed races (16 of 128) carry 15% of the error. Blending a known-wet
+forecast towards uniform does not help (+0.00015 after qualifying, +0.00010 before
+the weekend). This tests one adjustment only; rain can also act through tyre
+choice, pit losses, interruptions and recovery chances.
+
+#### Fundamentals audit and the pace error split
+
+| Forecast (last cutoff) | RPS |
+|---|---|
+| uniform | 0.1738 |
+| practice order (fitted strength) | 0.1445 |
+| championship order | 0.1429 |
+| qualifying order | 0.1355 |
+| served after-qualifying mixture | 0.1111 |
+| served simple model race:v1aps5o | 0.1116 |
+| the simple model with the race's own measured pace (hindsight) | 0.0993 |
+
+The served forecast beats the qualifying order by 0.024 (91% of races, every
+season). Knowing the race's measured pace improves the simple model by 0.012
+(86% of races, every season): about a hundred times the recent feature gains.
+The hindsight forecast is optimistic (measured pace also holds race-day damage and
+traffic) and its remaining 0.099 is not shown to be irreducible: it also holds the
+simple model's limits and missing measurements.
+
+The split replaces only part of the pace with the measured one: each team's level
+(teammates' forecast difference kept), or the difference between teammates (the
+team level as forecast). Three seed batches, settings refitted per arm:
+
+| Cutoff | Served simple model | Full | Team level | Teammate difference |
+|---|---|---|---|---|
+| before the weekend | 0.1213 | −0.0214 | −0.0120 | −0.0059 |
+| after first practice | 0.1202 | −0.0208 | −0.0120 | −0.0062 |
+| last | 0.1116 | −0.0123 | −0.0064 | −0.0041 |
+
+All beyond noise; the team share is the larger in every season before the weekend
+and in five of six after qualifying (2019 the exception). Review corrections:
+
+- When only one teammate has a measured pace (163 team-races in 85 races) the team
+  arm moved the whole team by that driver and the driver arm changed nothing: the
+  comparison was asymmetric. Corrected run: both arms, and the full one, change
+  only teams with two measured drivers.
+- Each arm refitted its grid weight and race-day noise (2024: kappa 0.075 served,
+  0.02 full, 0.05 team and driver), so the table answers "how well could this model
+  do adapted to hindsight pace", not how its error divides. Corrected run: the
+  served model's settings held fixed, next to refitted ones.
+- A team's mean measured pace also holds shared tyre, strategy, traffic and weather
+  effects, and the teammate difference is not pure driver skill. The arms are not
+  additive shares (RPS is nonlinear; the arms refit separately). The split ran on
+  the simple model at every cutoff, not on the served pre-weekend simulator
+  mixture.
+- After first practice has 127 races (2020-11 is missing); on common races it beats
+  before the weekend by 0.00076. The pace extraction measures 2,261 of 2,560
+  driver entries; five races have too few for substitution.
+
+#### Served champions (2026-11-25)
+
+| Forecast moment | Qualifying | Race |
+|---|---|---|
+| Before the weekend | pace:v3wrqwt-rps (wet: -rpc) | race:mix3fwp2apk: race:v3fwp and race:v2ap 50/50, known penalties, stable fit |
+| After a session (to qualifying) | pace:v3wrqwt-rp (wet: -rpc) | race:mix3ffnps51aps5o: race:v3ffnps5 and race:v1aps5 50/50, old fit |
+| Starting grid published | — | race:mix3ffnps51aps5go: the same with the published grid |
+
+#### Parked features
+
+Kept in code, not served, each with what would bring it back:
+
+| Feature | Result | Re-test when |
+|---|---|---|
+| Car profile in the battle model (top speed, high-speed acceleration) | −0.00018 per pair, noise, 5 of 5 seasons | after the car profile enters the pace model |
+| Learned per-lap pit decisions (race:v3g) | worse at both cutoffs | the room test below; tyre sets and compounds |
+| Penalties after qualifying with the split grid term | +0.000181, 2024 over the limit | the room test; after the pace model improves |
+| Following penalty, corrected race pace, clean-air pace | noise; 2024 worse | the room test |
+| Fresh-tyre peak, start-tyre roles, learned gambles | level or worse | the room test |
+| Wet pieces: drying curve and tyre-class crossover, driver wet ability, wet track evolution, wet segments by tyres; driver × circuit affinity | noise | after the 2025–2026 check (more wet data) |
+| Lap effects per lap number (gate A) | ties, 2024 over the limit | with the next pace-model change |
+
+#### Plan from 2026-11-25
+
+The audit moved the priority from race mechanisms to the pace forecast: the
+reachable error is in race pace, mostly at team level, and race-mechanism features
+were judged on top of a pace forecast that misses by an order of magnitude more
+than they can gain. The data are the same; the change is how they are used.
+
+1. **Corrected split.** Teams with two measured drivers only, the served settings
+   fixed and refitted, one seed batch, before the weekend and after qualifying.
+   Confirms the team share before building on it.
+2. **Bounded car-profile pace check.** Profiles strictly before each cutoff, a few
+   regularised car × track-mix terms, judged on held-out race pace error first:
+   does a better car map convert into better forecasts, not only a smaller gap to
+   hindsight?
+3. **Car profile in the pace model, full gate.** Settings fitted, race and
+   qualifying champions, three seed batches, the promotion protocol.
+4. **Teammate difference from the same data.** With the car mapped, the gap between
+   teammates becomes a residual that the corner-band, straight-line and session
+   measures can explain: where one driver loses to the other, not only by how
+   much. Gated like any feature, and only if step 1 supports the priority.
+5. **Room test.** The parked race features re-tested on the improved pace (and
+   under hindsight pace), to see which were masked rather than wrong.
+6. **Stage 4 continued.** A small weather uncertainty term (wet and mixed
+   scenarios), then the in-race rain model with the wet crossover; penalties back
+   through learned recovery on the improved pace.
 
 ## Known constraints
 
