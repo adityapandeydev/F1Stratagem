@@ -39,3 +39,31 @@ def test_zero_effect_reproduces_the_draws_without_a_grid():
     c = model.apply(positions, example, np.random.default_rng(3), grid=np.arange(1, 21))
     retired = c[1] >= 3          # outcome indices of retirements come after the finishing ones
     assert retired[:, :5].mean() < retired[:, -5:].mean()
+
+
+def _race(t, n, r):
+    return SimpleNamespace(target_available_at=t, session_type="R", outcomes=["mechanical"] * r + ["win"] * (n - r),
+                           excluded=[False] * n)
+
+
+def test_recent_rate_pools_without_a_half_life_and_follows_a_fall():
+    from predictor.retirements import fit_half_life, race_counts, recent_rate
+    counts = [(20, 4)] * 40 + [(20, 1)] * 40          # 20% falling to 5%
+    assert np.isclose(recent_rate(counts, np.inf), 5 / 40)
+    assert recent_rate(counts, 6.0) < 0.07
+    assert fit_half_life(counts) < np.inf
+    rng = np.random.default_rng(1)
+    steady = [(20, int(rng.binomial(20, 0.12))) for _ in range(120)]
+    assert fit_half_life(steady) >= 48.0
+    history = [_race(3, 20, 2), _race(1, 20, 6), _race(2, 10, 0)]
+    assert race_counts(history) == [(20, 6), (10, 0), (20, 2)]       # oldest first
+
+
+def test_recency_off_keeps_the_pooled_rate():
+    history = [_race(i, 20, 4 if i < 30 else 1) for i in range(60)]
+    off = RetirementModel().fit(history)
+    assert np.isclose(off.retire_rate, 150 / 1200) and off.half_life is None
+    on = RetirementModel()
+    on.recency = True
+    on.fit(history)
+    assert on.retire_rate < off.retire_rate and on.half_life < np.inf

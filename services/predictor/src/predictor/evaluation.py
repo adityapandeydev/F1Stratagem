@@ -512,6 +512,10 @@ def model_registry():
             "race3ffnps5ko": lambda: _grid_input("race3ffnps5", "ko", published_grid=True, known_penalties=True,
                                                  stable_fit=False),
             "race1aps5o": lambda: _grid_input("race1aps5", "o", stable_fit=False),
+            # step 9a: the simple half with the recent retirement level and the starting-slot
+            # retirement effect (the simulator half's arm failed docs/step9/level_check.py)
+            "race1aps5or": lambda: _grid_input("race1aps5", "or", stable_fit=False, grid_retirements=True,
+                                               recent_retirements=True),
             "race1aps5ko": lambda: _grid_input("race1aps5", "ko", published_grid=True, known_penalties=True,
                                                stable_fit=False),
             "race1aps5kqo": lambda: _grid_input("race1aps5", "kqo", published_grid=True, known_penalties=True,

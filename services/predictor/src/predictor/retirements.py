@@ -28,6 +28,12 @@ starters 1-3 retired 8.9% of the time, 16th and later 18.3% (2010-2018: 10% and 
 beta is fitted by `fit_grid_beta` on earlier races' actual starting grids, on top of
 each model's own chances (circuit, team): the question is whether the slot adds
 information, not whether a front slot makes a car more reliable.
+
+Recent level (step 9a, an experiment; `recency`, False = off): the base retirement rate
+weighted towards recent races, weights halving every `half_life` races, the half-life
+chosen on HALF_LIVES by how well it predicted each earlier race from the races before it.
+2019-2024 the pooled rate over-forecast the level (14.3% against 11.7% observed): it lags
+falling retirement rates.
 """
 import numpy as np
 import pandas as pd
@@ -69,6 +75,46 @@ def history_incidents(root):
     return (results.assign(incident=(results.kind == "incident").astype(int))
             .groupby(["season", "circuit_id"]).agg(starts=("incident", "size"), incidents=("incident", "sum"))
             .reset_index().rename(columns={"circuit_id": "circuit"}))
+
+
+HALF_LIVES = (6.0, 12.0, 24.0, 48.0, 96.0, np.inf)    # in races; inf = every race weighs the same
+
+
+def race_counts(history):
+    """(starts, retirements) per race of `history`, oldest first (labelled, not excluded)."""
+    races = sorted(history, key=lambda e: e.target_available_at)
+    counts = []
+    for e in races:
+        kept = [o for o, x in zip(e.outcomes, e.excluded) if o is not None and not x]
+        if kept:
+            counts.append((len(kept), sum(o in RETIREMENTS for o in kept)))
+    return counts
+
+
+def recent_rate(counts, half_life):
+    """Retirement rate with race weights halving every `half_life` races back from the
+    latest race (inf: the pooled rate)."""
+    if not counts:
+        return 0.0
+    starts, retired = np.asarray(counts, dtype=float).T
+    age = np.arange(len(counts))[::-1]
+    w = np.ones(len(counts)) if np.isinf(half_life) else 0.5 ** (age / half_life)
+    return float((w * retired).sum() / (w * starts).sum())
+
+
+def fit_half_life(counts):
+    """The half-life (on HALF_LIVES) whose rate best predicts each race of `counts` from
+    the races before it (binomial log likelihood; ties to the longer half-life)."""
+    best, best_ll = np.inf, None
+    for h in HALF_LIVES[::-1]:
+        ll = 0.0
+        for t in range(1, len(counts)):
+            p = min(max(recent_rate(counts[:t], h), 1e-6), 1 - 1e-6)
+            n, r = counts[t]
+            ll += r * np.log(p) + (n - r) * np.log1p(-p)
+        if best_ll is None or ll > best_ll + 1e-9:
+            best, best_ll = float(h), ll
+    return best
 
 
 GRID_BETAS = np.round(np.arange(-3.0, 3.0001, 0.01), 2)
@@ -115,6 +161,8 @@ class DetailedRetirements:
         self.circuit_factor, self.team_factor = {}, {}
         self.retire_rate, self.mechanical_share = 0.0, 0.5     # summaries, as RetirementModel reports
         self.grid_beta = 0.0                                   # starting-slot effect (0 = off)
+        self.recency = False            # True: the base rate weighted towards recent races (step 9a level)
+        self.half_life = None
 
     def fit(self, history):
         rows = []
@@ -139,6 +187,10 @@ class DetailedRetirements:
         known = mechanical + incident
         share = mechanical / known if known else 0.5
         self.retire_rate = float(retired.mean())
+        if self.recency:
+            counts = race_counts([e for e in history if e.session_type == "R"])
+            self.half_life = fit_half_life(counts)
+            self.retire_rate = recent_rate(counts, self.half_life)
         self.mechanical_share = float(share)
         self.mechanical_rate = self.retire_rate * share
         self.incident_rate = self.retire_rate * (1 - share)

@@ -130,12 +130,19 @@ class RetirementModel:
         self.retire_rate = 0.0
         self.mechanical_share = 0.5
         self.grid_beta = 0.0          # starting-slot effect (retirements.grid_factor; 0 = off)
+        self.recency = False          # True: rate weighted towards recent races (retirements.recent_rate)
+        self.half_life = None
 
     def fit(self, history):
         outcomes = [o for e in history for o, x in zip(e.outcomes, e.excluded) if o is not None and not x]
         if outcomes:
             retired = [o for o in outcomes if o in RETIREMENTS]
             self.retire_rate = len(retired) / len(outcomes)
+            if self.recency:
+                from .retirements import fit_half_life, race_counts, recent_rate
+                counts = race_counts(history)
+                self.half_life = fit_half_life(counts)
+                self.retire_rate = recent_rate(counts, self.half_life)
             resolved = [o for o in retired if o in ("mechanical", "incident_or_other")]
             if resolved:
                 self.mechanical_share = resolved.count("mechanical") / len(resolved)

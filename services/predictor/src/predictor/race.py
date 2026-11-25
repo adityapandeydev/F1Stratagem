@@ -209,6 +209,7 @@ class RaceModel:
     stable_fit = True
     split_grid = False      # True: qualifying slot and start slot weighted apart (rho; RaceModel.order only)
     grid_retirements = False  # True: retirement chance also by starting slot (step 9a; retirements.grid_factor)
+    recent_retirements = False  # True: retirement rate weighted towards recent races (step 9a; retirements.recent_rate)
 
     def __init__(self, pace, name, overtaking=False, detailed_retirements=False):
         self.pace = pace
@@ -238,6 +239,7 @@ class RaceModel:
             archive = view_for(history[0]).archive     # circuits are reference data; older results end in 2017
             self.retirements = DetailedRetirements(dict(zip(archive.events.event_key, archive.events.circuit_id)),
                                                    history_incidents(archive.root))
+        self.retirements.recency = self.recent_retirements
         self.retirements.fit(history)
         if self.grid_retirements:
             self.retirements.grid_beta = self._grid_beta(view_for)
@@ -498,7 +500,8 @@ class RaceModel:
             "retire_rate": self.retirements.retire_rate, "mechanical_share": self.retirements.mechanical_share,
             **({"retire_factors": dict(zip(("incident", "mechanical"), map(list, self.retirements.chances(example))))}
                if self.detailed_retirements else {}),
-            **({"grid_beta": self.retirements.grid_beta} if self.grid_retirements else {})}, withdrawn, grid=grid)
+            **({"grid_beta": self.retirements.grid_beta} if self.grid_retirements else {}),
+            **({"half_life": self.retirements.half_life} if self.recent_retirements else {})}, withdrawn, grid=grid)
 
 
 def fit_seed(example, own=True):
