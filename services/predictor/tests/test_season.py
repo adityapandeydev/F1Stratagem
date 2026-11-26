@@ -57,3 +57,19 @@ def test_countback_keeps_finishes_deeper_than_the_remaining_field():
     i, j = out["drivers"].index("a"), out["drivers"].index("b")
     assert out["points"][0, i] == out["points"][0, j] == 33
     assert out["rank"][0, i] == 1 and out["rank"][0, j] == 2
+
+
+def test_sprint_retirements_scale_the_detailed_model_too():
+    from predictor.season import _Scaled
+    seen = {}
+
+    class Detailed:
+        retire_rate, incident_rate, mechanical_rate = 0.12, 0.06, 0.06
+
+        def apply(self, positions, example, rng, grid=None):
+            seen.update(retire=self.retire_rate, incident=self.incident_rate, mechanical=self.mechanical_rate)
+            return positions, None
+    base = Detailed()
+    _Scaled(base, 1 / 3).apply(None, None, None)
+    assert abs(seen["incident"] - 0.02) < 1e-12 and abs(seen["mechanical"] - 0.02) < 1e-12
+    assert (base.retire_rate, base.incident_rate, base.mechanical_rate) == (0.12, 0.06, 0.06)

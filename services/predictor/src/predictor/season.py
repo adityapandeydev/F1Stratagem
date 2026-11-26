@@ -50,13 +50,17 @@ class _Scaled:
     def __init__(self, base, share):
         self.base, self.share = base, share
 
+    RATES = ("retire_rate", "incident_rate", "mechanical_rate")   # the plain and the detailed model's
+
     def apply(self, positions, example, rng, grid=None):
-        rate = self.base.retire_rate
+        rates = {name: getattr(self.base, name) for name in self.RATES if hasattr(self.base, name)}
         try:
-            self.base.retire_rate = rate * self.share
+            for name, rate in rates.items():
+                setattr(self.base, name, rate * self.share)
             return self.base.apply(positions, example, rng, grid=grid)
         finally:
-            self.base.retire_rate = rate
+            for name, rate in rates.items():
+                setattr(self.base, name, rate)
 
 
 def teams_at(driver_ids, lineage_ids, season, teams, last_team=None):

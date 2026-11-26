@@ -214,3 +214,51 @@ def test_too_few_events_say_no_verdict():
     rows = [{"event_key": f"2024-{i:02d}", "season": 2024, "model": m, "rps": 0.1 + (0.01 if m == "b" else 0.0)}
             for i in range(1, 6) for m in ("a", "b")]
     assert evaluation.compare(pd.DataFrame(rows), "a").iloc[0].verdict == "none"
+
+
+def test_compare_batches_refuses_runs_unfit_to_average():
+    from predictor.cli import check_batches
+    run = {"session_type": "R", "cutoff": "last", "seasons": [2019], "warmup": [2018], "models": ["a"], "events": 21,
+           "race_draws": 20000, "race_fit_draws": 4000, "git_revision": {"commit": "x"}}
+    assert check_batches([{**run, "seed_batch": b} for b in (3, 4, 5)]) == ([], [])
+    assert check_batches([{**run, "seed_batch": 3}, {**run, "seed_batch": 3}])[0]
+    assert check_batches([{**run, "seed_batch": 3}, {**run, "seed_batch": 4, "cutoff": "after_grid"}])[0]
+    assert check_batches([{**run, "seed_batch": 3}, {**run, "seed_batch": 4, "race_draws": 10000}])[0]
+    errors, notes = check_batches([run, run])           # before the seed batch was recorded
+    assert not errors and notes
+
+
+def test_the_router_is_scored_under_its_own_name_only():
+    """Components differ between routes; reporting them would leave no common event."""
+    import types
+    from predictor.evaluation import ChampionRouter
+
+    class Stub:
+        name = "m"
+
+        def fit(self, history, view_for):
+            pass
+
+        def predict(self, view, example, **kwargs):
+            return types.SimpleNamespace(model="m", metadata={"components": ["half"], "seed": 1})
+    router = ChampionRouter({"pre_weekend": "a", "after_session": "a"}, {"a": Stub})
+    forecast = router.predict(None, types.SimpleNamespace(cutoff_label="pre_weekend"))
+    assert "components" not in forecast.metadata and forecast.metadata["seed"] == 1
+
+
+def test_a_run_learns_from_every_season_before_its_first(monkeypatch):
+    from predictor import evaluation
+    asked = []
+
+    def prepare(archive, session_type, cutoff_label, seasons, allow_holdout=False):
+        asked.append(tuple(seasons))
+        raise StopIteration
+    monkeypatch.setattr(evaluation, "prepare", prepare)
+    monkeypatch.setattr(evaluation, "git_revision", lambda: None)
+    for seasons, history in (([2019, 2020], (2018,)), ([2024], tuple(range(2018, 2024)))):
+        asked.clear()
+        try:
+            evaluation.run("R", "last", seasons, ["uniform"], archive=object())
+        except StopIteration:
+            pass
+        assert asked[0] == history

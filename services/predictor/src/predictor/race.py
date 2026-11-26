@@ -47,6 +47,7 @@ is kept when no earlier race separates them). Penalised cars of 2019-2024 finish
 average where they qualified (docs: penalised drivers check, 2026-11-24). With a
 simulated grid (before qualifying) the term is the single one.
 """
+import copy
 import functools
 import zlib
 
@@ -266,7 +267,7 @@ class RaceModel:
             self.retirements = DetailedRetirements(dict(zip(archive.events.event_key, archive.events.circuit_id)),
                                                    history_incidents(archive.root))
         self.retirements.recency = self.recent_retirements
-        self.retirements.fit(history)
+        self.retirements.fit(self._history)          # race retirements (final review: not sprints)
         if self.grid_retirements:
             self.retirements.grid_beta = self._grid_beta(view_for)
         return self
@@ -469,6 +470,18 @@ class RaceModel:
         if not earlier:
             self.settings[(season, cutoff)] = {**self.neutral(), "rps": None, "races": 0}
             return
+        # the earlier races are scored with the retirement model as fitted at the season's
+        # start, whenever the season is first forecast (final review 2026-11-26: a fresh
+        # process serving round k had rounds 1..k-1 in it; the walk-forward fits at round 1)
+        current, self.retirements = self.retirements, copy.deepcopy(self.retirements)
+        try:
+            self.retirements.fit([e for e in self._history if e.season < season])
+            self._fit_season_settings(season, cutoff, earlier)
+        finally:
+            self.retirements = current
+
+    def _fit_season_settings(self, season, cutoff, earlier):
+        from .evaluation import score
         prepared = []
         for example in earlier:
             key = (example.event_key, example.cutoff_label, season)

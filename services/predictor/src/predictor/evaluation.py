@@ -314,7 +314,10 @@ class ChampionRouter:
         key = self.route(example, view)
         forecast = self.models[key].predict(view, example, **kwargs)
         if forecast is not None:
-            forecast.metadata = {**(forecast.metadata or {}), "served_by": self.champions[key]}
+            # scored under the router's name only: components differ between routes, so
+            # reporting them would leave no event common to all names (final review)
+            metadata = {k: v for k, v in (forecast.metadata or {}).items() if k != "components"}
+            forecast.metadata = {**metadata, "served_by": self.champions[key]}
             forecast.model = self.name
         return forecast
 
@@ -1083,10 +1086,13 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         reference="uniform", fit_cache=None, screen_base=None, keep_forecasts=False):
     archive = archive or Archive()
     revision = git_revision()   # the code the run starts with; the tree may change while it runs
-    if fit_cache is not None:
-        fit_cache.prime(archive.root, seasons)
     if set(seasons) & HOLDOUT_SEASONS and not allow_holdout:
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
+    if fit_cache is not None:
+        fit_cache.prime(archive.root, seasons)
+    # the history reaches the first evaluated season whatever `seasons` is (final review
+    # 2026-11-26: a run of 2025-26 alone otherwise learnt from 2018 only)
+    warmup = tuple(sorted(set(warmup) | set(range(min(warmup), min(seasons)))))
     train = prepare(archive, session_type, cutoff_label, warmup, allow_holdout=False)
     examples = prepare(archive, session_type, cutoff_label, seasons, allow_holdout=allow_holdout)
     scores = walk_forward(examples, models, archive, train, fit_cache, screen_base, keep_forecasts)
@@ -1101,12 +1107,15 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     overall, by_season = summarise(scores)
     comparison = compare(scores, reference)
     stages = stage_comparison(scores, reference)
+    from . import baselines as _baselines, race as race_module
     manifest = {
         "session_type": session_type, "cutoff": cutoff_label, "seasons": list(seasons), "warmup": list(warmup),
         "models": list(models), "events": len(examples), "git_revision": revision,
         "fit_cache": None if fit_cache is None else str(fit_cache.folder), "screen_base": screen_base,
         "reference_manifest": json.loads((archive.root / "reference" / "manifest.json").read_text(encoding="utf-8"))
         .get("built_at_utc"), "allow_holdout": allow_holdout,
+        # module settings that change the scores (set by the CLI), for compare-batches
+        "seed_batch": _baselines.SEED_BATCH, "race_draws": race_module.DRAWS, "race_fit_draws": race_module.FIT_DRAWS,
     }
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)

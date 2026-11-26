@@ -1589,3 +1589,24 @@ def test_smoothing_without_rho_is_unchanged_and_rho_slices_are_smoothed_alone():
     with_rho = [{**s, "rho": r} for r in (1.0, 0.5) for s in settings]
     out = smoothed(with_rho, np.concatenate([means, means + 1]))
     assert np.array_equal(out[:6], smoothed(settings, means)) and np.allclose(out[6:], out[:6] + 1)
+
+
+def test_season_settings_score_with_retirements_fitted_at_the_season_start(monkeypatch):
+    """Final review 2026-11-26: the settings for a season must not depend on how many of
+    its races were in the history when it was first forecast."""
+    class Retirements:
+        def __init__(self):
+            self.seasons = None
+
+        def fit(self, history):
+            self.seasons = sorted({e.season for e in history})
+    model = RaceModel.__new__(RaceModel)
+    races = [types.SimpleNamespace(season=s, cutoff_label="last", session_type="R") for s in (2022, 2023, 2024, 2024)]
+    model._history, model.retirements = races, Retirements()
+    model.retirements.fit(races)                         # as in fit(): rounds of 2024 included
+    seen = []
+    monkeypatch.setattr(RaceModel, "_fit_season_settings",
+                        lambda self, season, cutoff, earlier: seen.append(self.retirements.seasons))
+    model._fit_season(2024, "last")
+    assert seen == [[2022, 2023]]
+    assert model.retirements.seasons == [2022, 2023, 2024]     # the current model is left as it was

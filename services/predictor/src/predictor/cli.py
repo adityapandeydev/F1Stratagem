@@ -4,6 +4,7 @@
 """
 
 import argparse
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -27,8 +28,37 @@ def _claim(folder):
         return False
 
 
+def check_batches(manifests):
+    """Problems that make runs unfit to average as seed batches (final review 2026-11-26):
+    runs differing in what they forecast or in their draws, or repeating a seed batch;
+    runs from before the manifest recorded its seed batch are reported, not refused."""
+    errors, notes = [], []
+    for key in ("session_type", "cutoff", "seasons", "warmup", "models", "events", "allow_holdout",
+                "race_draws", "race_fit_draws"):
+        values = {json.dumps(m.get(key), sort_keys=True) for m in manifests if key in m}
+        if len(values) > 1:
+            errors.append(f"runs differ in {key}: {sorted(values)}")
+    batches = [m.get("seed_batch") for m in manifests]
+    if None in batches:
+        notes.append("seed batch not recorded in some manifests (runs before 2026-11-26): not checked")
+    known = [b for b in batches if b is not None]
+    if len(set(known)) < len(known):
+        errors.append(f"a seed batch is repeated: {batches}")
+    if len({json.dumps(m.get("git_revision"), sort_keys=True) for m in manifests}) > 1:
+        notes.append("runs come from different code revisions")
+    return errors, notes
+
+
 def _compare_batches(args):
     runs = [Path(r) if Path(r).is_absolute() else SERVICE_ROOT / r for r in args.runs]
+    manifests = [json.loads((r / "manifest.json").read_text(encoding="utf-8")) for r in runs]
+    errors, notes = check_batches(manifests)
+    for note in notes:
+        print(f"note: {note}")
+    if errors:
+        for error in errors:
+            print(f"error: {error}")
+        return 1
     scores = evaluation.batch_mean([pd.read_csv(r / "scores.csv") for r in runs])
     print(f"{len(runs)} seed batches, {scores.event_key.nunique()} common events; per-race scores averaged over the batches")
     with pd.option_context("display.width", 200, "display.max_columns", 30, "display.precision", 3):
