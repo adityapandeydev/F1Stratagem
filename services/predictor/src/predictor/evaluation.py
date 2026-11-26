@@ -34,7 +34,7 @@ from .targets import HOLDOUT_SEASONS, OUTCOMES, RETIREMENTS, session_target
 
 EPS = 1e-12  # safety only; forecasts carry a prior pseudo-draw, so no probability is zero
 BANDS = ((1, 5, "front"), (6, 12, "midfield"), (13, 99, "back"))
-ID_COLUMNS = ("event_key", "season", "model")
+ID_COLUMNS = ("event_key", "season", "model", "served_by")   # served_by: a router's champion of the race
 
 
 def score(forecast, example):
@@ -943,6 +943,7 @@ def walk_forward(examples, models, archive, train_examples=(), fit_cache=None, s
                                                        if k in ("beta", "retire_rate", "mechanical_share")}
                 settings.setdefault(one.model, {}).setdefault(str(example.season), fitted)
                 rows.append({"event_key": example.event_key, "season": example.season, "model": one.model,
+                             **({"served_by": one.metadata["served_by"]} if "served_by" in one.metadata else {}),
                              **score(one, example)})
                 if keep_forecasts:
                     kept.extend(forecast_rows(one, example))
