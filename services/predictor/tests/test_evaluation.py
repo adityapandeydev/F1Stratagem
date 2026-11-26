@@ -271,3 +271,26 @@ def test_a_reference_that_is_not_evaluated_is_refused_before_the_run(monkeypatch
     monkeypatch.setattr(evaluation, "git_revision", lambda: None)
     with pytest.raises(ValueError, match="reference 'uniform'"):
         evaluation.run("Q", "last", [2024], ["champion"], archive=object())
+
+
+def test_retest_candidates_add_one_feature_to_each_served_champion():
+    from predictor.evaluation import CHAMPIONS, RETEST_FEATURES, model_registry, retest_champions
+    registry = model_registry()
+    champions = {route: registry[name]() for route, name in CHAMPIONS.items()}
+    feature_options = {"i": {"driver_affinity"}, "p": {"practice_push", "session_types"},
+                       "x": {"wet_races", "session_types"}, "xy": {"wet_races", "wet_ability", "session_types"},
+                       "e": {"wet_evolution"}, "g": {"wet_segments"}}
+    assert set(RETEST_FEATURES) == set(feature_options)
+    for tag, expected in feature_options.items():
+        routes = retest_champions(tag)
+        assert set(routes) == set(CHAMPIONS)
+        for route, name in routes.items():
+            candidate, champion = registry[name](), champions[route]
+            a, b = candidate.options(), champion.options()
+            changed = {k for k in set(a) | set(b) if a.get(k) != b.get(k)}
+            if tag == "p" and route.startswith("pre_weekend"):
+                assert name == CHAMPIONS[route] and not changed    # push pace is judged after a session only
+            else:
+                assert changed == expected, (tag, route, changed)
+                assert candidate.wet_forecast == champion.wet_forecast or tag == "xy"
+        assert registry[f"champion_{tag}"]().name == f"champion_{tag}"

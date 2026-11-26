@@ -700,7 +700,43 @@ def model_registry():
                                            strategy=True, pit_lane=True, car_strategies=True, weekend_wear=True,
                                            team_wear=True),
             "pace3wkb": lambda: _pace_model(3, weekend=True, skills=("fast",),
-                                            season_skills=("straight", "slow", "medium", "fast"))}
+                                            season_skills=("straight", "slow", "medium", "fast")),
+            **_retest_registry()}
+
+
+# The post-holdout re-test (docs/retest/sheet.md, 2026-11-26): each parked qualifying
+# feature added, alone, to every served champion, and routed like the champions.
+CHAMPION_OPTIONS = {"pre": dict(race_estimates=True, stint_scale=True), "after": {}, "wet": dict(wet_forecast=True)}
+RETEST_FEATURES = {"i": dict(driver_affinity=True), "p": dict(push="split"), "x": dict(wet_races=True),
+                   "xy": dict(wet_races=True, wet_ability=True), "e": dict(wet_evolution=True),
+                   "g": dict(wet_segments=True)}
+
+
+def _champion_with(route, **feature):
+    """The served qualifying champion of `route` ("pre", "after", "wet") with `feature`."""
+    return _pace_model(3, weekend=True, races=True, knockout=True, wet_noise=True, robust=True,
+                       race_read={"partial": True}, **CHAMPION_OPTIONS[route], **feature)
+
+
+def retest_champions(tag):
+    """The router map of re-test candidate `tag`: practice push pace only after a session
+    (its eligible cutoff; before the weekend the champions serve); wet ability forecasts
+    every wet target by itself, so its wet routes are its after-session model."""
+    key = f"retest_{tag}_" + "{}"
+    if tag == "p":
+        return {**CHAMPIONS, "after_session": key.format("after"), "after_session_wet": key.format("wet")}
+    wet = key.format("after" if tag == "xy" else "wet")
+    return {"pre_weekend": key.format("pre"), "after_session": key.format("after"),
+            "pre_weekend_wet": wet, "after_session_wet": wet}
+
+
+def _retest_registry():
+    models = {}
+    for tag, feature in RETEST_FEATURES.items():
+        for route in ("pre", "after", "wet"):
+            models[f"retest_{tag}_{route}"] = lambda route=route, feature=feature: _champion_with(route, **feature)
+        models[f"champion_{tag}"] = lambda tag=tag: ChampionRouter(retest_champions(tag), name=f"champion_{tag}")
+    return models
 
 
 def select_cutoff(archive, event_key, cutoff_label, target_start):
