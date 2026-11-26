@@ -189,9 +189,12 @@ def withdraw(final, outcomes, withdrawn, example):
 
 
 def grid_at(view, example):
-    """Grid slots (1 = pole) of the example's entrants from the session that sets the
-    race grid, if it is classified at the cutoff; None otherwise. An entrant missing
-    from that classification starts behind those in it."""
+    """Grid slots (1 = pole) of the example's entrants from the latest grid-deciding
+    session classified at the cutoff; None otherwise. An entrant missing from that
+    classification starts behind those in it. On a 2021-22 sprint weekend before the
+    sprint is classified this is Friday qualifying, a proxy for the race grid held fixed
+    (the sprint's place changes are not drawn); `grid_observed` tells whether the session
+    that actually sets the grid is classified."""
     sessions = view.sessions[view.sessions.event_key == example.event_key]
     types = set(sessions.session_type)
     source = "S" if example.season in GRID_FROM_SPRINT and "S" in types else "Q"
