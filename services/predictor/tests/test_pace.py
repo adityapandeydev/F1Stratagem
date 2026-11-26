@@ -1387,3 +1387,20 @@ def test_a_wet_qualifying_reads_a_segment_run_on_slicks_as_dry():
     assert model.options()["wet_segments"] and "wet_segments" not in plain.options()
     with pytest.raises(ValueError):
         PaceModel(WITH_RACES, wet_segments=True)
+
+
+def test_the_fit_options_hold_how_race_laps_are_read_and_the_stint_scale():
+    """Final review 2026-11-26: two models of one name differing only in these must not
+    share cached fits."""
+    plain = PaceModel(ALL_SESSIONS, "pace:same", race_estimates=True)
+    read = PaceModel(ALL_SESSIONS, "pace:same", race_estimates=True)
+    read.race_read = {"partial": True, "min_laps": 5}
+    scaled = PaceModel(ALL_SESSIONS, "pace:same", race_estimates=True)
+    scaled.stint_scale = True
+    options = [json.dumps(m.options(), sort_keys=True) for m in (plain, read, scaled)]
+    assert len(set(options)) == 3
+
+
+def test_the_code_fingerprint_covers_the_modules_fits_read():
+    from predictor.fitcache import CODE_MODULES
+    assert {"pace.py", "laps.py", "cleanair.py", "race_sim.py"} <= set(CODE_MODULES)

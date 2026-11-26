@@ -280,3 +280,14 @@ def test_missing_compounds_are_no_evidence_of_slicks():
     third = laps.copy()                               # a third known: too little to retype
     third.loc[third.DriverNumber.astype(int) % 3 != 0, "Compound"] = None
     assert L.segment_wet_shares(third, results) == {}
+
+
+def test_a_race_of_unknown_wetness_is_never_read_as_dry():
+    """Final review 2026-11-26: a laps table without lap times or compounds (or without
+    timed laps) counts as wet, so its dry race pace is empty; missing data is not dry."""
+    import pandas as pd
+    from predictor.laps import wet_race
+    assert wet_race(pd.DataFrame({"LapTime": [90.0, 91.0]}))
+    assert wet_race(pd.DataFrame({"Compound": ["SOFT", "HARD"]}))
+    assert wet_race(pd.DataFrame({"LapTime": [None, None], "Compound": ["SOFT", "HARD"]}))
+    assert not wet_race(pd.DataFrame({"LapTime": [90.0, 91.0], "Compound": ["SOFT", "HARD"]}))

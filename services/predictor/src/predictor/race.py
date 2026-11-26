@@ -1080,7 +1080,7 @@ class SimulatedRace(RaceModel):
             qualifying = self._weekend_qualifying(view, example.event_key)
             if qualifying:
                 lap = qualifying * self._ratio
-        context = {"circuit_term": term, "laps": laps, "lap_seconds": lap}
+        context = {"circuit_term": term, "laps": laps, "lap_seconds": lap, "event_key": example.event_key}
         if self.neutralisations and self._neutral is not None:
             context["neutral"] = self._neutral.race(circuit, laps)
         if self.strategy and self._strategy is not None:
@@ -1120,12 +1120,16 @@ class SimulatedRace(RaceModel):
     def order(self, race, grid, setting, context, seed):
         if setting["sigma"] > 0:
             race = race + setting["sigma"] * np.random.default_rng([seed, 8]).standard_normal(race.shape)
-        return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
-                                 context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
-                                 setting.get("pass_shift", 0.0), context.get("neutral"),
-                                 self._race_strategy(context.get("strategy"), setting),
-                                 follow=self._follow, follow_release=self._release, follow_penalty=self._penalty,
-                                 fresh_peak=self._peak, windows=self._window, roles=self._role, keyed=self.stable_fit)
+        try:
+            return race_sim.simulate(race, grid, self.passes, context["circuit_term"], context["laps"],
+                                     context["lap_seconds"], setting["start_noise"], np.random.default_rng([seed, 10]),
+                                     setting.get("pass_shift", 0.0), context.get("neutral"),
+                                     self._race_strategy(context.get("strategy"), setting),
+                                     follow=self._follow, follow_release=self._release, follow_penalty=self._penalty,
+                                     fresh_peak=self._peak, windows=self._window, roles=self._role,
+                                     keyed=self.stable_fit)
+        except ValueError as error:          # the input contract (race_sim.check_native_inputs)
+            raise ValueError(f"{context.get('event_key', 'race')}: {error}") from error
 
     @staticmethod
     def _race_strategy(strategy, setting):

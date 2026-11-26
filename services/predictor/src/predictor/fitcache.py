@@ -33,7 +33,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 CODE_MODULES = ("pace.py", "program.py", "rules.py", "archive.py", "fitcache.py", "track.py", "circuit_layouts.csv",
-                "laps.py")
+                "laps.py", "cleanair.py", "race_sim.py")   # the last two: clean-air and corrected-pace fits
 REFERENCE_TABLES = ("events", "sessions", "entrants", "qualifying_history")
 READ_FILES = ("normalized/", "source/car_data/", "source/pos_data/")   # session files a fit can read
 LOCK_WAIT_SECONDS = 5.0

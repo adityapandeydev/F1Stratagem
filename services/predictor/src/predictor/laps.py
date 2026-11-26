@@ -71,7 +71,11 @@ def wet_session(laps):
 
 def wet_race(laps):
     """Whether the track was wet for part of the race: wet tyres on more than
-    WET_SHARE of its timed laps."""
+    WET_SHARE of its timed laps. Unknown wetness (no timed laps, or a table without lap
+    times or compounds) counts as wet: such a race is never read as a dry race (its
+    dry race pace is empty), and missing data is not taken to mean dry."""
+    if "LapTime" not in laps or "Compound" not in laps:
+        return True
     timed = laps[laps.LapTime.notna()]
     if timed.empty:
         return True

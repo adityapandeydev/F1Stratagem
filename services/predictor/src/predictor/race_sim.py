@@ -228,7 +228,7 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
     grid = np.ascontiguousarray(np.broadcast_to(grid, pace.shape), dtype=float)
     seed = int(rng.integers(0, 2 ** 63))
     lengths = [np.asarray(neutral["lengths"][kind], dtype=np.int64) for kind in KINDS]
-    return predictor_race_native.simulate(seconds, grid, np.asarray(passes.coef, dtype=float), float(circuit_term),
+    args = (seconds, grid, np.asarray(passes.coef, dtype=float), float(circuit_term),
                                           float(pass_shift), laps, float(start_noise), START_SPACING,
                                           float(LAP_NOISE * lap_seconds / 100), BATTLE_GAP, MIN_FOLLOW, seed,
                                           np.ascontiguousarray(neutral["hazard"][:laps], dtype=float),
@@ -269,6 +269,28 @@ def simulate(pace, grid, passes, circuit_term, laps, lap_seconds, start_noise, r
                                           np.asarray(() if windows is None else windows, dtype=float),
                                           np.asarray(() if roles is None or windows is None else roles[0], dtype=float).ravel(),
                                           np.asarray(() if roles is None or windows is None else roles[1], dtype=float).ravel())
+    check_native_inputs(args)
+    return predictor_race_native.simulate(*args)
+
+
+def check_native_inputs(args):
+    """The native simulator's contract, checked before the call (final review
+    2026-11-26): at least one draw, entrant and lap, every number finite, no negative
+    integer (team indices, stop counts, stop laps padded with 0). The kernel otherwise panics (an exception `except Exception` does not
+    catch) or silently coerces the value."""
+    seconds, laps = args[0], args[5]
+    if seconds.ndim != 2 or seconds.shape[0] == 0 or seconds.shape[1] == 0:
+        raise ValueError(f"race simulation needs at least one draw and one entrant, got pace of shape {seconds.shape}")
+    if laps < 1:
+        raise ValueError(f"race simulation needs at least one lap, got {laps}")
+    for position, value in enumerate(args):
+        if isinstance(value, np.ndarray) and value.dtype.kind == "f" and not np.isfinite(value).all():
+            raise ValueError(f"race simulation input {position} (shape {value.shape}) is not finite: "
+                             f"{int((~np.isfinite(value)).sum())} NaN or infinite values")
+        if isinstance(value, float) and not np.isfinite(value):
+            raise ValueError(f"race simulation input {position} is not finite: {value}")
+        if isinstance(value, np.ndarray) and value.dtype.kind == "i" and value.size and value.min() < 0:
+            raise ValueError(f"race simulation input {position} has a negative index: {int(value.min())}")
 
 
 def _team_wear_pct(strategy, lap_seconds, n):

@@ -490,6 +490,7 @@ class PaceModel:
         # (stint_scale, earlier seasons only), so a driver with few clean laps weighs as
         # little as his real error says (set by the evaluation factory)
         self.stint_scale = False
+        self.race_read = None        # options of laps.race_pace for race laps (set by the evaluation factory)
         # forecasts simulate Q1, Q2 and Q3 (eliminations, a lap per segment) instead of one draw
         self.knockout = knockout
         # drivers fail to set a time in a segment with a learned, driver-specific probability
@@ -644,7 +645,7 @@ class PaceModel:
                 groups, covariances = race_observations(view.laps(session.session_id),
                                                         view.entrants(session.session_id), with_covariance=True,
                                                         drying=session.session_type != "R",
-                                                        read=getattr(self, "race_read", None))
+                                                        read=self.race_read)
                 self._observations[session.session_id] = groups
                 self._covariances[session.session_id] = covariances
             return self._observations[session.session_id]
@@ -1058,6 +1059,9 @@ class PaceModel:
                 **({"wet_evolution": True} if self.wet_evolution else {}),
                 **({"wet_segments": True} if self.wet_segments else {}),
                 **({"driver_affinity": True} if self.driver_affinity else {}),
+                # final review 2026-11-26: both change the fit (were kept apart only by the name)
+                **({"race_read": dict(self.race_read)} if self.race_read else {}),
+                **({"stint_scale": True} if self.stint_scale else {}),
                 "screen_base": None if self.screen_base is None else
                 [self.screen_base.name, self.screen_base.options()]}
 

@@ -1610,3 +1610,27 @@ def test_season_settings_score_with_retirements_fitted_at_the_season_start(monke
     model._fit_season(2024, "last")
     assert seen == [[2022, 2023]]
     assert model.retirements.seasons == [2022, 2023, 2024]     # the current model is left as it was
+
+
+def test_the_native_simulator_inputs_are_checked_before_the_call():
+    """Final review 2026-11-26: NaN or no entrants panicked in the kernel; a negative
+    team index was silently coerced. The wrapper raises a ValueError first."""
+    import pytest
+    from predictor import race_sim
+    passes = _passing(False)
+    pace = np.zeros((50, 4))
+    ok = race_sim.simulate(pace, np.arange(1, 5.0), passes, 0.0, 10, 90.0, 0.4, np.random.default_rng(0))
+    assert ok.shape == (50, 4)
+    bad = pace.copy()
+    bad[3, 2] = np.nan
+    with pytest.raises(ValueError, match="not finite"):
+        race_sim.simulate(bad, np.arange(1, 5.0), passes, 0.0, 10, 90.0, 0.4, np.random.default_rng(0))
+    with pytest.raises(ValueError, match="one draw and one entrant"):
+        race_sim.simulate(np.zeros((50, 0)), np.zeros(0), passes, 0.0, 10, 90.0, 0.4, np.random.default_rng(0))
+    with pytest.raises(ValueError, match="not finite"):
+        race_sim.simulate(pace, np.arange(1, 5.0), passes, 0.0, 10, float("nan"), 0.4, np.random.default_rng(0))
+    with pytest.raises(ValueError, match="at least one lap"):
+        race_sim.simulate(pace, np.arange(1, 5.0), passes, 0.0, 0, 90.0, 0.4, np.random.default_rng(0))
+    with pytest.raises(ValueError, match="negative"):
+        race_sim.simulate(pace, np.arange(1, 5.0), passes, 0.0, 10, 90.0, 0.4, np.random.default_rng(0),
+                          fixed_counts=-np.ones((50, 4), dtype=np.int64))
