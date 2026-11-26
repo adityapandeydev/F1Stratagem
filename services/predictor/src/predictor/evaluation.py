@@ -1089,6 +1089,9 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     revision = git_revision()   # the code the run starts with; the tree may change while it runs
     if set(seasons) & HOLDOUT_SEASONS and not allow_holdout:
         raise PermissionError(f"seasons {sorted(set(seasons) & HOLDOUT_SEASONS)} are held out")
+    if reference == "uniform" and "uniform" not in models:
+        # refused before the run, not after it (the comparison needs the reference's scores)
+        raise ValueError("the reference 'uniform' is not among the models: add it or pass another reference")
     if fit_cache is not None:
         fit_cache.prime(archive.root, seasons)
     # the history reaches the first evaluated season whatever `seasons` is (final review

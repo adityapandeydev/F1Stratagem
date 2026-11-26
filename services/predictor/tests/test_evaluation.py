@@ -262,3 +262,12 @@ def test_a_run_learns_from_every_season_before_its_first(monkeypatch):
         except StopIteration:
             pass
         assert asked[0] == history
+
+
+def test_a_reference_that_is_not_evaluated_is_refused_before_the_run(monkeypatch):
+    import pytest
+    from predictor import evaluation
+    monkeypatch.setattr(evaluation, "prepare", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    monkeypatch.setattr(evaluation, "git_revision", lambda: None)
+    with pytest.raises(ValueError, match="reference 'uniform'"):
+        evaluation.run("Q", "last", [2024], ["champion"], archive=object())
