@@ -3,15 +3,17 @@ import types
 import numpy as np
 import pandas as pd
 
-from predictor.race import RaceModel, grid_at
+from predictor.race import RaceModel, grid_at, grid_observed
 
 
-def _view(season, sessions, results):
+def _view(season, sessions, results, scheduled=None):
     """A view of one event: `sessions` the types classified at the cutoff, `results`
-    {type: {driver number: position}}."""
+    {type: {driver number: position}}, `scheduled` the weekend's session types (default
+    `sessions`)."""
     table = pd.DataFrame({"event_key": "e", "session_type": sessions, "session_id": [f"e-{t}" for t in sessions]})
+    plan = pd.DataFrame({"session_type": list(scheduled if scheduled is not None else sessions)})
     return types.SimpleNamespace(
-        sessions=table,
+        sessions=table, archive=types.SimpleNamespace(event_sessions=lambda event_key: plan),
         results=lambda sid: pd.DataFrame({"DriverNumber": list(results[sid[2:]]),
                                           "Position": list(results[sid[2:]].values())}))
 
@@ -34,6 +36,28 @@ def test_in_2021_and_2022_the_sprint_sets_the_grid_once_it_has_run():
     assert list(grid_at(_view(2022, ["Q", "S"], results), _example(2022))) == [2, 3, 1]
     assert list(grid_at(_view(2022, ["Q"], results), _example(2022))) == [1, 2, 3]     # sprint not run yet
     assert list(grid_at(_view(2023, ["Q", "S"], results), _example(2023))) == [1, 2, 3]  # from 2023: qualifying
+
+
+def test_an_empty_classification_is_no_grid():
+    """Review 2026-11-26: no classified position gave the entrants' roster order as slots."""
+    assert grid_at(_view(2024, ["Q"], {"Q": {}}), _example(2024)) is None
+    assert grid_at(_view(2024, ["Q"], {"Q": {"1": None, "2": float("nan"), "3": None}}), _example(2024)) is None
+    assert not grid_observed(_view(2024, ["Q"], {"Q": {}}), _example(2024))
+    assert not grid_observed(_view(2024, ["Q"], {"Q": {"1": None, "2": None, "3": None}}), _example(2024))
+
+
+def test_the_grid_is_observed_once_the_scheduled_grid_session_is_classified():
+    """The session that sets the grid comes from the weekend's schedule: a 2021-22 sprint
+    weekend after Friday qualifying, before the sprint, has no observed grid."""
+    results = {"Q": {"1": 1, "2": 2, "3": 3}, "S": {"3": 1, "1": 2, "2": 3}}
+    sprint = ["FP1", "Q", "FP2", "S"]
+    assert not grid_observed(_view(2021, ["FP1", "Q"], results, sprint), _example(2021))
+    assert grid_observed(_view(2021, ["FP1", "Q", "FP2", "S"], results, sprint), _example(2021))
+    assert grid_observed(_view(2024, ["FP1", "Q"], results), _example(2024))
+    assert not grid_observed(_view(2024, ["FP1"], results, ["FP1", "Q"]), _example(2024))
+    assert grid_observed(_view(2023, ["Q"], results, ["FP1", "Q", "SQ", "S"]), _example(2023))   # from 2023: qualifying
+    assert not grid_observed(_view(2024, ["Q"], {"Q": {"1": 1, "2": 2}}), _example(2024))      # fewer than three
+    assert grid_observed(_view(2024, ["Q"], {"Q": {"1": 1, "2": 2}}), _example(2024, ("1", "2")))
 
 
 def test_a_driver_missing_from_qualifying_starts_at_the_back():
@@ -198,12 +222,16 @@ def test_race_champions_route_by_forecast_moment():
                                                  driver_numbers=["1", "11", "16"])
     before, after, grid, practice = (moment(x) for x in ("pre_weekend", "last", "after_grid", "after_FP2"))
 
-    def view_with(types_run):              # the event's sessions classified at the cutoff
+    def view_with(types_run, positions=(2, 1, 3)):     # the event's sessions classified at the cutoff
         sessions = pd.DataFrame({"event_key": "2023-05", "session_type": types_run,
                                  "session_id": [f"2023-05-{t}" for t in types_run]})
-        results = pd.DataFrame({"DriverNumber": ["1", "11", "16"], "Position": [2, 1, 3]})
-        return types.SimpleNamespace(sessions=sessions, results=lambda session_id: results)
+        results = pd.DataFrame({"DriverNumber": ["1", "11", "16"], "Position": list(positions)})
+        plan = pd.DataFrame({"session_type": ["FP1", "FP2", "FP3", "Q"]})
+        return types.SimpleNamespace(sessions=sessions, results=lambda session_id: results,
+                                     archive=types.SimpleNamespace(event_sessions=lambda event_key: plan))
     qualified, unqualified = view_with(["FP1", "FP2", "FP3", "Q"]), view_with(["FP1", "FP2", "FP3"])
+    unclassified = view_with(["FP1", "FP2", "FP3", "Q"], (None, None, None))
+    assert router.models[router.route(after, unclassified)].name == "race:mix3ffnps51aps5o"
     assert router.models[router.route(before, qualified)].name == "race:mix3fwp2apk"
     # step 9b serves the cutoff it was tested at only, with the grid observed; a practice
     # cutoff, or the last cutoff before qualifying is classified, keeps the old champion

@@ -307,8 +307,8 @@ class ChampionRouter:
 
     @staticmethod
     def _grid_observed(view, example):
-        from .race import grid_at
-        return grid_at(view, example) is not None
+        from .race import grid_observed
+        return grid_observed(view, example)
 
     def predict(self, view, example, **kwargs):
         key = self.route(example, view)

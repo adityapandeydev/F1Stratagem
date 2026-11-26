@@ -199,7 +199,24 @@ def grid_at(view, example):
         return None
     results = view.results(sessions[sessions.session_type == source].session_id.iloc[0])
     order = dict(zip(results.DriverNumber.astype(str), pd.to_numeric(results.Position, errors="coerce")))
+    if not any(np.isfinite(v) for v in order.values()):
+        return None          # no classified position: no order to read (not the entrants' roster order)
     return _slots(order, example.driver_numbers)
+
+
+def grid_observed(view, example, front=3):
+    """True when the session that sets the race grid by the weekend's schedule (the sprint
+    in GRID_FROM_SPRINT seasons when one is scheduled, else qualifying; the format is
+    known in advance) is classified at the cutoff with at least `front` positions. A
+    sprint weekend before its sprint is classified is not observed, though its
+    qualifying is (review 2026-11-26)."""
+    scheduled = set(view.archive.event_sessions(example.event_key).session_type)
+    source = "S" if example.season in GRID_FROM_SPRINT and "S" in scheduled else "Q"
+    sessions = view.sessions[(view.sessions.event_key == example.event_key) & (view.sessions.session_type == source)]
+    if sessions.empty:
+        return False
+    positions = pd.to_numeric(view.results(sessions.session_id.iloc[0]).Position, errors="coerce")
+    return int(positions.notna().sum()) >= min(front, len(example.driver_numbers))
 
 
 class RaceModel:
