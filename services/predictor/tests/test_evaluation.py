@@ -222,6 +222,8 @@ def test_compare_batches_refuses_runs_unfit_to_average():
            "race_draws": 20000, "race_fit_draws": 4000, "git_revision": {"commit": "x"}}
     assert check_batches([{**run, "seed_batch": b} for b in (3, 4, 5)]) == ([], [])
     assert check_batches([{**run, "seed_batch": 3}, {**run, "seed_batch": 3}])[0]
+    assert check_batches([{**run, "seed_batch": 3, "qualifying_draws": 10000},
+                          {**run, "seed_batch": 4, "qualifying_draws": 20000}])[0]
     assert check_batches([{**run, "seed_batch": 3}, {**run, "seed_batch": 4, "cutoff": "after_grid"}])[0]
     assert check_batches([{**run, "seed_batch": 3}, {**run, "seed_batch": 4, "race_draws": 10000}])[0]
     errors, notes = check_batches([run, run])           # before the seed batch was recorded

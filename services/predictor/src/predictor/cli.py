@@ -34,7 +34,7 @@ def check_batches(manifests):
     runs from before the manifest recorded its seed batch are reported, not refused."""
     errors, notes = [], []
     for key in ("session_type", "cutoff", "seasons", "warmup", "models", "events", "allow_holdout",
-                "race_draws", "race_fit_draws"):
+                "race_draws", "race_fit_draws", "qualifying_draws"):
         values = {json.dumps(m.get(key), sort_keys=True) for m in manifests if key in m}
         if len(values) > 1:
             errors.append(f"runs differ in {key}: {sorted(values)}")
@@ -116,7 +116,8 @@ def main(argv=None):
     evaluate.add_argument("--seed-batch", type=int,
                           help="another set of common random numbers (shared by every model), to check that "
                                "a difference is not Monte Carlo variation")
-    evaluate.add_argument("--draws", type=int, help="simulated races per race forecast (default race.DRAWS)")
+    evaluate.add_argument("--draws", type=int, help="simulated races per race forecast (default race.DRAWS); "
+                          "qualifying forecasts always use pace.DRAWS")
     evaluate.add_argument("--fit-draws", type=int, help="simulated races per race when fitting settings (default race.FIT_DRAWS)")
     batches = commands.add_parser("compare-batches", help="compare models on the mean of several seed batches' runs")
     batches.add_argument("--runs", nargs="+", required=True, help="run folders (data/runs/...), one per seed batch")

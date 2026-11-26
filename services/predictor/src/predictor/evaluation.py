@@ -1147,7 +1147,7 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
     overall, by_season = summarise(scores)
     comparison = compare(scores, reference)
     stages = stage_comparison(scores, reference)
-    from . import baselines as _baselines, race as race_module
+    from . import baselines as _baselines, pace as _pace, race as race_module
     manifest = {
         "session_type": session_type, "cutoff": cutoff_label, "seasons": list(seasons), "warmup": list(warmup),
         "models": list(models), "events": len(examples), "git_revision": revision,
@@ -1156,6 +1156,8 @@ def run(session_type, cutoff_label, seasons, models, warmup=(2018,), allow_holdo
         .get("built_at_utc"), "allow_holdout": allow_holdout,
         # module settings that change the scores (set by the CLI), for compare-batches
         "seed_batch": _baselines.SEED_BATCH, "race_draws": race_module.DRAWS, "race_fit_draws": race_module.FIT_DRAWS,
+        # qualifying forecasts draw pace.DRAWS whatever --draws says (that sets the race simulator)
+        "qualifying_draws": _pace.DRAWS,
     }
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
