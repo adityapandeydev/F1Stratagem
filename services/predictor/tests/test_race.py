@@ -194,15 +194,23 @@ def test_race_champions_route_by_forecast_moment():
     from predictor.evaluation import RACE_CHAMPIONS, model_registry
     router = model_registry()["race_champion"]()
     assert router.name == "race_champion" and router.champions == RACE_CHAMPIONS
-    before = types.SimpleNamespace(cutoff_label="pre_weekend")
-    after = types.SimpleNamespace(cutoff_label="last")
-    grid = types.SimpleNamespace(cutoff_label="after_grid")
-    practice = types.SimpleNamespace(cutoff_label="after_FP2")
-    assert router.models[router.route(before)].name == "race:mix3fwp2apk"
-    # step 9b serves the cutoff it was tested at only; a practice cutoff keeps the old champion
-    assert router.models[router.route(after)].name == "race:mix3ffnps51aps5of"
-    assert router.models[router.route(practice)].name == "race:mix3ffnps51aps5o"
-    assert router.models[router.route(grid)].name == "race:mix3ffnps51aps5go"
+    moment = lambda label: types.SimpleNamespace(cutoff_label=label, event_key="2023-05", season=2023,
+                                                 driver_numbers=["1", "11", "16"])
+    before, after, grid, practice = (moment(x) for x in ("pre_weekend", "last", "after_grid", "after_FP2"))
+
+    def view_with(types_run):              # the event's sessions classified at the cutoff
+        sessions = pd.DataFrame({"event_key": "2023-05", "session_type": types_run,
+                                 "session_id": [f"2023-05-{t}" for t in types_run]})
+        results = pd.DataFrame({"DriverNumber": ["1", "11", "16"], "Position": [2, 1, 3]})
+        return types.SimpleNamespace(sessions=sessions, results=lambda session_id: results)
+    qualified, unqualified = view_with(["FP1", "FP2", "FP3", "Q"]), view_with(["FP1", "FP2", "FP3"])
+    assert router.models[router.route(before, qualified)].name == "race:mix3fwp2apk"
+    # step 9b serves the cutoff it was tested at only, with the grid observed; a practice
+    # cutoff, or the last cutoff before qualifying is classified, keeps the old champion
+    assert router.models[router.route(after, qualified)].name == "race:mix3ffnps51aps5of"
+    assert router.models[router.route(after, unqualified)].name == "race:mix3ffnps51aps5o"
+    assert router.models[router.route(practice, qualified)].name == "race:mix3ffnps51aps5o"
+    assert router.models[router.route(grid, qualified)].name == "race:mix3ffnps51aps5go"
     last = router.models["last"]
     assert [c.name for c in last.components] == ["race:v3ffnps5o", "race:v1aps5of"]
     assert list(last.weights) == [0.5, 0.5]
@@ -213,17 +221,17 @@ def test_race_champions_route_by_forecast_moment():
     assert stable == {"pre_weekend": True, "after_session": False, "last": False, "after_grid": False}
     # the qualifying champions have no 'after_grid' entry: the session's champion serves it
     from predictor.evaluation import ChampionRouter
-    assert ChampionRouter().route(grid) == "after_session"
+    assert ChampionRouter().route(grid, qualified) == "after_session"
 
 
 def test_qualifying_champions_route_by_forecast_moment_and_condition():
     from predictor.evaluation import CHAMPIONS, ChampionRouter
     router = ChampionRouter(CHAMPIONS)
     moment = lambda label, condition="dry": types.SimpleNamespace(cutoff_label=label, condition=condition)
-    assert router.models[router.route(moment("pre_weekend"))].name == "pace:v3wruqwt-rps"
-    assert router.models[router.route(moment("last"))].name == "pace:v3wrqwt-rp"
-    assert router.models[router.route(moment("pre_weekend", "wet"))].name == "pace:v3wrqwt-rpc"
-    assert router.models[router.route(moment("last", "wet"))].name == "pace:v3wrqwt-rpc"
+    assert router.models[router.route(moment("pre_weekend"), None)].name == "pace:v3wruqwt-rps"
+    assert router.models[router.route(moment("last"), None)].name == "pace:v3wrqwt-rp"
+    assert router.models[router.route(moment("pre_weekend", "wet"), None)].name == "pace:v3wrqwt-rpc"
+    assert router.models[router.route(moment("last", "wet"), None)].name == "pace:v3wrqwt-rpc"
 
 
 def test_the_battle_model_can_read_forecast_pace_differences():

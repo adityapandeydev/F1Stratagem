@@ -101,7 +101,7 @@ def test_the_champion_router_serves_each_cutoff_with_its_champion():
                                      ("pre_weekend", None, "a")):
         example = types.SimpleNamespace(cutoff_label=label, condition=condition)
         assert four.predict(None, example).metadata["served_by"] == served
-    assert router.route(types.SimpleNamespace(cutoff_label="last", condition="wet")) == "after_session"
+    assert router.route(types.SimpleNamespace(cutoff_label="last", condition="wet"), None) == "after_session"
 
 
 def test_a_practice_only_reserve_is_not_a_regular_driver():

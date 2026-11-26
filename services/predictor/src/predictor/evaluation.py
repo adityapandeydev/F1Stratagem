@@ -254,9 +254,10 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrps", "after_session": "pace3wrqwtrp",
 # the cars starting 1-3 (race_mix3ffnps51aps5of), at the last cutoff before the race:
 # RPS -0.000133 [-0.000232, -0.000032], 15+ -0.00008 (noise), 2024 -0.000127; the
 # mixture's outcome log loss -0.00063 [-0.00165, +0.00046] (pre-registered limit +0.0025).
-# Tested at that cutoff only, so it serves 'last' alone: forecasts at an earlier session
-# cutoff (practice: the bonus would act on a simulated grid) keep the 'after_session'
-# champion.
+# Tested at that cutoff only, with the grid classified (all 128 races), so it serves 'last'
+# alone and only with an observed grid: forecasts at an earlier session cutoff, or at 'last'
+# before the grid-setting session is classified (the bonus would act on a simulated grid),
+# keep the 'after_session' champion.
 RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2apk", "after_session": "race_mix3ffnps51aps5o",
                   "last": "race_mix3ffnps51aps5of", "after_grid": "race_mix3ffnps51aps5go"}
 
@@ -282,15 +283,18 @@ class ChampionRouter:
             if hasattr(model, "fit_cache"):
                 model.fit_cache = cache
 
-    def route(self, example):
+    def route(self, example, view):
         """The champion's key: 'pre_weekend'; 'after_grid' (once the FIA starting grid is
-        out) and 'last' (the latest session cutoff before the target) when the router has
-        them; otherwise 'after_session'; '_wet' added for a wet example when the router
-        has that key."""
+        out) when the router has one; 'last' (the latest session cutoff before the target)
+        when the router has one and the grid-setting session is classified in `view`;
+        otherwise 'after_session'; '_wet' added for a wet example when the router has
+        that key."""
         if example.cutoff_label == "pre_weekend":
             moment = "pre_weekend"
-        elif example.cutoff_label in ("after_grid", "last") and example.cutoff_label in self.champions:
-            moment = example.cutoff_label
+        elif example.cutoff_label == "after_grid" and "after_grid" in self.champions:
+            moment = "after_grid"
+        elif example.cutoff_label == "last" and "last" in self.champions and self._grid_observed(view, example):
+            moment = "last"
         else:
             moment = "after_session"
         wet = f"{moment}_wet"
@@ -301,10 +305,16 @@ class ChampionRouter:
             model.fit(history, view_for)
         return self
 
+    @staticmethod
+    def _grid_observed(view, example):
+        from .race import grid_at
+        return grid_at(view, example) is not None
+
     def predict(self, view, example, **kwargs):
-        forecast = self.models[self.route(example)].predict(view, example, **kwargs)
+        key = self.route(example, view)
+        forecast = self.models[key].predict(view, example, **kwargs)
         if forecast is not None:
-            forecast.metadata = {**(forecast.metadata or {}), "served_by": self.champions[self.route(example)]}
+            forecast.metadata = {**(forecast.metadata or {}), "served_by": self.champions[key]}
             forecast.model = self.name
         return forecast
 

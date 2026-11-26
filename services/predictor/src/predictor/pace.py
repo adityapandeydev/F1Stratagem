@@ -112,6 +112,11 @@ WITH_RACES = ALL_SESSIONS + ("R",)   # races as evidence: corrected race pace (l
 HISTORY_FIRST_SEASON = 2006      # first season with low-fuel qualifying segments
 HISTORY_PREFIX = "history:"
 MIN_QUALIFYING_SESSIONS = 5   # fewer before a season: the settings keep their starting values
+# The first season of the chain of annual settings fits: each later season's fit starts from
+# the one before (the walk-forward evaluator's order), so a fresh process forecasting a later
+# season first replays the chain from here (review 2026-11-26: 2024-12 served from a fresh
+# process differed from the evaluated forecast when its fit started directly in 2024)
+CHAIN_FIRST_SEASON = 2019
 HISTORY_MODES = ("shared", "noise", "state", "weighted")
 UNCOUNTED_HISTORY = ("state", "weighted")   # history updates the state, not the objective
 OWN_TYPE_HISTORY = ("noise", "weighted")    # history read as session type H
@@ -1059,6 +1064,10 @@ class PaceModel:
     def _ensure_hyper(self, view, season):
         if self.fitted_season == season:
             return
+        if season > CHAIN_FIRST_SEASON and self.fitted_season != season - 1:
+            self._ensure_hyper(view, season - 1)      # the chain of earlier seasons (cache hits once fitted)
+        elif season <= CHAIN_FIRST_SEASON and self.fitted_season is not None:
+            self.hyper = self._qualifying_hyper = None    # a new chain: start from the defaults
         start = self.hyper or self._default_start()
         if self.screen_base is not None:
             # the base's own chain of seasons, so a screen resumed from the cache starts it right

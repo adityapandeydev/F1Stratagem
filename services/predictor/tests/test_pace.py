@@ -611,6 +611,7 @@ def test_a_cached_fit_forecasts_exactly_as_a_fresh_fit(tmp_path, monkeypatch, op
     from predictor import pace
     from predictor.fitcache import FitCache
     monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)       # the fixture has two qualifying sessions
+    monkeypatch.setattr(pace, "CHAIN_FIRST_SEASON", 2022)         # the fixture's chain starts there
     root = tmp_path / "archive"
     write_circuit_archive(root)
     write_session_manifests(root, (2021, 2022))
@@ -707,6 +708,34 @@ def test_a_screen_fits_only_what_the_model_adds(tmp_path, monkeypatch):
             assert getattr(model.hyper, name) == getattr(base.hyper, name), name
     assert model.hyper.noise == {**model.hyper.noise, **base.hyper.noise}
     assert model.options()["screen_base"][0] == "pace:base"
+
+
+def test_a_fresh_process_replays_the_chain_of_annual_fits(tmp_path, monkeypatch):
+    """Asked first for a later season, a fresh model fits every season from the chain's
+    first one, so its settings equal the walk-forward's (review 2026-11-26, 2024-12)."""
+    from predictor import pace
+    monkeypatch.setattr(pace, "MIN_QUALIFYING_SESSIONS", 1)
+    monkeypatch.setattr(pace, "CHAIN_FIRST_SEASON", 2022)
+    write_circuit_archive(tmp_path)
+    view = Archive(tmp_path).view(pd.Timestamp("2023-06-01", tz=UTC))
+    walk = PaceModel(ALL_SESSIONS, "pace:test", winter=True, weekend=True)
+    walk._ensure_hyper(view, 2022)
+    after_2022 = copy.deepcopy(walk.hyper)
+    walk._ensure_hyper(view, 2023)
+    fresh = PaceModel(ALL_SESSIONS, "pace:test", winter=True, weekend=True)
+    starts = []
+    fit = PaceModel._fit_season
+    monkeypatch.setattr(PaceModel, "_fit_season",
+                        lambda self, v, season, start: (starts.append((season, copy.deepcopy(start))),
+                                                        fit(self, v, season, start))[1])
+    fresh._ensure_hyper(view, 2023)
+    assert [s for s, _ in starts] == [2022, 2023]
+    assert starts[1][1] == after_2022                       # 2023 starts from the 2022 fit
+    assert fresh.hyper == walk.hyper and fresh.fit_log == walk.fit_log
+    # a season before the current one starts a new chain from the defaults
+    starts.clear()
+    fresh._ensure_hyper(view, 2022)
+    assert [s for s, _ in starts] == [2022] and fresh.hyper == after_2022
 
 
 def test_cache_paths_are_valid_folder_names(tmp_path):
