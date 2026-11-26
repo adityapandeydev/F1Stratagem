@@ -250,8 +250,15 @@ CHAMPIONS = {"pre_weekend": "pace3wrqwtrps", "after_session": "pace3wrqwtrp",
 # and is served there; after qualifying (+0.000202, 15+ worse, 2024 +0.00042) and once the
 # grid is published (+0.000259, winner and 15+ worse, 2024 +0.00042) it fails, so those keep
 # the fit of before 2026-11-23 (the "o" variants).
+# Step 9b (2026-11-26, 3 seed batches): the simple half with a fitted race-score bonus for
+# the cars starting 1-3 (race_mix3ffnps51aps5of), at the last cutoff before the race:
+# RPS -0.000133 [-0.000232, -0.000032], 15+ -0.00008 (noise), 2024 -0.000127; the
+# mixture's outcome log loss -0.00063 [-0.00165, +0.00046] (pre-registered limit +0.0025).
+# Tested at that cutoff only, so it serves 'last' alone: forecasts at an earlier session
+# cutoff (practice: the bonus would act on a simulated grid) keep the 'after_session'
+# champion.
 RACE_CHAMPIONS = {"pre_weekend": "race_mix3fwp2apk", "after_session": "race_mix3ffnps51aps5o",
-                  "after_grid": "race_mix3ffnps51aps5go"}
+                  "last": "race_mix3ffnps51aps5of", "after_grid": "race_mix3ffnps51aps5go"}
 
 
 class ChampionRouter:
@@ -277,12 +284,13 @@ class ChampionRouter:
 
     def route(self, example):
         """The champion's key: 'pre_weekend'; 'after_grid' (once the FIA starting grid is
-        out) when the router has one; otherwise 'after_session'; '_wet' added for a wet
-        example when the router has that key."""
+        out) and 'last' (the latest session cutoff before the target) when the router has
+        them; otherwise 'after_session'; '_wet' added for a wet example when the router
+        has that key."""
         if example.cutoff_label == "pre_weekend":
             moment = "pre_weekend"
-        elif example.cutoff_label == "after_grid" and "after_grid" in self.champions:
-            moment = "after_grid"
+        elif example.cutoff_label in ("after_grid", "last") and example.cutoff_label in self.champions:
+            moment = example.cutoff_label
         else:
             moment = "after_session"
         wet = f"{moment}_wet"
@@ -518,6 +526,9 @@ def model_registry():
                                                recent_retirements=True),
             # step 9b: the simple half with a fitted bonus for the cars starting 1-3
             "race1aps5of": lambda: _grid_input("race1aps5", "of", stable_fit=False, front_bonus=True),
+            "race3ffnps5o": lambda: _grid_input("race3ffnps5", "o", stable_fit=False),
+            "race_mix3ffnps51aps5of": lambda: ForecastMixture(["race3ffnps5o", "race1aps5of"], [0.5, 0.5],
+                                                              "race:mix3ffnps51aps5of"),
             "race1aps5ko": lambda: _grid_input("race1aps5", "ko", published_grid=True, known_penalties=True,
                                                stable_fit=False),
             "race1aps5kqo": lambda: _grid_input("race1aps5", "kqo", published_grid=True, known_penalties=True,

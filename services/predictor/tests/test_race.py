@@ -197,12 +197,20 @@ def test_race_champions_route_by_forecast_moment():
     before = types.SimpleNamespace(cutoff_label="pre_weekend")
     after = types.SimpleNamespace(cutoff_label="last")
     grid = types.SimpleNamespace(cutoff_label="after_grid")
+    practice = types.SimpleNamespace(cutoff_label="after_FP2")
     assert router.models[router.route(before)].name == "race:mix3fwp2apk"
-    assert router.models[router.route(after)].name == "race:mix3ffnps51aps5o"
+    # step 9b serves the cutoff it was tested at only; a practice cutoff keeps the old champion
+    assert router.models[router.route(after)].name == "race:mix3ffnps51aps5of"
+    assert router.models[router.route(practice)].name == "race:mix3ffnps51aps5o"
     assert router.models[router.route(grid)].name == "race:mix3ffnps51aps5go"
+    last = router.models["last"]
+    assert [c.name for c in last.components] == ["race:v3ffnps5o", "race:v1aps5of"]
+    assert list(last.weights) == [0.5, 0.5]
+    assert [c.front_bonus for c in last.components] == [False, True]
+    assert not any(c.front_bonus for k in ("after_session", "after_grid") for c in router.models[k].components)
     # the stable settings fit before the weekend only; the old fit after qualifying
     stable = {k: all(c.stable_fit for c in m.components) for k, m in router.models.items()}
-    assert stable == {"pre_weekend": True, "after_session": False, "after_grid": False}
+    assert stable == {"pre_weekend": True, "after_session": False, "last": False, "after_grid": False}
     # the qualifying champions have no 'after_grid' entry: the session's champion serves it
     from predictor.evaluation import ChampionRouter
     assert ChampionRouter().route(grid) == "after_session"
